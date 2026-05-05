@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	cloud.google.com/go/translate v1.16.0
 	github.com/go-git/go-git/v5 v5.18.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/api v0.277.0
