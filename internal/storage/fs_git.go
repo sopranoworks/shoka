@@ -245,7 +245,7 @@ func (s *FSGitStorage) ListFiles(namespace, projectName, path string) ([]string,
 	var files []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == ".git" {
+		if name == ".git" || name == ".drafts" {
 			continue
 		}
 		if entry.IsDir() {

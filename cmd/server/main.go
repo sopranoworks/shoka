@@ -5,10 +5,14 @@ import (
 	"log"
 	"os"
 
+	"net/http"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/shoka/mcp-server/internal/drafts"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
 	"github.com/shoka/mcp-server/internal/translation"
+	"github.com/shoka/mcp-server/internal/ui"
 )
 
 func main() {
@@ -21,6 +25,29 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize storage: %v", err)
 	}
+
+	dm, err := drafts.NewManager(storageBaseDir)
+	if err != nil {
+		log.Fatalf("failed to initialize draft manager: %v", err)
+	}
+
+	uim := ui.NewManager(s, dm)
+
+	draftsPort := os.Getenv("DRAFTS_PORT")
+	if draftsPort == "" {
+		draftsPort = "8080"
+	}
+
+	go func() {
+		log.Printf("Starting drafts server on :%s...", draftsPort)
+		mux := http.NewServeMux()
+		mux.Handle("/drafts/", dm)
+		mux.Handle("/ws/ui", uim)
+		if err := http.ListenAndServe(":"+draftsPort, mux); err != nil {
+			log.Printf("drafts server error: %v", err)
+		}
+	}()
+
 
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	var ts translation.TranslationService
