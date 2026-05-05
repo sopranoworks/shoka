@@ -20,9 +20,19 @@ const Editor: React.FC<EditorProps> = ({ namespace, projectName, filePath }) => 
   useEffect(() => {
     if (connected && socket && filePath) {
       const handleMessage = (event: MessageEvent) => {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'READ_FILE') {
-          setContent(msg.payload.content || '');
+        try {
+          const msg = JSON.parse(event.data);
+          
+          if (msg.type === 'READ_FILE' && msg.payload?.path === filePath) {
+            setContent(msg.payload.content || '');
+          } else if (msg.type === 'SAVE_ACK' && msg.payload?.path === filePath) {
+            setIsSaving(false);
+          } else if (msg.type === 'ERROR') {
+            console.error('Server error:', msg.payload?.message);
+            setIsSaving(false);
+          }
+        } catch (err) {
+          console.error('Failed to parse WebSocket message:', err);
         }
       };
 
@@ -64,8 +74,6 @@ const Editor: React.FC<EditorProps> = ({ namespace, projectName, filePath }) => 
         type: 'SAVE_FILE',
         payload: { namespace, projectName, path: filePath, content }
       }));
-      // We'll assume it saves successfully for now
-      setTimeout(() => setIsSaving(false), 500);
     }
   };
 
