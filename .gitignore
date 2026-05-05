@@ -1,0 +1,14 @@
+.DS_Store
+
+
+
+
+.claude/
+.gemini/
+docs/superpower/
+docs/maestro/
+.plannning/
+GEMINI.md
+CLAUDE.md
+AGENTS.md
+
