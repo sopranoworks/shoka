@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
+	"github.com/shoka/mcp-server/internal/translation"
 )
 
 func main() {
@@ -19,6 +20,18 @@ func main() {
 	s, err := storage.NewFSGitStorage(storageBaseDir)
 	if err != nil {
 		log.Fatalf("failed to initialize storage: %v", err)
+	}
+
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	var ts translation.TranslationService
+	if projectID != "" {
+		var err error
+		ts, err = translation.NewGoogleTranslationService(context.Background(), projectID)
+		if err != nil {
+			log.Printf("Warning: failed to initialize Google Translation service: %v. Translation tool will not be available.", err)
+		} else {
+			defer ts.Close()
+		}
 	}
 
 	server := mcp.NewServer(
@@ -68,6 +81,13 @@ func main() {
 		Name:        "read_file_at_version",
 		Description: "Read a file at a specific Git commit hash",
 	}, tools.ReadFileAtVersionHandler(s))
+
+	if ts != nil {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "translate_file",
+			Description: "Translate a Markdown file to a target language (Japanese to English by default)",
+		}, tools.TranslateFileHandler(s, ts))
+	}
 
 	log.Println("Starting Shoka MCP server...")
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
