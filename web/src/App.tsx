@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ProjectList from './components/ProjectList';
 import FileTree from './components/FileTree';
+import Editor from './components/Editor';
 import { WebSocketProvider } from './components/WebSocketContext';
 
 type View = 'list' | 'project';
@@ -83,20 +84,12 @@ function AppContent() {
 
             {/* Content Area */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff' }}>
-              {selectedFile ? (
-                <div style={{ padding: '24px' }}>
-                  <h3 style={{ marginTop: 0, fontSize: '14px', color: '#636c76' }}>{selectedFile}</h3>
-                  <div style={{ 
-                    border: '1px solid #d0d7de', 
-                    borderRadius: '6px', 
-                    padding: '40px', 
-                    textAlign: 'center',
-                    color: '#636c76',
-                    backgroundColor: '#f6f8fa'
-                  }}>
-                    <p>Editor coming soon (Task 5)...</p>
-                  </div>
-                </div>
+              {selectedFile && selectedProject ? (
+                <Editor 
+                  namespace={selectedProject.namespace}
+                  projectName={selectedProject.name}
+                  filePath={selectedFile}
+                />
               ) : (
                 <div style={{ 
                   flex: 1, 
