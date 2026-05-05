@@ -26,6 +26,7 @@ const (
 	GetTree          MessageType = "GET_TREE"
 	ReadFile         MessageType = "READ_FILE"
 	WriteDraft       MessageType = "WRITE_DRAFT"
+	SaveFile         MessageType = "SAVE_FILE"
 	MsgCreateProject MessageType = "CREATE_PROJECT"
 	Error            MessageType = "ERROR"
 )
@@ -56,6 +57,13 @@ type ReadFilePayload struct {
 }
 
 type WriteDraftPayload struct {
+	Namespace   string `json:"namespace"`
+	ProjectName string `json:"projectName"`
+	Path        string `json:"path"`
+	Content     string `json:"content"`
+}
+
+type SaveFilePayload struct {
 	Namespace   string `json:"namespace"`
 	ProjectName string `json:"projectName"`
 	Path        string `json:"path"`
@@ -110,6 +118,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleReadFile(conn, wsMsg.Payload)
 		case WriteDraft:
 			m.handleWriteDraft(conn, wsMsg.Payload)
+		case SaveFile:
+			m.handleSaveFile(conn, wsMsg.Payload)
 		case MsgCreateProject:
 			m.handleCreateProject(conn, wsMsg.Payload)
 		default:
@@ -263,6 +273,23 @@ func (m *Manager) handleWriteDraft(conn *websocket.Conn, payload json.RawMessage
 	}
 
 	m.sendResponse(conn, WriteDraft, map[string]string{
+		"status": "ok",
+	})
+}
+
+func (m *Manager) handleSaveFile(conn *websocket.Conn, payload json.RawMessage) {
+	var p SaveFilePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		m.sendError(conn, "Invalid payload for SAVE_FILE")
+		return
+	}
+
+	if err := m.storage.WriteFile(p.Namespace, p.ProjectName, p.Path, p.Content); err != nil {
+		m.sendError(conn, fmt.Sprintf("Failed to save file: %v", err))
+		return
+	}
+
+	m.sendResponse(conn, SaveFile, map[string]string{
 		"status": "ok",
 	})
 }
