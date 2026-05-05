@@ -22,11 +22,12 @@ var upgrader = websocket.Upgrader{
 type MessageType string
 
 const (
-	GetProjects MessageType = "GET_PROJECTS"
-	GetTree     MessageType = "GET_TREE"
-	ReadFile    MessageType = "READ_FILE"
-	WriteDraft  MessageType = "WRITE_DRAFT"
-	Error       MessageType = "ERROR"
+	GetProjects      MessageType = "GET_PROJECTS"
+	GetTree          MessageType = "GET_TREE"
+	ReadFile         MessageType = "READ_FILE"
+	WriteDraft       MessageType = "WRITE_DRAFT"
+	MsgCreateProject MessageType = "CREATE_PROJECT"
+	Error            MessageType = "ERROR"
 )
 
 type WSMessage struct {
@@ -36,6 +37,11 @@ type WSMessage struct {
 
 type GetProjectsPayload struct {
 	Namespace string `json:"namespace"`
+}
+
+type CreateProjectPayload struct {
+	Namespace   string `json:"namespace"`
+	ProjectName string `json:"projectName"`
 }
 
 type GetTreePayload struct {
@@ -104,6 +110,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleReadFile(conn, wsMsg.Payload)
 		case WriteDraft:
 			m.handleWriteDraft(conn, wsMsg.Payload)
+		case MsgCreateProject:
+			m.handleCreateProject(conn, wsMsg.Payload)
 		default:
 			m.sendError(conn, "Unknown message type")
 		}
@@ -151,6 +159,23 @@ func (m *Manager) handleGetProjects(conn *websocket.Conn, payload json.RawMessag
 	}
 
 	m.sendResponse(conn, GetProjects, projects)
+}
+
+func (m *Manager) handleCreateProject(conn *websocket.Conn, payload json.RawMessage) {
+	var p CreateProjectPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		m.sendError(conn, "Invalid payload for CREATE_PROJECT")
+		return
+	}
+
+	if err := m.storage.CreateProject(p.Namespace, p.ProjectName); err != nil {
+		m.sendError(conn, fmt.Sprintf("Failed to create project: %v", err))
+		return
+	}
+
+	m.sendResponse(conn, MsgCreateProject, map[string]string{
+		"status": "ok",
+	})
 }
 
 func (m *Manager) handleGetTree(conn *websocket.Conn, payload json.RawMessage) {
