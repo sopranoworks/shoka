@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Book, Plus, Search } from 'lucide-react';
+import { useWebSocket } from './WebSocketContext';
 import './ProjectList.css';
 
 interface Project {
@@ -15,50 +16,41 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const socketRef = useRef<WebSocket | null>(null);
+  const { socket, connected } = useWebSocket();
 
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const socket = new WebSocket(`${protocol}//${host}/ws/ui`);
-    socketRef.current = socket;
+    if (connected && socket) {
+      const handleMessage = (event: MessageEvent) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'GET_PROJECTS') {
+          const projectNames = msg.payload as string[];
+          setProjects(projectNames.map(name => ({ name, namespace: 'default' })));
+          setLoading(false);
+        }
+      };
 
-    socket.onopen = () => {
-      console.log('Connected to WebSocket');
+      socket.addEventListener('message', handleMessage);
+
       socket.send(JSON.stringify({
         type: 'GET_PROJECTS',
         payload: { namespace: 'default' }
       }));
-    };
 
-    socket.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'GET_PROJECTS') {
-        const projectNames = msg.payload as string[];
-        setProjects(projectNames.map(name => ({ name, namespace: 'default' })));
-        setLoading(false);
-      }
-    };
-
-    socket.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setLoading(false);
-    };
-
-    return () => {
-      socket.close();
-    };
-  }, []);
+      return () => {
+        socket.removeEventListener('message', handleMessage);
+      };
+    }
+  }, [connected, socket]);
 
   const handleCreateProject = () => {
     const name = prompt('Enter project name:');
-    if (name && socketRef.current) {
-      socketRef.current.send(JSON.stringify({
+    if (name && socket) {
+      socket.send(JSON.stringify({
         type: 'CREATE_PROJECT',
         payload: { namespace: 'default', projectName: name }
       }));
       // Refresh list
-      socketRef.current.send(JSON.stringify({
+      socket.send(JSON.stringify({
         type: 'GET_PROJECTS',
         payload: { namespace: 'default' }
       }));
