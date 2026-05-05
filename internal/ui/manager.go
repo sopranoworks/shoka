@@ -27,6 +27,7 @@ const (
 	ReadFile         MessageType = "READ_FILE"
 	WriteDraft       MessageType = "WRITE_DRAFT"
 	SaveFile         MessageType = "SAVE_FILE"
+	SaveAck          MessageType = "SAVE_ACK"
 	MsgCreateProject MessageType = "CREATE_PROJECT"
 	Error            MessageType = "ERROR"
 )
@@ -250,6 +251,7 @@ func (m *Manager) handleReadFile(conn *websocket.Conn, payload json.RawMessage) 
 	}
 
 	m.sendResponse(conn, ReadFile, map[string]string{
+		"path":    p.Path,
 		"content": content,
 	})
 }
@@ -289,7 +291,8 @@ func (m *Manager) handleSaveFile(conn *websocket.Conn, payload json.RawMessage) 
 		return
 	}
 
-	m.sendResponse(conn, SaveFile, map[string]string{
+	m.sendResponse(conn, SaveAck, map[string]string{
+		"path":   p.Path,
 		"status": "ok",
 	})
 }

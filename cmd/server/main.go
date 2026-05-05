@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"log"
-	"os"
-
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/drafts"
@@ -13,6 +14,7 @@ import (
 	"github.com/shoka/mcp-server/internal/tools"
 	"github.com/shoka/mcp-server/internal/translation"
 	"github.com/shoka/mcp-server/internal/ui"
+	"github.com/shoka/mcp-server/server"
 )
 
 func main() {
@@ -43,6 +45,30 @@ func main() {
 		mux := http.NewServeMux()
 		mux.Handle("/drafts/", dm)
 		mux.Handle("/ws/ui", uim)
+
+		// Serve static files from embedded FS
+		distFS, err := fs.Sub(server.DistFS, "dist")
+		if err != nil {
+			log.Fatalf("failed to get sub fs: %v", err)
+		}
+		fileServer := http.FileServer(http.FS(distFS))
+
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			path := strings.TrimPrefix(r.URL.Path, "/")
+			if path == "" {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+
+			// Check if file exists in embedded FS
+			_, err := distFS.Open(path)
+			if err != nil {
+				// If not found, serve index.html for SPA routing
+				r.URL.Path = "/"
+			}
+			fileServer.ServeHTTP(w, r)
+		})
+
 		if err := http.ListenAndServe(":"+draftsPort, mux); err != nil {
 			log.Printf("drafts server error: %v", err)
 		}
