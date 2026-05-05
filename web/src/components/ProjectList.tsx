@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Book, Plus } from 'lucide-react';
+import { Book, Plus, Search } from 'lucide-react';
 import './ProjectList.css';
 
 interface Project {
@@ -79,13 +79,18 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
         </button>
       </div>
 
-      <div className="search-container">
+      <div className="search-container" style={{ position: 'relative' }}>
+        <Search 
+          size={16} 
+          style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#636c76' }} 
+        />
         <input 
           type="text" 
           className="search-input" 
           placeholder="Find a repository..." 
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          style={{ paddingLeft: '36px' }}
         />
       </div>
 
