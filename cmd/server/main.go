@@ -2,84 +2,57 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/shoka/mcp-server/internal/config"
 	"github.com/shoka/mcp-server/internal/drafts"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
 	"github.com/shoka/mcp-server/internal/translation"
 	"github.com/shoka/mcp-server/internal/ui"
 	"github.com/shoka/mcp-server/server"
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
-	storageBaseDir := os.Getenv("STORAGE_BASE_DIR")
-	if storageBaseDir == "" {
-		storageBaseDir = "./data"
+	configPath := flag.String("config", "shoka.yaml", "Path to configuration file")
+	flag.Parse()
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
 	}
 
-	s, err := storage.NewFSGitStorage(storageBaseDir)
+	// Setup context with signal handling
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	s, err := storage.NewFSGitStorage(cfg.Storage.BaseDir)
 	if err != nil {
 		log.Fatalf("failed to initialize storage: %v", err)
 	}
 
-	dm, err := drafts.NewManager(storageBaseDir)
+	dm, err := drafts.NewManager(cfg.Storage.BaseDir)
 	if err != nil {
 		log.Fatalf("failed to initialize draft manager: %v", err)
 	}
 
 	uim := ui.NewManager(s, dm)
 
-	draftsPort := os.Getenv("DRAFTS_PORT")
-	if draftsPort == "" {
-		draftsPort = "8080"
-	}
-
-	go func() {
-		log.Printf("Starting drafts server on :%s...", draftsPort)
-		mux := http.NewServeMux()
-		mux.Handle("/drafts/", dm)
-		mux.Handle("/ws/ui", uim)
-
-		// Serve static files from embedded FS
-		distFS, err := fs.Sub(server.DistFS, "dist")
-		if err != nil {
-			log.Fatalf("failed to get sub fs: %v", err)
-		}
-		fileServer := http.FileServer(http.FS(distFS))
-
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			path := strings.TrimPrefix(r.URL.Path, "/")
-			if path == "" {
-				fileServer.ServeHTTP(w, r)
-				return
-			}
-
-			// Check if file exists in embedded FS
-			_, err := distFS.Open(path)
-			if err != nil {
-				// If not found, serve index.html for SPA routing
-				r.URL.Path = "/"
-			}
-			fileServer.ServeHTTP(w, r)
-		})
-
-		if err := http.ListenAndServe(":"+draftsPort, mux); err != nil {
-			log.Printf("drafts server error: %v", err)
-		}
-	}()
-
-
-	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	var ts translation.TranslationService
-	if projectID != "" {
+	if cfg.Services.GoogleCloud.ProjectID != "" {
 		var err error
-		ts, err = translation.NewGoogleTranslationService(context.Background(), projectID)
+		ts, err = translation.NewGoogleTranslationService(context.Background(), cfg.Services.GoogleCloud.ProjectID)
 		if err != nil {
 			log.Printf("Warning: failed to initialize Google Translation service: %v. Translation tool will not be available.", err)
 		} else {
@@ -87,7 +60,38 @@ func main() {
 		}
 	}
 
-	server := mcp.NewServer(
+	mcpServer := setupMCPServer(cfg, s, ts)
+	mcpHandler := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
+		return mcpServer
+	}, nil)
+
+	webHandler, err := setupWebHandler(dm, uim)
+	if err != nil {
+		log.Fatalf("failed to setup web handler: %v", err)
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Web Server
+	g.Go(func() error {
+		return runServer(ctx, "Web", cfg.Server.HTTP, webHandler)
+	})
+
+	// MCP Server
+	g.Go(func() error {
+		return runServer(ctx, "MCP", cfg.Server.MCP, mcpHandler)
+	})
+
+	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("Server error: %v", err)
+		os.Exit(1)
+	}
+
+	log.Println("Servers shut down gracefully")
+}
+
+func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation.TranslationService) *mcp.Server {
+	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "shoka",
 			Version: "0.1.0",
@@ -95,55 +99,120 @@ func main() {
 		nil,
 	)
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "get_server_info",
+		Description: "Get information about the server's public URL and configuration",
+	}, tools.GetServerInfoHandler(cfg))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "create_project",
 		Description: "Create a new project with Git initialization",
 	}, tools.CreateProjectHandler(s))
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_projects",
 		Description: "List all projects in a namespace",
 	}, tools.ListProjectsHandler(s))
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "read_file",
 		Description: "Read a file from a project",
 	}, tools.ReadFileHandler(s))
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "write_file",
 		Description: "Write a file to a project with atomic Git commit",
 	}, tools.WriteFileHandler(s))
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "delete_file",
 		Description: "Delete a file from a project with atomic Git commit",
 	}, tools.DeleteFileHandler(s))
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_files",
 		Description: "List files in a project path",
 	}, tools.ListFilesHandler(s))
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "get_history",
 		Description: "Get Git commit history for a project or file",
 	}, tools.GetHistoryHandler(s))
 
-	mcp.AddTool(server, &mcp.Tool{
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "read_file_at_version",
 		Description: "Read a file at a specific Git commit hash",
 	}, tools.ReadFileAtVersionHandler(s))
 
 	if ts != nil {
-		mcp.AddTool(server, &mcp.Tool{
+		mcp.AddTool(mcpServer, &mcp.Tool{
 			Name:        "translate_file",
 			Description: "Translate a Markdown file to a target language (Japanese to English by default)",
 		}, tools.TranslateFileHandler(s, ts))
 	}
 
-	log.Println("Starting Shoka MCP server...")
-	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		log.Fatalf("server error: %v", err)
+	return mcpServer
+}
+
+func setupWebHandler(dm *drafts.Manager, uim *ui.Manager) (http.Handler, error) {
+	mux := http.NewServeMux()
+	mux.Handle("/drafts/", dm)
+	mux.Handle("/ws/ui", uim)
+
+	// Serve static files from embedded FS
+	distFS, err := fs.Sub(server.DistFS, "dist")
+	if err != nil {
+		return nil, err
+	}
+	fileServer := http.FileServer(http.FS(distFS))
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// Check if file exists in embedded FS
+		_, err := distFS.Open(path)
+		if err != nil {
+			// If not found, serve index.html for SPA routing
+			r.URL.Path = "/"
+		}
+		fileServer.ServeHTTP(w, r)
+	})
+
+	return mux, nil
+}
+
+func runServer(ctx context.Context, name string, settings config.ServerSettings, handler http.Handler) error {
+	srv := &http.Server{
+		Addr:    settings.Listen,
+		Handler: handler,
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		log.Printf("Starting %s server on %s...", name, settings.Listen)
+		var err error
+		if settings.TLS.Enabled {
+			log.Printf("TLS enabled for %s", settings.Listen)
+			err = srv.ListenAndServeTLS(settings.TLS.CertFile, settings.TLS.KeyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errChan <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Printf("Shutting down %s server...", name)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errChan:
+		return err
 	}
 }
