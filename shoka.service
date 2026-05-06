@@ -1,0 +1,13 @@
+[Unit]
+Description=Shoka Markdown MCP Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/shoka -config /etc/shoka/shoka.yaml
+Restart=always
+User=shoka
+WorkingDirectory=/var/lib/shoka
+
+[Install]
+WantedBy=multi-user.target
