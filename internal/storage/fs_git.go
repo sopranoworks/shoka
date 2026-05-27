@@ -140,7 +140,7 @@ func (s *FSGitStorage) writeFile(namespace, projectName, path, content, expected
 
 	// Robust path traversal protection
 	rel, err := filepath.Rel(projectPath, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("invalid file path: %s", path)
 	}
 
@@ -213,7 +213,7 @@ func (s *FSGitStorage) ReadFile(namespace, projectName, path string) (string, er
 
 	// Robust path traversal protection
 	rel, err := filepath.Rel(projectPath, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("invalid file path: %s", path)
 	}
 
@@ -274,7 +274,7 @@ func (s *FSGitStorage) deleteFile(namespace, projectName, path, expectedVersion 
 
 	// Robust path traversal protection
 	rel, err := filepath.Rel(projectPath, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("invalid file path: %s", path)
 	}
 
@@ -390,7 +390,7 @@ func (s *FSGitStorage) GetHistory(namespace, projectName, path string, limit int
 		// Ensure path is relative and clean
 		fullPath := filepath.Join(projectPath, path)
 		rel, err := filepath.Rel(projectPath, fullPath)
-		if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+		if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 			return nil, fmt.Errorf("invalid file path: %s", path)
 		}
 		logOptions.FileName = &rel
@@ -437,7 +437,7 @@ func (s *FSGitStorage) ReadFileAtVersion(namespace, projectName, path, hash stri
 	// Robust path traversal protection
 	fullPath := filepath.Join(projectPath, path)
 	rel, err := filepath.Rel(projectPath, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("invalid file path: %s", path)
 	}
 
@@ -479,7 +479,7 @@ func (s *FSGitStorage) GetCurrentVersion(namespace, projectName, path string) (s
 	}
 	fullPath := filepath.Join(projectPath, path)
 	rel, err := filepath.Rel(projectPath, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("invalid file path: %s", path)
 	}
 
