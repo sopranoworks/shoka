@@ -102,9 +102,12 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, namesp
 			break
 		}
 
-		// Save message as draft
+		// Save message as draft. On failure, notify the client rather than
+		// silently dropping the draft (which would defeat the no-data-loss goal).
 		if err := m.SaveDraft(draftPath, message); err != nil {
-			// In a real app, we might want to log this or notify the client
+			if werr := conn.WriteMessage(websocket.TextMessage, []byte("ERROR: failed to save draft: "+err.Error())); werr != nil {
+				return
+			}
 			continue
 		}
 	}
