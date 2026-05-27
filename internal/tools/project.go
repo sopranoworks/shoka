@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/storage"
@@ -83,13 +85,17 @@ func ListProjectsHandler(s storage.StorageService) func(context.Context, *mcp.Ca
 }
 
 type ListFilesInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
-	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path        string `json:"path" jsonschema:"optional, the path to list files from (defaults to root)"`
+	Namespace       string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
+	Path            string `json:"path" jsonschema:"optional, the path to list files from (defaults to root)"`
+	IncludeVersions bool   `json:"include_versions" jsonschema:"optional, when true include each file's current commit hash in 'versions'"`
 }
 
 type ListFilesOutput struct {
 	Files []string `json:"files"`
+	// Versions maps each (non-directory) file name to its current commit hash.
+	// Populated only when include_versions is true.
+	Versions map[string]string `json:"versions,omitempty"`
 }
 
 func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, ListFilesInput) (*mcp.CallToolResult, ListFilesOutput, error) {
@@ -119,6 +125,22 @@ func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, ListFilesOutput{}, nil
 		}
 
-		return nil, ListFilesOutput{Files: files}, nil
+		out := ListFilesOutput{Files: files}
+
+		if input.IncludeVersions {
+			versions := make(map[string]string)
+			for _, f := range files {
+				if strings.HasSuffix(f, "/") {
+					continue // directory
+				}
+				full := filepath.Join(input.Path, f)
+				if v, verr := s.GetCurrentVersion(input.Namespace, input.ProjectName, full); verr == nil {
+					versions[f] = v
+				}
+			}
+			out.Versions = versions
+		}
+
+		return nil, out, nil
 	}
 }

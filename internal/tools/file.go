@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,6 +18,9 @@ type ReadFileInput struct {
 
 type ReadFileOutput struct {
 	Content string `json:"content"`
+	// Version is the commit hash the file is currently at, suitable for passing
+	// back as expected_version on a subsequent write_file/delete_file.
+	Version string `json:"version"`
 }
 
 func ReadFileHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, ReadFileInput) (*mcp.CallToolResult, ReadFileOutput, error) {
@@ -46,19 +50,31 @@ func ReadFileHandler(s storage.StorageService) func(context.Context, *mcp.CallTo
 			}, ReadFileOutput{}, nil
 		}
 
-		return nil, ReadFileOutput{Content: content}, nil
+		version, verr := s.GetCurrentVersion(input.Namespace, input.ProjectName, input.Path)
+		if verr != nil {
+			version = ""
+		}
+
+		return nil, ReadFileOutput{Content: content, Version: version}, nil
 	}
 }
 
 type WriteFileInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
-	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path        string `json:"path" jsonschema:"required, the path to the file to write"`
-	Content     string `json:"content" jsonschema:"required, the content to write to the file"`
+	Namespace       string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
+	Path            string `json:"path" jsonschema:"required, the path to the file to write"`
+	Content         string `json:"content" jsonschema:"required, the content to write to the file"`
+	ExpectedVersion string `json:"expected_version" jsonschema:"optional, the commit hash the file is expected to be at (from read_file); if set and stale, the write is rejected with a version conflict and no change is made"`
 }
 
 type WriteFileOutput struct {
 	Message string `json:"message"`
+	// Version is the commit hash produced by this write.
+	Version string `json:"version,omitempty"`
+	// Conflict is true when expected_version did not match; CurrentVersion then
+	// holds the file's actual current version.
+	Conflict       bool   `json:"conflict,omitempty"`
+	CurrentVersion string `json:"current_version,omitempty"`
 }
 
 func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, WriteFileInput) (*mcp.CallToolResult, WriteFileOutput, error) {
@@ -80,26 +96,37 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, WriteFileOutput{}, nil
 		}
 
-		err := s.WriteFile(input.Namespace, input.ProjectName, input.Path, input.Content)
+		version, err := s.WriteFileVersioned(input.Namespace, input.ProjectName, input.Path, input.Content, input.ExpectedVersion)
 		if err != nil {
+			var conflict *storage.VersionConflictError
+			if errors.As(err, &conflict) {
+				return &mcp.CallToolResult{
+						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
+						IsError: true,
+					}, WriteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
+			}
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to write file: %v", err)}},
 				IsError: true,
 			}, WriteFileOutput{}, nil
 		}
 
-		return nil, WriteFileOutput{Message: fmt.Sprintf("File %s written successfully", input.Path)}, nil
+		return nil, WriteFileOutput{Message: fmt.Sprintf("File %s written successfully", input.Path), Version: version}, nil
 	}
 }
 
 type DeleteFileInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
-	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path        string `json:"path" jsonschema:"required, the path to the file to delete"`
+	Namespace       string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
+	Path            string `json:"path" jsonschema:"required, the path to the file to delete"`
+	ExpectedVersion string `json:"expected_version" jsonschema:"optional, the commit hash the file is expected to be at; if set and stale, the delete is rejected with a version conflict"`
 }
 
 type DeleteFileOutput struct {
-	Message string `json:"message"`
+	Message        string `json:"message"`
+	Version        string `json:"version,omitempty"`
+	Conflict       bool   `json:"conflict,omitempty"`
+	CurrentVersion string `json:"current_version,omitempty"`
 }
 
 func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, DeleteFileInput) (*mcp.CallToolResult, DeleteFileOutput, error) {
@@ -121,15 +148,22 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 			}, DeleteFileOutput{}, nil
 		}
 
-		err := s.DeleteFile(input.Namespace, input.ProjectName, input.Path)
+		version, err := s.DeleteFileVersioned(input.Namespace, input.ProjectName, input.Path, input.ExpectedVersion)
 		if err != nil {
+			var conflict *storage.VersionConflictError
+			if errors.As(err, &conflict) {
+				return &mcp.CallToolResult{
+						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
+						IsError: true,
+					}, DeleteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
+			}
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to delete file: %v", err)}},
 				IsError: true,
 			}, DeleteFileOutput{}, nil
 		}
 
-		return nil, DeleteFileOutput{Message: fmt.Sprintf("File %s deleted successfully", input.Path)}, nil
+		return nil, DeleteFileOutput{Message: fmt.Sprintf("File %s deleted successfully", input.Path), Version: version}, nil
 	}
 }
 
