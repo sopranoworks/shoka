@@ -153,6 +153,11 @@ func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation
 		Description: "Read a file at a specific Git commit hash",
 	}, tools.ReadFileAtVersionHandler(s))
 
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "read_summary",
+		Description: "Get a context-efficient summary of a Markdown file (frontmatter, first heading, short excerpt, size, version) without its full body",
+	}, tools.ReadSummaryHandler(s))
+
 	if ts != nil {
 		mcp.AddTool(mcpServer, &mcp.Tool{
 			Name:        "translate_file",

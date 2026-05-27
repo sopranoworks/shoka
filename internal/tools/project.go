@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/shoka/mcp-server/internal/markdown"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/utils"
 )
@@ -85,10 +86,18 @@ func ListProjectsHandler(s storage.StorageService) func(context.Context, *mcp.Ca
 }
 
 type ListFilesInput struct {
-	Namespace       string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
-	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path            string `json:"path" jsonschema:"optional, the path to list files from (defaults to root)"`
-	IncludeVersions bool   `json:"include_versions" jsonschema:"optional, when true include each file's current commit hash in 'versions'"`
+	Namespace        string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName      string `json:"project_name" jsonschema:"required, the name of the project"`
+	Path             string `json:"path" jsonschema:"optional, the path to list files from (defaults to root)"`
+	IncludeVersions  bool   `json:"include_versions" jsonschema:"optional, when true include each file's current commit hash in 'versions'"`
+	IncludeSummaries bool   `json:"include_summaries" jsonschema:"optional, when true include each file's frontmatter and first heading in 'summaries' so an overview can be built without reading full files"`
+}
+
+// FileSummary is the per-file frontmatter + first heading returned by
+// list_files when include_summaries is set.
+type FileSummary struct {
+	Frontmatter map[string]any `json:"frontmatter,omitempty"`
+	Heading     string         `json:"heading,omitempty"`
 }
 
 type ListFilesOutput struct {
@@ -96,6 +105,9 @@ type ListFilesOutput struct {
 	// Versions maps each (non-directory) file name to its current commit hash.
 	// Populated only when include_versions is true.
 	Versions map[string]string `json:"versions,omitempty"`
+	// Summaries maps each (non-directory) file name to its frontmatter + heading.
+	// Populated only when include_summaries is true.
+	Summaries map[string]FileSummary `json:"summaries,omitempty"`
 }
 
 func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, ListFilesInput) (*mcp.CallToolResult, ListFilesOutput, error) {
@@ -139,6 +151,23 @@ func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 				}
 			}
 			out.Versions = versions
+		}
+
+		if input.IncludeSummaries {
+			summaries := make(map[string]FileSummary)
+			for _, f := range files {
+				if strings.HasSuffix(f, "/") {
+					continue // directory
+				}
+				full := filepath.Join(input.Path, f)
+				content, rerr := s.ReadFile(input.Namespace, input.ProjectName, full)
+				if rerr != nil {
+					continue
+				}
+				sum := markdown.Parse(content)
+				summaries[f] = FileSummary{Frontmatter: sum.Frontmatter, Heading: sum.Heading}
+			}
+			out.Summaries = summaries
 		}
 
 		return nil, out, nil
