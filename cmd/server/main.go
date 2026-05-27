@@ -21,6 +21,7 @@ import (
 	"github.com/shoka/mcp-server/internal/tools"
 	"github.com/shoka/mcp-server/internal/translation"
 	"github.com/shoka/mcp-server/internal/ui"
+	"github.com/shoka/mcp-server/internal/webhooks"
 	"github.com/shoka/mcp-server/server"
 	"golang.org/x/sync/errgroup"
 )
@@ -42,6 +43,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize storage: %v", err)
 	}
+
+	notifier := webhooks.New(toWebhookConfigs(cfg.Webhooks))
+	s.SetChangeHandler(func(ev storage.ChangeEvent) {
+		notifier.Emit(webhooks.Event{
+			Event:      ev.Event,
+			Namespace:  ev.Namespace,
+			Project:    ev.Project,
+			Path:       ev.Path,
+			CommitHash: ev.CommitHash,
+			Timestamp:  ev.Timestamp,
+		})
+	})
 
 	dm, err := drafts.NewManager(cfg.Storage.BaseDir)
 	if err != nil {
@@ -96,7 +109,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Drain any in-flight webhook deliveries before exiting.
+	notifier.Wait()
+
 	log.Println("Servers shut down gracefully")
+}
+
+func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
+	out := make([]webhooks.Config, 0, len(in))
+	for _, w := range in {
+		out = append(out, webhooks.Config{
+			Name:   w.Name,
+			URL:    w.URL,
+			Events: w.Events,
+			Secret: w.Secret,
+		})
+	}
+	return out
 }
 
 func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation.TranslationService) *mcp.Server {

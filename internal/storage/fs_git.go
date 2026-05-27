@@ -20,7 +20,34 @@ type FSGitStorage struct {
 	baseDir string
 	// mu serializes writes/deletes so the optimistic-locking check-and-commit is
 	// atomic and concurrent go-git operations don't race on the worktree index.
-	mu sync.Mutex
+	mu            sync.Mutex
+	changeHandler ChangeHandler
+}
+
+// ChangeEvent describes a successful mutation, delivered to a registered handler.
+type ChangeEvent struct {
+	Event      string // file_written | file_deleted | project_created
+	Namespace  string
+	Project    string
+	Path       string
+	CommitHash string
+	Timestamp  time.Time
+}
+
+// ChangeHandler receives ChangeEvents after a successful mutation. It must not
+// block (e.g. it should fan out to webhooks asynchronously).
+type ChangeHandler func(ChangeEvent)
+
+// SetChangeHandler registers a handler invoked after successful writes, deletes,
+// and project creation, covering every write path (MCP tools and the web UI).
+func (s *FSGitStorage) SetChangeHandler(h ChangeHandler) {
+	s.changeHandler = h
+}
+
+func (s *FSGitStorage) emit(ev ChangeEvent) {
+	if s.changeHandler != nil {
+		s.changeHandler(ev)
+	}
 }
 
 // VersionConflictError is returned by versioned writes/deletes when the caller's
@@ -79,6 +106,13 @@ func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 		}
 		return fmt.Errorf("failed to initialize git repository: %w", err)
 	}
+
+	s.emit(ChangeEvent{
+		Event:     "project_created",
+		Namespace: namespace,
+		Project:   projectName,
+		Timestamp: time.Now(),
+	})
 
 	return nil
 }
@@ -156,6 +190,15 @@ func (s *FSGitStorage) writeFile(namespace, projectName, path, content, expected
 	if err != nil {
 		return "", fmt.Errorf("failed to commit changes: %w", err)
 	}
+
+	s.emit(ChangeEvent{
+		Event:      "file_written",
+		Namespace:  namespace,
+		Project:    projectName,
+		Path:       path,
+		CommitHash: hash.String(),
+		Timestamp:  time.Now(),
+	})
 
 	return hash.String(), nil
 }
@@ -278,6 +321,15 @@ func (s *FSGitStorage) deleteFile(namespace, projectName, path, expectedVersion 
 	if err != nil {
 		return "", fmt.Errorf("failed to commit changes: %w", err)
 	}
+
+	s.emit(ChangeEvent{
+		Event:      "file_deleted",
+		Namespace:  namespace,
+		Project:    projectName,
+		Path:       path,
+		CommitHash: hash.String(),
+		Timestamp:  time.Now(),
+	})
 
 	return hash.String(), nil
 }

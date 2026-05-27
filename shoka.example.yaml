@@ -49,3 +49,13 @@ services:
     # is registered and uses Application Default Credentials
     # (e.g. the GOOGLE_APPLICATION_CREDENTIALS environment variable).
     project_id: ""
+
+# Optional outbound webhooks. After each successful write/delete/project creation,
+# Shoka POSTs a JSON body {event, namespace, project, path?, commit_hash?, timestamp}
+# to every subscribed URL (best-effort, async, with one retry). If 'secret' is set,
+# the request carries an X-Shoka-Signature header (hex HMAC-SHA256 of the body).
+# webhooks:
+#   - name: cloud-run-dispatcher
+#     url: "https://example.com/shoka-hook"
+#     events: [file_written, file_deleted, project_created]
+#     secret: "shared-secret"

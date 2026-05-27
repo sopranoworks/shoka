@@ -29,6 +29,15 @@ type AuthConfig struct {
 	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
+// WebhookConfig describes one outbound webhook subscription. Events is any of
+// "file_written", "file_deleted", "project_created".
+type WebhookConfig struct {
+	Name   string   `yaml:"name"`
+	URL    string   `yaml:"url"`
+	Events []string `yaml:"events"`
+	Secret string   `yaml:"secret"`
+}
+
 type Config struct {
 	Server struct {
 		HTTP ServerSettings `yaml:"http"`
@@ -43,6 +52,7 @@ type Config struct {
 			ProjectID string `yaml:"project_id"`
 		} `yaml:"google_cloud"`
 	} `yaml:"services"`
+	Webhooks []WebhookConfig `yaml:"webhooks"`
 }
 
 func (c *Config) Validate() error {
