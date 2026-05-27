@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/storage"
@@ -172,6 +174,29 @@ type GetHistoryInput struct {
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
 	Path        string `json:"path" jsonschema:"optional, the path to the file to get history for (if empty, returns project history)"`
 	Limit       int    `json:"limit" jsonschema:"optional, the maximum number of history entries to return (defaults to 10)"`
+	Since       string `json:"since" jsonschema:"optional, only commits after this RFC3339 timestamp or commit hash (exclusive)"`
+}
+
+// filterHistorySince keeps only commits after the given point, which may be an
+// RFC3339 timestamp or a commit hash (exclusive).
+func filterHistorySince(commits []storage.CommitInfo, since string) []storage.CommitInfo {
+	if t, err := time.Parse(time.RFC3339, since); err == nil {
+		out := []storage.CommitInfo{}
+		for _, c := range commits {
+			if c.Date.After(t) {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	out := []storage.CommitInfo{}
+	for _, c := range commits {
+		if c.Hash == since || strings.HasPrefix(c.Hash, since) {
+			break
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 type GetHistoryOutput struct {
@@ -189,8 +214,9 @@ func GetHistoryHandler(s storage.StorageService) func(context.Context, *mcp.Call
 		if input.Namespace == "" {
 			input.Namespace = "default"
 		}
-		if input.Limit <= 0 {
-			input.Limit = 10
+		limit := input.Limit
+		if limit <= 0 {
+			limit = 10
 		}
 
 		if !utils.IsValidName(input.Namespace) || !utils.IsValidName(input.ProjectName) {
@@ -200,12 +226,26 @@ func GetHistoryHandler(s storage.StorageService) func(context.Context, *mcp.Call
 			}, GetHistoryOutput{}, nil
 		}
 
-		history, err := s.GetHistory(input.Namespace, input.ProjectName, input.Path, input.Limit)
+		// When 'since' is set, fetch the full history then filter and truncate so
+		// the limit applies to the post-filter result.
+		fetchLimit := limit
+		if input.Since != "" {
+			fetchLimit = 0
+		}
+
+		history, err := s.GetHistory(input.Namespace, input.ProjectName, input.Path, fetchLimit)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to get history: %v", err)}},
 				IsError: true,
 			}, GetHistoryOutput{}, nil
+		}
+
+		if input.Since != "" {
+			history = filterHistorySince(history, input.Since)
+			if len(history) > limit {
+				history = history[:limit]
+			}
 		}
 
 		return nil, GetHistoryOutput{History: history}, nil

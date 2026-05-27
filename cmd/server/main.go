@@ -158,6 +158,16 @@ func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation
 		Description: "Get a context-efficient summary of a Markdown file (frontmatter, first heading, short excerpt, size, version) without its full body",
 	}, tools.ReadSummaryHandler(s))
 
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "list_files_since",
+		Description: "List files changed after a given RFC3339 timestamp or commit hash, with each file's change kind (added/modified/deleted)",
+	}, tools.ListFilesSinceHandler(s))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "search_files",
+		Description: "Search a project's files by filename, content, or both (case-insensitive substring), returning matches with context snippets",
+	}, tools.SearchFilesHandler(s))
+
 	if ts != nil {
 		mcp.AddTool(mcpServer, &mcp.Tool{
 			Name:        "translate_file",
