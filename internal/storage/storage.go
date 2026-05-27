@@ -52,4 +52,13 @@ type StorageService interface {
 	// DeleteFileVersioned deletes with optimistic locking (see WriteFileVersioned),
 	// returning the hash of the new commit.
 	DeleteFileVersioned(namespace, projectName, path, expectedVersion string) (string, error)
+
+	// New methods for Phase 5 (change detection & discovery)
+
+	// ListFilesSince returns files changed after the given point (an RFC3339
+	// timestamp or a commit hash, exclusive), each with its change kind.
+	ListFilesSince(namespace, projectName, since string) ([]FileChange, error)
+
+	// SearchFiles returns files matching query by filename, content, or both.
+	SearchFiles(namespace, projectName, query, searchIn string) ([]SearchMatch, error)
 }
