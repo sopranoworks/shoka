@@ -13,12 +13,6 @@ import (
 	"github.com/shoka/mcp-server/internal/storage"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
 type MessageType string
 
 const (
@@ -79,19 +73,36 @@ type FileNode struct {
 }
 
 type Manager struct {
-	storage storage.StorageService
-	drafts  *drafts.Manager
+	storage       storage.StorageService
+	drafts        *drafts.Manager
+	originChecker func(*http.Request) bool
+	upgrader      websocket.Upgrader
 }
 
 func NewManager(s storage.StorageService, d *drafts.Manager) *Manager {
-	return &Manager{
+	m := &Manager{
 		storage: s,
 		drafts:  d,
 	}
+	m.upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			if m.originChecker != nil {
+				return m.originChecker(r)
+			}
+			return true
+		},
+	}
+	return m
+}
+
+// SetOriginChecker installs a WebSocket origin policy. When unset (the default),
+// all origins are accepted.
+func (m *Manager) SetOriginChecker(fn func(*http.Request) bool) {
+	m.originChecker = fn
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := m.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("upgrade error: %v", err)
 		return

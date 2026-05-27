@@ -23,6 +23,20 @@ server:
     tls:
       enabled: false
 
+  # Optional Bearer-token authentication. When disabled (the default) the server
+  # runs with no auth and accepts all WebSocket origins (single-operator local mode).
+  auth:
+    enabled: false
+    # When enabled, every non-static endpoint (MCP/SSE, /ws/ui, /drafts/...) requires
+    # `Authorization: Bearer <token>`. Browsers cannot set that header on a WebSocket,
+    # so the web UI passes the token as a `?token=<token>` query parameter instead.
+    # tokens:
+    #   - "replace-with-a-long-random-token"
+    # WebSocket upgrades are additionally restricted to these origins when auth is on
+    # (the MCP/SSE endpoint is not origin-checked). An empty/absent Origin is rejected.
+    # allowed_origins:
+    #   - "http://localhost:8080"
+
 storage:
   # Project repositories live at <base_dir>/<namespace>/<projectName>.
   # Relative paths resolve against the server's working directory and are

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/shoka/mcp-server/internal/auth"
 	"github.com/shoka/mcp-server/internal/config"
 	"github.com/shoka/mcp-server/internal/drafts"
 	"github.com/shoka/mcp-server/internal/storage"
@@ -49,6 +50,14 @@ func main() {
 
 	uim := ui.NewManager(s, dm)
 
+	authenticator := auth.New(auth.Config{
+		Enabled:        cfg.Server.Auth.Enabled,
+		Tokens:         cfg.Server.Auth.Tokens,
+		AllowedOrigins: cfg.Server.Auth.AllowedOrigins,
+	})
+	dm.SetOriginChecker(authenticator.OriginAllowed)
+	uim.SetOriginChecker(authenticator.OriginAllowed)
+
 	var ts translation.TranslationService
 	if cfg.Services.GoogleCloud.ProjectID != "" {
 		var err error
@@ -65,7 +74,7 @@ func main() {
 		return mcpServer
 	}, nil)
 
-	webHandler, err := setupWebHandler(dm, uim)
+	webHandler, err := setupWebHandler(dm, uim, authenticator)
 	if err != nil {
 		log.Fatalf("failed to setup web handler: %v", err)
 	}
@@ -79,7 +88,7 @@ func main() {
 
 	// MCP Server
 	g.Go(func() error {
-		return runServer(ctx, "MCP", cfg.Server.MCP, mcpHandler)
+		return runServer(ctx, "MCP", cfg.Server.MCP, authenticator.Middleware(mcpHandler))
 	})
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
@@ -154,10 +163,10 @@ func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation
 	return mcpServer
 }
 
-func setupWebHandler(dm *drafts.Manager, uim *ui.Manager) (http.Handler, error) {
+func setupWebHandler(dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator) (http.Handler, error) {
 	mux := http.NewServeMux()
-	mux.Handle("/drafts/", dm)
-	mux.Handle("/ws/ui", uim)
+	mux.Handle("/drafts/", authenticator.Middleware(dm))
+	mux.Handle("/ws/ui", authenticator.Middleware(uim))
 
 	// Serve static files from embedded FS
 	distFS, err := fs.Sub(server.DistFS, "dist")

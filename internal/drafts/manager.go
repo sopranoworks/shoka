@@ -12,16 +12,12 @@ import (
 	"github.com/shoka/mcp-server/internal/utils"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // In production, this should be more restrictive
-	},
-}
-
 // Manager handles draft persistence via WebSockets.
 type Manager struct {
-	baseDir string
-	mu      sync.Mutex
+	baseDir       string
+	mu            sync.Mutex
+	originChecker func(*http.Request) bool
+	upgrader      websocket.Upgrader
 }
 
 // NewManager creates a new Manager with the specified base directory.
@@ -30,7 +26,22 @@ func NewManager(baseDir string) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path for base directory: %w", err)
 	}
-	return &Manager{baseDir: absBaseDir}, nil
+	m := &Manager{baseDir: absBaseDir}
+	m.upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			if m.originChecker != nil {
+				return m.originChecker(r)
+			}
+			return true
+		},
+	}
+	return m, nil
+}
+
+// SetOriginChecker installs a WebSocket origin policy. When unset (the default),
+// all origins are accepted.
+func (m *Manager) SetOriginChecker(fn func(*http.Request) bool) {
+	m.originChecker = fn
 }
 
 func (m *Manager) GetDraftPath(namespace, projectName, path string) (string, error) {
@@ -68,7 +79,7 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, namesp
 		return
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := m.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
