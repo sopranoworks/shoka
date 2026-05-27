@@ -20,10 +20,20 @@ type ServerSettings struct {
 	TLS         TLSConfig `yaml:"tls"`
 }
 
+// AuthConfig configures optional Bearer-token authentication. When Enabled is
+// false (the default) no authentication is performed and all WebSocket origins
+// are accepted, preserving single-operator local behaviour.
+type AuthConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	Tokens         []string `yaml:"tokens"`
+	AllowedOrigins []string `yaml:"allowed_origins"`
+}
+
 type Config struct {
 	Server struct {
 		HTTP ServerSettings `yaml:"http"`
 		MCP  ServerSettings `yaml:"mcp"`
+		Auth AuthConfig     `yaml:"auth"`
 	} `yaml:"server"`
 	Storage struct {
 		BaseDir string `yaml:"base_dir"`

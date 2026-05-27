@@ -54,6 +54,60 @@ services:
 	assert.Equal(t, "my-project", cfg.Services.GoogleCloud.ProjectID)
 }
 
+func TestLoad_Auth(t *testing.T) {
+	yamlContent := `
+server:
+  http:
+    listen: ":8080"
+  mcp:
+    listen: ":8081"
+  auth:
+    enabled: true
+    tokens:
+      - "tok-a"
+      - "tok-b"
+    allowed_origins:
+      - "https://app.example.com"
+storage:
+  base_dir: "/tmp/shoka"
+`
+	tmpFile, err := os.CreateTemp("", "config-auth*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+	_, err = tmpFile.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	cfg, err := Load(tmpFile.Name())
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Server.Auth.Enabled)
+	assert.Equal(t, []string{"tok-a", "tok-b"}, cfg.Server.Auth.Tokens)
+	assert.Equal(t, []string{"https://app.example.com"}, cfg.Server.Auth.AllowedOrigins)
+}
+
+func TestLoad_AuthDefaultsDisabled(t *testing.T) {
+	yamlContent := `
+server:
+  http:
+    listen: ":8080"
+  mcp:
+    listen: ":8081"
+storage:
+  base_dir: "/tmp/shoka"
+`
+	tmpFile, err := os.CreateTemp("", "config-noauth*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+	_, err = tmpFile.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	cfg, err := Load(tmpFile.Name())
+	require.NoError(t, err)
+	assert.False(t, cfg.Server.Auth.Enabled)
+}
+
 func TestLoad_Errors(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		_, err := Load("non-existent-file.yaml")
