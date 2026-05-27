@@ -37,4 +37,19 @@ type StorageService interface {
 
 	// ReadFileAtVersion reads the content of a file at a specific Git commit hash.
 	ReadFileAtVersion(namespace, projectName, path, hash string) (string, error)
+
+	// New methods for Phase 3 (optimistic concurrency)
+
+	// GetCurrentVersion returns the hash of the most recent commit that modified
+	// the file at path, or "" if the file has no commit history.
+	GetCurrentVersion(namespace, projectName, path string) (string, error)
+
+	// WriteFileVersioned writes with optimistic locking. When expectedVersion is
+	// non-empty it must match the file's current version or a *VersionConflictError
+	// is returned. It returns the hash of the new commit.
+	WriteFileVersioned(namespace, projectName, path, content, expectedVersion string) (string, error)
+
+	// DeleteFileVersioned deletes with optimistic locking (see WriteFileVersioned),
+	// returning the hash of the new commit.
+	DeleteFileVersioned(namespace, projectName, path, expectedVersion string) (string, error)
 }

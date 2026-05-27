@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -17,6 +18,20 @@ import (
 // FSGitStorage implements StorageService using the local filesystem and Git.
 type FSGitStorage struct {
 	baseDir string
+	// mu serializes writes/deletes so the optimistic-locking check-and-commit is
+	// atomic and concurrent go-git operations don't race on the worktree index.
+	mu sync.Mutex
+}
+
+// VersionConflictError is returned by versioned writes/deletes when the caller's
+// expected version does not match the file's current version.
+type VersionConflictError struct {
+	Expected string
+	Current  string
+}
+
+func (e *VersionConflictError) Error() string {
+	return fmt.Sprintf("version conflict: expected %q but current version is %q", e.Expected, e.Current)
 }
 
 // NewFSGitStorage creates a new FSGitStorage instance.
@@ -70,43 +85,68 @@ func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 
 // WriteFile writes content to a file in a project and performs an atomic Git commit.
 func (s *FSGitStorage) WriteFile(namespace, projectName, path, content string) error {
+	_, err := s.writeFile(namespace, projectName, path, content, "")
+	return err
+}
+
+// WriteFileVersioned writes content with optimistic locking. When expectedVersion
+// is non-empty it must equal the file's current version (the hash of the most
+// recent commit touching the file); otherwise a *VersionConflictError is returned
+// and no write occurs. It returns the hash of the new commit.
+func (s *FSGitStorage) WriteFileVersioned(namespace, projectName, path, content, expectedVersion string) (string, error) {
+	return s.writeFile(namespace, projectName, path, content, expectedVersion)
+}
+
+func (s *FSGitStorage) writeFile(namespace, projectName, path, content, expectedVersion string) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	fullPath := filepath.Join(projectPath, path)
 
 	// Robust path traversal protection
 	rel, err := filepath.Rel(projectPath, fullPath)
 	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
-		return fmt.Errorf("invalid file path: %s", path)
+		return "", fmt.Errorf("invalid file path: %s", path)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if expectedVersion != "" {
+		current, err := s.currentVersion(projectPath, rel)
+		if err != nil {
+			return "", err
+		}
+		if current != expectedVersion {
+			return "", &VersionConflictError{Expected: expectedVersion, Current: current}
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return fmt.Errorf("failed to create directories for file: %w", err)
+		return "", fmt.Errorf("failed to create directories for file: %w", err)
 	}
 
 	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
 	// Git commit
 	r, err := git.PlainOpen(projectPath)
 	if err != nil {
-		return fmt.Errorf("failed to open git repository: %w", err)
+		return "", fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	w, err := r.Worktree()
 	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+		return "", fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	_, err = w.Add(rel) // Use relative path for git add
-	if err != nil {
-		return fmt.Errorf("failed to add file to git: %w", err)
+	if _, err := w.Add(rel); err != nil { // Use relative path for git add
+		return "", fmt.Errorf("failed to add file to git: %w", err)
 	}
 
-	_, err = w.Commit(fmt.Sprintf("Update %s", rel), &git.CommitOptions{
+	hash, err := w.Commit(fmt.Sprintf("Update %s", rel), &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "MCP Server",
 			Email: "mcp-server@shoka.io",
@@ -114,10 +154,10 @@ func (s *FSGitStorage) WriteFile(namespace, projectName, path, content string) e
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to commit changes: %w", err)
+		return "", fmt.Errorf("failed to commit changes: %w", err)
 	}
 
-	return nil
+	return hash.String(), nil
 }
 
 // ReadFile reads the content of a file from a project.
@@ -172,40 +212,63 @@ func (s *FSGitStorage) ListProjects(namespace string) ([]string, error) {
 
 // DeleteFile deletes a file from a project and performs an atomic Git commit.
 func (s *FSGitStorage) DeleteFile(namespace, projectName, path string) error {
+	_, err := s.deleteFile(namespace, projectName, path, "")
+	return err
+}
+
+// DeleteFileVersioned deletes a file with optimistic locking (see WriteFileVersioned),
+// returning the hash of the new (delete) commit.
+func (s *FSGitStorage) DeleteFileVersioned(namespace, projectName, path, expectedVersion string) (string, error) {
+	return s.deleteFile(namespace, projectName, path, expectedVersion)
+}
+
+func (s *FSGitStorage) deleteFile(namespace, projectName, path, expectedVersion string) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	fullPath := filepath.Join(projectPath, path)
 
 	// Robust path traversal protection
 	rel, err := filepath.Rel(projectPath, fullPath)
 	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
-		return fmt.Errorf("invalid file path: %s", path)
+		return "", fmt.Errorf("invalid file path: %s", path)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if expectedVersion != "" {
+		current, err := s.currentVersion(projectPath, rel)
+		if err != nil {
+			return "", err
+		}
+		if current != expectedVersion {
+			return "", &VersionConflictError{Expected: expectedVersion, Current: current}
+		}
 	}
 
 	// Remove from disk
 	if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove file from disk: %w", err)
+		return "", fmt.Errorf("failed to remove file from disk: %w", err)
 	}
 
 	// Git commit
 	r, err := git.PlainOpen(projectPath)
 	if err != nil {
-		return fmt.Errorf("failed to open git repository: %w", err)
+		return "", fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	w, err := r.Worktree()
 	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+		return "", fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	_, err = w.Remove(rel)
-	if err != nil {
-		return fmt.Errorf("failed to remove file from git: %w", err)
+	if _, err := w.Remove(rel); err != nil {
+		return "", fmt.Errorf("failed to remove file from git: %w", err)
 	}
 
-	_, err = w.Commit(fmt.Sprintf("Delete %s", rel), &git.CommitOptions{
+	hash, err := w.Commit(fmt.Sprintf("Delete %s", rel), &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "MCP Server",
 			Email: "mcp-server@shoka.io",
@@ -213,10 +276,10 @@ func (s *FSGitStorage) DeleteFile(namespace, projectName, path string) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to commit changes: %w", err)
+		return "", fmt.Errorf("failed to commit changes: %w", err)
 	}
 
-	return nil
+	return hash.String(), nil
 }
 
 // ListFiles returns a list of files in a project path (non-recursive).
@@ -353,4 +416,49 @@ func (s *FSGitStorage) ReadFileAtVersion(namespace, projectName, path, hash stri
 	}
 
 	return content, nil
+}
+
+// GetCurrentVersion returns the hash of the most recent commit that modified the
+// file at path, or "" if the file has no commit history.
+func (s *FSGitStorage) GetCurrentVersion(namespace, projectName, path string) (string, error) {
+	projectPath, err := s.getProjectPath(namespace, projectName)
+	if err != nil {
+		return "", err
+	}
+	fullPath := filepath.Join(projectPath, path)
+	rel, err := filepath.Rel(projectPath, fullPath)
+	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+		return "", fmt.Errorf("invalid file path: %s", path)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentVersion(projectPath, rel)
+}
+
+// currentVersion returns the latest commit hash touching rel within projectPath.
+// The caller must hold s.mu.
+func (s *FSGitStorage) currentVersion(projectPath, rel string) (string, error) {
+	r, err := git.PlainOpen(projectPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open git repository: %w", err)
+	}
+	if _, err := r.Head(); err != nil {
+		// No commits yet.
+		return "", nil
+	}
+	cIter, err := r.Log(&git.LogOptions{Order: git.LogOrderCommitterTime, FileName: &rel})
+	if err != nil {
+		return "", fmt.Errorf("failed to read git log: %w", err)
+	}
+	defer cIter.Close()
+
+	c, err := cIter.Next()
+	if err == io.EOF {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to read commit: %w", err)
+	}
+	return c.Hash.String(), nil
 }
