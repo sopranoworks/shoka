@@ -1,0 +1,37 @@
+# Shoka example configuration.
+#
+# Copy to shoka.yaml (or pass via --config) and adjust as needed:
+#     ./shoka --config shoka.example.yaml
+#
+# REQUIRED fields: server.http.listen, server.mcp.listen, storage.base_dir.
+# Everything else is optional.
+
+server:
+  # Human-facing web UI + WebSocket endpoints (/, /ws/ui, /drafts/...).
+  http:
+    listen: ":8080"
+    external_url: "http://localhost:8080"   # optional; reported by the get_server_info tool
+    tls:
+      enabled: false
+      # cert_file: "/path/to/cert.pem"
+      # key_file: "/path/to/key.pem"
+
+  # MCP endpoint (SSE) consumed by Claude Code instances.
+  mcp:
+    listen: ":8081"
+    external_url: "http://localhost:8081"   # optional
+    tls:
+      enabled: false
+
+storage:
+  # Project repositories live at <base_dir>/<namespace>/<projectName>.
+  # Relative paths resolve against the server's working directory and are
+  # created automatically on startup.
+  base_dir: "./data"
+
+services:
+  google_cloud:
+    # Leave empty to run without translation. When set, the translate_file tool
+    # is registered and uses Application Default Credentials
+    # (e.g. the GOOGLE_APPLICATION_CREDENTIALS environment variable).
+    project_id: ""
