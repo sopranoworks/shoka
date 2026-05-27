@@ -13,7 +13,7 @@ import (
 )
 
 type CreateProjectInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project to create"`
 }
 
@@ -53,7 +53,7 @@ func CreateProjectHandler(s storage.StorageService) func(context.Context, *mcp.C
 }
 
 type ListProjectsInput struct {
-	Namespace string `json:"namespace" jsonschema:"optional, the namespace to list projects from (defaults to 'default')"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional, the namespace to list projects from (defaults to 'default')"`
 }
 
 type ListProjectsOutput struct {
@@ -86,11 +86,11 @@ func ListProjectsHandler(s storage.StorageService) func(context.Context, *mcp.Ca
 }
 
 type ListFilesInput struct {
-	Namespace        string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace        string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName      string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path             string `json:"path" jsonschema:"optional, the path to list files from (defaults to root)"`
-	IncludeVersions  bool   `json:"include_versions" jsonschema:"optional, when true include each file's current commit hash in 'versions'"`
-	IncludeSummaries bool   `json:"include_summaries" jsonschema:"optional, when true include each file's frontmatter and first heading in 'summaries' so an overview can be built without reading full files"`
+	Path             string `json:"path,omitempty" jsonschema:"optional, the path to list files from (defaults to root)"`
+	IncludeVersions  bool   `json:"include_versions,omitempty" jsonschema:"optional, when true include each file's current commit hash in 'versions'"`
+	IncludeSummaries bool   `json:"include_summaries,omitempty" jsonschema:"optional, when true include each file's frontmatter and first heading in 'summaries' so an overview can be built without reading full files"`
 }
 
 // FileSummary is the per-file frontmatter + first heading returned by

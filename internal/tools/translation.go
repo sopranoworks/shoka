@@ -13,10 +13,10 @@ import (
 )
 
 type TranslateFileInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
 	Path        string `json:"path" jsonschema:"required, the path to the Markdown file to translate"`
-	TargetLang  string `json:"target_lang" jsonschema:"optional, the target language code (e.g., 'en', 'ja') (defaults to 'en')"`
+	TargetLang  string `json:"target_lang,omitempty" jsonschema:"optional, the target language code (e.g., 'en', 'ja') (defaults to 'en')"`
 }
 
 type TranslateFileOutput struct {

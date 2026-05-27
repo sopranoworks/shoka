@@ -13,7 +13,7 @@ import (
 )
 
 type ReadFileInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
 	Path        string `json:"path" jsonschema:"required, the path to the file to read"`
 }
@@ -62,11 +62,11 @@ func ReadFileHandler(s storage.StorageService) func(context.Context, *mcp.CallTo
 }
 
 type WriteFileInput struct {
-	Namespace       string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace       string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
 	Path            string `json:"path" jsonschema:"required, the path to the file to write"`
 	Content         string `json:"content" jsonschema:"required, the content to write to the file"`
-	ExpectedVersion string `json:"expected_version" jsonschema:"optional, the commit hash the file is expected to be at (from read_file); if set and stale, the write is rejected with a version conflict and no change is made"`
+	ExpectedVersion string `json:"expected_version,omitempty" jsonschema:"optional, the commit hash the file is expected to be at (from read_file); if set and stale, the write is rejected with a version conflict and no change is made"`
 }
 
 type WriteFileOutput struct {
@@ -103,9 +103,9 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			var conflict *storage.VersionConflictError
 			if errors.As(err, &conflict) {
 				return &mcp.CallToolResult{
-						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
-						IsError: true,
-					}, WriteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
+					IsError: true,
+				}, WriteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
 			}
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to write file: %v", err)}},
@@ -118,10 +118,10 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 }
 
 type DeleteFileInput struct {
-	Namespace       string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace       string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
 	Path            string `json:"path" jsonschema:"required, the path to the file to delete"`
-	ExpectedVersion string `json:"expected_version" jsonschema:"optional, the commit hash the file is expected to be at; if set and stale, the delete is rejected with a version conflict"`
+	ExpectedVersion string `json:"expected_version,omitempty" jsonschema:"optional, the commit hash the file is expected to be at; if set and stale, the delete is rejected with a version conflict"`
 }
 
 type DeleteFileOutput struct {
@@ -155,9 +155,9 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 			var conflict *storage.VersionConflictError
 			if errors.As(err, &conflict) {
 				return &mcp.CallToolResult{
-						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
-						IsError: true,
-					}, DeleteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
+					IsError: true,
+				}, DeleteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
 			}
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to delete file: %v", err)}},
@@ -170,11 +170,11 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 }
 
 type GetHistoryInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path        string `json:"path" jsonschema:"optional, the path to the file to get history for (if empty, returns project history)"`
-	Limit       int    `json:"limit" jsonschema:"optional, the maximum number of history entries to return (defaults to 10)"`
-	Since       string `json:"since" jsonschema:"optional, only commits after this RFC3339 timestamp or commit hash (exclusive)"`
+	Path        string `json:"path,omitempty" jsonschema:"optional, the path to the file to get history for (if empty, returns project history)"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"optional, the maximum number of history entries to return (defaults to 10)"`
+	Since       string `json:"since,omitempty" jsonschema:"optional, only commits after this RFC3339 timestamp or commit hash (exclusive)"`
 }
 
 // filterHistorySince keeps only commits after the given point, which may be an
@@ -253,7 +253,7 @@ func GetHistoryHandler(s storage.StorageService) func(context.Context, *mcp.Call
 }
 
 type ReadFileAtVersionInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
 	Path        string `json:"path" jsonschema:"required, the path to the file to read"`
 	CommitHash  string `json:"commit_hash" jsonschema:"required, the Git commit hash to read the file from"`

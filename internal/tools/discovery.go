@@ -10,7 +10,7 @@ import (
 )
 
 type ListFilesSinceInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
 	Since       string `json:"since" jsonschema:"required, an RFC3339 timestamp or a commit hash (exclusive); only files changed after this point are returned"`
 }
@@ -50,10 +50,10 @@ func ListFilesSinceHandler(s storage.StorageService) func(context.Context, *mcp.
 }
 
 type SearchFilesInput struct {
-	Namespace   string `json:"namespace" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
 	Query       string `json:"query" jsonschema:"required, the case-insensitive substring to search for"`
-	SearchIn    string `json:"search_in" jsonschema:"optional, one of 'filename', 'content', or 'both' (default 'both')"`
+	SearchIn    string `json:"search_in,omitempty" jsonschema:"optional, one of 'filename', 'content', or 'both' (default 'both')"`
 }
 
 type SearchFilesOutput struct {
