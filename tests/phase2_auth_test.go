@@ -32,7 +32,7 @@ func TestAuth_DraftsEndpoint_RequiresTokenAndOrigin(t *testing.T) {
 	})
 	dm.SetOriginChecker(a.OriginAllowed)
 
-	server := httptest.NewServer(a.Middleware(dm))
+	server := httptest.NewServer(a.MiddlewareAllowQueryToken(dm))
 	defer server.Close()
 
 	base := "ws" + strings.TrimPrefix(server.URL, "http") + "/drafts/ns1/proj1?filepath=test.md"
@@ -77,7 +77,7 @@ func TestAuth_UIEndpoint_RequiresTokenAndOrigin(t *testing.T) {
 	})
 	uim.SetOriginChecker(a.OriginAllowed)
 
-	server := httptest.NewServer(a.Middleware(uim))
+	server := httptest.NewServer(a.MiddlewareAllowQueryToken(uim))
 	defer server.Close()
 
 	base := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/ui"
@@ -133,7 +133,7 @@ func TestAuth_Disabled_AllowsConnections(t *testing.T) {
 	a := auth.New(auth.Config{Enabled: false})
 	dm.SetOriginChecker(a.OriginAllowed)
 
-	server := httptest.NewServer(a.Middleware(dm))
+	server := httptest.NewServer(a.MiddlewareAllowQueryToken(dm))
 	defer server.Close()
 
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/drafts/ns1/proj1?filepath=test.md"

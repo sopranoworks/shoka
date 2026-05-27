@@ -31,6 +31,16 @@ func serveMiddleware(a *Authenticator, r *http.Request) int {
 	return rec.Code
 }
 
+// serveMiddlewareWS is like serveMiddleware but uses the query-token-allowing
+// middleware that wraps the WebSocket endpoints.
+func serveMiddlewareWS(a *Authenticator, r *http.Request) int {
+	rec := httptest.NewRecorder()
+	a.MiddlewareAllowQueryToken(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, r)
+	return rec.Code
+}
+
 func TestDisabledAllowsMissingToken(t *testing.T) {
 	a := New(Config{Enabled: false})
 	if !a.Authenticate(newReq("", "", "")) {
@@ -63,11 +73,23 @@ func TestEnabledValidTokenHeaderAccepted(t *testing.T) {
 }
 
 // Browsers cannot set an Authorization header on a WebSocket handshake, so the
-// token is also accepted via a `token` query parameter for WS endpoints.
-func TestEnabledValidTokenQueryParamAccepted(t *testing.T) {
+// token is accepted via a `token` query parameter on the WS middleware only.
+func TestEnabledValidTokenQueryParamAcceptedOnWS(t *testing.T) {
 	a := New(Config{Enabled: true, Tokens: []string{"secret"}})
-	if code := serveMiddleware(a, newReq("", "token=secret", "")); code != http.StatusOK {
-		t.Fatalf("expected 200 for valid token via query param, got %d", code)
+	if code := serveMiddlewareWS(a, newReq("", "token=secret", "")); code != http.StatusOK {
+		t.Fatalf("expected 200 for valid token via query param on WS middleware, got %d", code)
+	}
+}
+
+// F1: the header-only Middleware (MCP/SSE) must NOT honor a query-param token.
+func TestQueryParamRejectedByHeaderOnlyMiddleware(t *testing.T) {
+	a := New(Config{Enabled: true, Tokens: []string{"secret"}})
+	if code := serveMiddleware(a, newReq("", "token=secret", "")); code != http.StatusUnauthorized {
+		t.Fatalf("expected 401: query token must not authenticate on header-only middleware, got %d", code)
+	}
+	// And the same request DOES authenticate on the WS middleware.
+	if code := serveMiddlewareWS(a, newReq("", "token=secret", "")); code != http.StatusOK {
+		t.Fatalf("expected 200 for query token on WS middleware, got %d", code)
 	}
 }
 

@@ -209,8 +209,11 @@ func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation
 
 func setupWebHandler(dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator) (http.Handler, error) {
 	mux := http.NewServeMux()
-	mux.Handle("/drafts/", authenticator.Middleware(dm))
-	mux.Handle("/ws/ui", authenticator.Middleware(uim))
+	// WebSocket endpoints accept the ?token= query fallback (browsers cannot set
+	// an Authorization header on a WS handshake). The MCP/SSE endpoint uses the
+	// header-only Middleware (see runServer wiring) so tokens never ride in URLs.
+	mux.Handle("/drafts/", authenticator.MiddlewareAllowQueryToken(dm))
+	mux.Handle("/ws/ui", authenticator.MiddlewareAllowQueryToken(uim))
 
 	// Serve static files from embedded FS
 	distFS, err := fs.Sub(server.DistFS, "dist")

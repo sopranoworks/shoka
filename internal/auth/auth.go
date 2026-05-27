@@ -34,20 +34,44 @@ func New(c Config) *Authenticator {
 	}
 }
 
-// Authenticate reports whether r carries a valid credential. When auth is
-// disabled it always returns true.
+// Authenticate reports whether r carries a valid credential via the
+// Authorization: Bearer header. When auth is disabled it always returns true.
+// The ?token= query fallback is intentionally NOT consulted here — it is scoped
+// to the WebSocket endpoints (AuthenticateWebSocket / MiddlewareAllowQueryToken)
+// so that bearer tokens never need to appear in URLs on the MCP/SSE endpoint.
 func (a *Authenticator) Authenticate(r *http.Request) bool {
+	if !a.enabled {
+		return true
+	}
+	return a.validToken(bearerToken(r))
+}
+
+// AuthenticateWebSocket is like Authenticate but additionally accepts the token
+// via the ?token= query parameter, because browsers cannot set an Authorization
+// header on a WebSocket handshake.
+func (a *Authenticator) AuthenticateWebSocket(r *http.Request) bool {
 	if !a.enabled {
 		return true
 	}
 	return a.validToken(tokenFromRequest(r))
 }
 
-// Middleware wraps next, returning 401 when auth is enabled and the request
-// carries no valid token. When disabled it passes every request through.
+// Middleware wraps next with header-only Bearer authentication (used for the
+// MCP/SSE endpoint). Returns 401 when auth is enabled and no valid Bearer token
+// is present. When disabled it passes every request through.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
+	return a.middleware(next, a.Authenticate)
+}
+
+// MiddlewareAllowQueryToken wraps next with authentication that also accepts the
+// ?token= query parameter, for the WebSocket endpoints (/ws/ui and /drafts/).
+func (a *Authenticator) MiddlewareAllowQueryToken(next http.Handler) http.Handler {
+	return a.middleware(next, a.AuthenticateWebSocket)
+}
+
+func (a *Authenticator) middleware(next http.Handler, authed func(*http.Request) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !a.Authenticate(r) {
+		if !authed(r) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -88,13 +112,22 @@ func (a *Authenticator) validToken(provided string) bool {
 	return matched == 1
 }
 
-// tokenFromRequest extracts the bearer token from the Authorization header, or
-// falls back to the `token` query parameter (browsers cannot set an
-// Authorization header on a WebSocket handshake).
-func tokenFromRequest(r *http.Request) string {
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header,
+// or returns "" if absent.
+func bearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if len(h) >= 7 && strings.EqualFold(h[:7], "Bearer ") {
 		return h[7:]
+	}
+	return ""
+}
+
+// tokenFromRequest returns the Bearer header token, or falls back to the `token`
+// query parameter. The query fallback is used only on WebSocket paths, where
+// browsers cannot set an Authorization header on the handshake.
+func tokenFromRequest(r *http.Request) string {
+	if t := bearerToken(r); t != "" {
+		return t
 	}
 	return r.URL.Query().Get("token")
 }
