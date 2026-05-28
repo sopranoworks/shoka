@@ -391,3 +391,13 @@ triggers them. (Source: `internal/storage/fs_git.go:27-51,110-116,194-201,325-33
   `internal/webhooks/webhooks.go:26-123`; `internal/tools/*.go` (per-tool schemas).
 - **Conventions:** `docs/conventions/frontmatter.md`,
   `docs/conventions/document-lifecycle.md`, `docs/conventions/failure-records.md`.
+
+---
+
+## Operational notes (non-normative)
+
+The server writes structured diagnostic logs to **stderr**. This adds **no
+wire-visible behavior**: no request or response field is added, removed, or
+changed. Logs never contain file content or auth tokens — metadata only (method
+names, session IDs, outcome labels). See `docs/OPERATIONS.md` § Logging for
+configuration details (`server.log.level`, `server.log.format`).

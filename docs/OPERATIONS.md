@@ -46,6 +46,55 @@ Validation: the server refuses to start without `storage.base_dir`,
 `server.http.listen`, and `server.mcp.listen`. (Source:
 `internal/config/config.go:58-69`.)
 
+## Logging
+
+Shoka emits structured log lines to **stderr**; stdout is reserved for the MCP
+SSE stream and must remain clean.
+
+### Configuration
+
+Add a `server.log` block to `shoka.yaml`:
+
+```yaml
+server:
+  log:
+    level: info    # error | warn | info | debug  (default: info)
+    format: text   # text | json                  (default: text)
+```
+
+An absent `server.log` block is fully backward-compatible: the server starts at
+`info`/`text` without any config change.
+
+| Key | Values | Default | Effect |
+|-----|--------|---------|--------|
+| `server.log.level` | `error` `warn` `info` `debug` | `info` | Minimum severity to emit. |
+| `server.log.format` | `text` `json` | `text` | Human-readable key=value (`text`) or machine-parseable JSON (`json`). Use `json` when shipping logs to a structured collector. |
+
+### What is logged
+
+| Level | Events |
+|-------|--------|
+| `info` | Server start/stop, listener addresses, tool registrations, webhook delivery success/failure. |
+| `debug` | SSE stream open/close; per-message JSON-RPC method + session ID; MCP session lifecycle events (via the SDK); tool-call received/completed with outcome (success or error). |
+
+**Logs never contain file content or auth tokens** — only metadata (paths,
+method names, session IDs, outcome labels). This is enforced by design: the
+logging layer never receives content or credential values.
+
+### Diagnosing the MCP session-initialization fault
+
+If the MCP client fails to complete its handshake, run the server with
+`level: debug`. The debug stream will show:
+
+1. SSE stream opened (transport layer).
+2. Per-message JSON-RPC method + session ID for every POST to the message
+   endpoint.
+3. SDK session lifecycle events (session started, capability negotiation, etc.).
+4. Tool-call received/completed entries for any tool invocations that succeed.
+
+Comparing these events against the expected SSE handshake in § 2 of
+`docs/contracts/mcp-v1.md` pinpoints where the session diverges.
+
 ## Backup
 
 A project is an ordinary Git repository under `base_dir`. Back up `base_dir` as you
