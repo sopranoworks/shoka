@@ -23,6 +23,11 @@ server:
     tls:
       enabled: false
 
+  # Structured logging (written to stderr). Optional — omit for info/text.
+  log:
+    level: "info"   # error | warn | info | debug
+    format: "text"  # text | json
+
   # Optional Bearer-token authentication. When disabled (the default) the server
   # runs with no auth and accepts all WebSocket origins (single-operator local mode).
   auth:

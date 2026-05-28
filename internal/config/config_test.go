@@ -108,6 +108,49 @@ storage:
 	assert.False(t, cfg.Server.Auth.Enabled)
 }
 
+func TestLoad_LogConfig(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		f, err := os.CreateTemp(t.TempDir(), "cfg-*.yaml")
+		require.NoError(t, err)
+		_, err = f.WriteString(body)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		return f.Name()
+	}
+	const base = `
+storage:
+  base_dir: /tmp/shoka
+server:
+  http:
+    listen: ":8080"
+  mcp:
+    listen: ":8081"
+`
+	t.Run("absent log block defaults to empty (info/text applied later)", func(t *testing.T) {
+		cfg, err := Load(write(t, base))
+		require.NoError(t, err)
+		assert.Equal(t, "", cfg.Server.Log.Level)
+		assert.Equal(t, "", cfg.Server.Log.Format)
+	})
+	t.Run("explicit log block parses", func(t *testing.T) {
+		cfg, err := Load(write(t, base+"  log:\n    level: debug\n    format: json\n"))
+		require.NoError(t, err)
+		assert.Equal(t, "debug", cfg.Server.Log.Level)
+		assert.Equal(t, "json", cfg.Server.Log.Format)
+	})
+	t.Run("invalid level rejected", func(t *testing.T) {
+		_, err := Load(write(t, base+"  log:\n    level: verbose\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "log.level")
+	})
+	t.Run("invalid format rejected", func(t *testing.T) {
+		_, err := Load(write(t, base+"  log:\n    format: xml\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "log.format")
+	})
+}
+
 func TestLoad_Errors(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		_, err := Load("non-existent-file.yaml")
