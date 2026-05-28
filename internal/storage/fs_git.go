@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,7 @@ type FSGitStorage struct {
 	// atomic and concurrent go-git operations don't race on the worktree index.
 	mu            sync.Mutex
 	changeHandler ChangeHandler
+	logger        *slog.Logger
 }
 
 // ChangeEvent describes a successful mutation, delivered to a registered handler.
@@ -44,7 +46,25 @@ func (s *FSGitStorage) SetChangeHandler(h ChangeHandler) {
 	s.changeHandler = h
 }
 
+// SetLogger attaches a structured logger. Safe to call once at startup; a nil
+// logger (the default) discards all storage log output.
+func (s *FSGitStorage) SetLogger(l *slog.Logger) { s.logger = l }
+
+func (s *FSGitStorage) log() *slog.Logger {
+	if s.logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return s.logger
+}
+
 func (s *FSGitStorage) emit(ev ChangeEvent) {
+	s.log().Info("git change committed",
+		"event", ev.Event,
+		"namespace", ev.Namespace,
+		"project", ev.Project,
+		"path", ev.Path,
+		"commit", ev.CommitHash,
+	)
 	if s.changeHandler != nil {
 		s.changeHandler(ev)
 	}
@@ -188,6 +208,7 @@ func (s *FSGitStorage) writeFile(namespace, projectName, path, content, expected
 		},
 	})
 	if err != nil {
+		s.log().Error("git commit failed", "op", "write", "path", rel, "error", err)
 		return "", fmt.Errorf("failed to commit changes: %w", err)
 	}
 
@@ -319,6 +340,7 @@ func (s *FSGitStorage) deleteFile(namespace, projectName, path, expectedVersion 
 		},
 	})
 	if err != nil {
+		s.log().Error("git commit failed", "op", "delete", "path", rel, "error", err)
 		return "", fmt.Errorf("failed to commit changes: %w", err)
 	}
 
