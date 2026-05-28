@@ -74,8 +74,10 @@ An absent `server.log` block is fully backward-compatible: the server starts at
 
 | Level | Events |
 |-------|--------|
-| `info` | Server start/stop, listener addresses, tool registrations, webhook delivery success/failure. |
-| `debug` | SSE stream open/close; per-message JSON-RPC method + session ID; MCP session lifecycle events (via the SDK); tool-call received/completed with outcome (success or error). |
+| `error` | The `tools/call`-during-initialization rejection (from the SDK — the session-init fault), tool handler errors/panics, storage commit failures. |
+| `warn` | Requests rejected with HTTP status ≥ 400 (unknown/expired session, auth failure), webhook delivery failures. |
+| `info` (default) | Server start/stop and listener addresses; SSE stream open/close; MCP session lifecycle (session connected/disconnected, via the SDK); tool-call received/completed with outcome; git commits (hash + path); webhook delivery success. |
+| `debug` | Everything at `info`, **plus** the per-message JSON-RPC method + session ID for each POST to the message endpoint, and finer SDK protocol detail. |
 
 **Logs never contain file content or auth tokens** — only metadata (paths,
 method names, session IDs, outcome labels). This is enforced by design: the
