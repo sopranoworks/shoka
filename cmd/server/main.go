@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,8 @@ import (
 	"github.com/shoka/mcp-server/internal/auth"
 	"github.com/shoka/mcp-server/internal/config"
 	"github.com/shoka/mcp-server/internal/drafts"
+	"github.com/shoka/mcp-server/internal/httplog"
+	"github.com/shoka/mcp-server/internal/logging"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
 	"github.com/shoka/mcp-server/internal/translation"
@@ -35,6 +38,12 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	logger, err := logging.New(cfg.Server.Log.Level, cfg.Server.Log.Format, os.Stderr)
+	if err != nil {
+		log.Fatalf("failed to initialize logger: %v", err)
+	}
+	slog.SetDefault(logger)
+
 	// Setup context with signal handling
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -43,8 +52,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize storage: %v", err)
 	}
+	s.SetLogger(logger)
 
 	notifier := webhooks.New(toWebhookConfigs(cfg.Webhooks))
+	notifier.SetLogger(logger)
 	s.SetChangeHandler(func(ev storage.ChangeEvent) {
 		notifier.Emit(webhooks.Event{
 			Event:      ev.Event,
@@ -76,13 +87,13 @@ func main() {
 		var err error
 		ts, err = translation.NewGoogleTranslationService(context.Background(), cfg.Services.GoogleCloud.ProjectID)
 		if err != nil {
-			log.Printf("Warning: failed to initialize Google Translation service: %v. Translation tool will not be available.", err)
+			logger.Warn("google translation unavailable; translate_file disabled", "error", err)
 		} else {
 			defer ts.Close()
 		}
 	}
 
-	mcpServer := setupMCPServer(cfg, s, ts)
+	mcpServer := setupMCPServer(cfg, s, ts, logger)
 	mcpHandler := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
 		return mcpServer
 	}, nil)
@@ -96,23 +107,23 @@ func main() {
 
 	// Web Server
 	g.Go(func() error {
-		return runServer(ctx, "Web", cfg.Server.HTTP, webHandler)
+		return runServer(ctx, "Web", cfg.Server.HTTP, webHandler, logger)
 	})
 
 	// MCP Server
 	g.Go(func() error {
-		return runServer(ctx, "MCP", cfg.Server.MCP, authenticator.Middleware(mcpHandler))
+		return runServer(ctx, "MCP", cfg.Server.MCP, httplog.Middleware(logger)(authenticator.Middleware(mcpHandler)), logger)
 	})
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("Server error: %v", err)
+		logger.Error("server error", "error", err)
 		os.Exit(1)
 	}
 
 	// Drain any in-flight webhook deliveries before exiting.
 	notifier.Wait()
 
-	log.Println("Servers shut down gracefully")
+	logger.Info("servers shut down gracefully")
 }
 
 func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
@@ -128,80 +139,80 @@ func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
 	return out
 }
 
-func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation.TranslationService) *mcp.Server {
+func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation.TranslationService, logger *slog.Logger) *mcp.Server {
 	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "shoka",
 			Version: "0.1.0",
 		},
-		nil,
+		&mcp.ServerOptions{Logger: logger},
 	)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "get_server_info",
 		Description: "Get information about the server's public URL and configuration",
-	}, tools.GetServerInfoHandler(cfg))
+	}, tools.LoggedTool(logger, "get_server_info", tools.GetServerInfoHandler(cfg)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "create_project",
 		Description: "Create a new project with Git initialization",
-	}, tools.CreateProjectHandler(s))
+	}, tools.LoggedTool(logger, "create_project", tools.CreateProjectHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_projects",
 		Description: "List all projects in a namespace",
-	}, tools.ListProjectsHandler(s))
+	}, tools.LoggedTool(logger, "list_projects", tools.ListProjectsHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "read_file",
 		Description: "Read a file from a project",
-	}, tools.ReadFileHandler(s))
+	}, tools.LoggedTool(logger, "read_file", tools.ReadFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "write_file",
 		Description: "Write a file to a project with atomic Git commit",
-	}, tools.WriteFileHandler(s))
+	}, tools.LoggedTool(logger, "write_file", tools.WriteFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "delete_file",
 		Description: "Delete a file from a project with atomic Git commit",
-	}, tools.DeleteFileHandler(s))
+	}, tools.LoggedTool(logger, "delete_file", tools.DeleteFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_files",
 		Description: "List files in a project path",
-	}, tools.ListFilesHandler(s))
+	}, tools.LoggedTool(logger, "list_files", tools.ListFilesHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "get_history",
 		Description: "Get Git commit history for a project or file",
-	}, tools.GetHistoryHandler(s))
+	}, tools.LoggedTool(logger, "get_history", tools.GetHistoryHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "read_file_at_version",
 		Description: "Read a file at a specific Git commit hash",
-	}, tools.ReadFileAtVersionHandler(s))
+	}, tools.LoggedTool(logger, "read_file_at_version", tools.ReadFileAtVersionHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "read_summary",
 		Description: "Get a context-efficient summary of a Markdown file (frontmatter, first heading, short excerpt, size, version) without its full body",
-	}, tools.ReadSummaryHandler(s))
+	}, tools.LoggedTool(logger, "read_summary", tools.ReadSummaryHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_files_since",
 		Description: "List files changed after a given RFC3339 timestamp or commit hash, with each file's change kind (added/modified/deleted)",
-	}, tools.ListFilesSinceHandler(s))
+	}, tools.LoggedTool(logger, "list_files_since", tools.ListFilesSinceHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "search_files",
 		Description: "Search a project's files by filename, content, or both (case-insensitive substring), returning matches with context snippets",
-	}, tools.SearchFilesHandler(s))
+	}, tools.LoggedTool(logger, "search_files", tools.SearchFilesHandler(s)))
 
 	if ts != nil {
 		mcp.AddTool(mcpServer, &mcp.Tool{
 			Name:        "translate_file",
 			Description: "Translate a Markdown file to a target language (Japanese to English by default)",
-		}, tools.TranslateFileHandler(s, ts))
+		}, tools.LoggedTool(logger, "translate_file", tools.TranslateFileHandler(s, ts)))
 	}
 
 	return mcpServer
@@ -241,7 +252,7 @@ func setupWebHandler(dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Au
 	return mux, nil
 }
 
-func runServer(ctx context.Context, name string, settings config.ServerSettings, handler http.Handler) error {
+func runServer(ctx context.Context, name string, settings config.ServerSettings, handler http.Handler, logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr:    settings.Listen,
 		Handler: handler,
@@ -249,10 +260,10 @@ func runServer(ctx context.Context, name string, settings config.ServerSettings,
 
 	errChan := make(chan error, 1)
 	go func() {
-		log.Printf("Starting %s server on %s...", name, settings.Listen)
+		logger.Info("starting server", "name", name, "addr", settings.Listen)
 		var err error
 		if settings.TLS.Enabled {
-			log.Printf("TLS enabled for %s", settings.Listen)
+			logger.Info("tls enabled", "addr", settings.Listen)
 			err = srv.ListenAndServeTLS(settings.TLS.CertFile, settings.TLS.KeyFile)
 		} else {
 			err = srv.ListenAndServe()
@@ -264,7 +275,7 @@ func runServer(ctx context.Context, name string, settings config.ServerSettings,
 
 	select {
 	case <-ctx.Done():
-		log.Printf("Shutting down %s server...", name)
+		logger.Info("shutting down server", "name", name)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
