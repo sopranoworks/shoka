@@ -8,7 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -44,6 +44,7 @@ type Notifier struct {
 	hooks  []hook
 	client *http.Client
 	wg     sync.WaitGroup
+	logger *slog.Logger
 }
 
 // New builds a Notifier from the given subscriptions.
@@ -59,6 +60,16 @@ func New(configs []Config) *Notifier {
 	return &Notifier{hooks: hooks, client: &http.Client{Timeout: 10 * time.Second}}
 }
 
+// SetLogger attaches a structured logger. A nil logger (default) discards output.
+func (n *Notifier) SetLogger(l *slog.Logger) { n.logger = l }
+
+func (n *Notifier) log() *slog.Logger {
+	if n.logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return n.logger
+}
+
 // Emit asynchronously delivers ev to every hook subscribed to ev.Event. It
 // returns immediately; delivery failures are logged, never propagated.
 func (n *Notifier) Emit(ev Event) {
@@ -67,7 +78,7 @@ func (n *Notifier) Emit(ev Event) {
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {
-		log.Printf("webhook: failed to marshal event: %v", err)
+		n.log().Error("webhook: failed to marshal event", "error", err)
 		return
 	}
 	for _, h := range n.hooks {
@@ -94,7 +105,7 @@ func (n *Notifier) deliver(h hook, body []byte) {
 	for attempt := 1; attempt <= attempts; attempt++ {
 		req, err := http.NewRequest(http.MethodPost, h.url, bytes.NewReader(body))
 		if err != nil {
-			log.Printf("webhook %s: build request: %v", h.name, err)
+			n.log().Error("webhook build request failed", "webhook", h.name, "error", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -108,11 +119,12 @@ func (n *Notifier) deliver(h hook, body []byte) {
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode < 400 {
+				n.log().Info("webhook delivered", "webhook", h.name, "status", resp.StatusCode, "attempt", attempt)
 				return
 			}
-			log.Printf("webhook %s: status %d (attempt %d/%d)", h.name, resp.StatusCode, attempt, attempts)
+			n.log().Warn("webhook delivery failed", "webhook", h.name, "status", resp.StatusCode, "attempt", attempt, "max_attempts", attempts)
 		} else {
-			log.Printf("webhook %s: %v (attempt %d/%d)", h.name, err, attempt, attempts)
+			n.log().Warn("webhook delivery error", "webhook", h.name, "error", err, "attempt", attempt, "max_attempts", attempts)
 		}
 
 		if attempt < attempts {
