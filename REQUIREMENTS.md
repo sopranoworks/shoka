@@ -1,47 +1,50 @@
-# v1 Requirements: Markdown-MCP Backend Server
+# v1 Requirements: Shoka (Markdown-MCP Backend Server)
 
-## Overview
-This document defines the scoped requirements for version 0.1 of Shoka. The goal is a functional prototype that handles multi-project isolated storage, version control, and a translation bridge for agents.
+This is the **historical record** of Shoka's v1 requirements. All v1 requirements
+are implemented and validated. This document no longer describes architecture or
+operations — those live in [`docs/`](docs/) and [`README.md`](README.md). Each
+entry links to where its implementation is now documented.
 
-## v1 Requirements
+## v1 Requirements (all complete)
 
-### Metadata & Storage
-- [x] **META-01**: User projects are physically isolated on the filesystem under a `<base_dir>/<namespace>/<projectName>` directory layout. Isolation is enforced by name validation (alphanumeric, `-`, `_`) plus path-traversal guards. No UUIDs are used.
-- [x] **META-02**: Project identity is the human-readable `namespace/projectName` path itself; there is no separate metadata database. (The originally-planned SQLite UUID→name mapping was dropped in favour of direct filesystem isolation; this decision is now final.)
+| ID | Requirement | Implemented / documented in |
+|----|-------------|-----------------------------|
+| **META-01** | Filesystem project isolation under `<base_dir>/<namespace>/<projectName>`, enforced by name validation + path-traversal guards; no UUIDs. | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (design choices); [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 7 |
+| **META-02** | Project identity is the `namespace/projectName` path itself; no metadata database (the planned SQLite UUID map was dropped — final). | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| **FILE-01** | Project creation, file management, and translation exposed as MCP tools. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4 |
+| **FILE-02** | CRUD for Markdown files within a project. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.4–4.8 |
+| **VER-01** | Every write is an atomic Git commit (`go-git`). | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 7 |
+| **VER-02** | Git history exposed to agents as tools. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.9 (`get_history`), § 4.6 (`read_file_at_version`) |
+| **TRANS-01** | Manual, human-triggered Japanese→English translation via Google Cloud Translation. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.13 (`translate_file`) |
+| **DRAFT-01** | WebSocket `/drafts/{namespace}/{projectName}` real-time draft persistence with replay on reconnect. | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Web UI component); [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
 
-### File & Protocol
-- [x] **FILE-01**: Expose project creation, file management, and translation triggers as MCP Tools.
-- [x] **FILE-02**: Implement basic CRUD (Create, Read, Update, Delete) for Markdown files within a project directory.
+## v2 Requirements (deferred)
 
-### Versioning
-- [x] **VER-01**: Every human "Send" action triggers an atomic Git commit for the modified file(s) using `go-git`.
-- [x] **VER-02**: Expose Git commit history as MCP Resources or Tools to provide agents with contextual evolution.
+- **TRANS-02**: Google Translation V3 glossaries for consistent agent-optimized
+  terminology. (Not implemented.)
 
-### Translation
-- [x] **TRANS-01**: Implement a manual, human-triggered translation pipeline (Japanese to English) using Google Cloud Translation API.
+## Notes on scope
 
-### Persistence
-- [x] **DRAFT-01**: Implement a WebSocket-based `/drafts/{namespace}/{projectName}` endpoint for real-time draft persistence to prevent data loss on mobile/unstable clients. The draft file is replayed to the client on (re)connection so a session can resume from the last synced state.
+What the MCP interface intentionally does *not* cover (history rewriting, push
+subscriptions, arbitrary-commit diffing, ACLs) is documented in
+[`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 8. Optional Bearer-token
+authentication was added post-v1 (remediation directive) and is specified in
+[`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 3.
 
-## v2 Requirements (Deferred)
-- **TRANS-02**: Support for Google Translation V3 glossaries to ensure consistent agent-optimized terminology.
+## Traceability
 
-## Out of Scope
-- **Automatic Translation**: Translation remains an explicit human action.
-- **Full Web UI**: Focusing on backend logic and MCP interface. (A functional React editor nevertheless ships and is embedded in the binary.)
-- **Multi-user Authentication**: v0.1 assumes a trusted environment or single-operator service. (Optional Bearer-token authentication is introduced post-v1 by the 2026-05-27 remediation directive.)
-
-## Traceability Matrix
-| Req ID | Phase | Plan | Status |
-|--------|-------|------|--------|
-| META-01 | Phase 1 | | Validated |
-| META-02 | Phase 1 | | Validated |
-| FILE-01 | Phase 1 | | Validated |
-| FILE-02 | Phase 2 | | Validated |
-| VER-01 | Phase 2 | | Validated |
-| VER-02 | Phase 2 | | Validated |
-| TRANS-01 | Phase 3 | | Validated |
-| DRAFT-01 | Phase 4 | | Validated |
+| Req ID | Phase | Status |
+|--------|-------|--------|
+| META-01 | Phase 1 | Validated |
+| META-02 | Phase 1 | Validated |
+| FILE-01 | Phase 1 | Validated |
+| FILE-02 | Phase 2 | Validated |
+| VER-01 | Phase 2 | Validated |
+| VER-02 | Phase 2 | Validated |
+| TRANS-01 | Phase 3 | Validated |
+| DRAFT-01 | Phase 4 | Validated |
 
 ---
-*Last updated: 2026-05-27 — reconciled with the implemented system (remediation directive, Phase 1). TRANS-01 and DRAFT-01 confirmed complete; META-01/02 corrected to describe filesystem isolation (no UUIDs, no SQLite).*
+*Historical requirements record. Architecture and operations content moved to
+`docs/` and `README.md` on 2026-05-28 (documentation-consolidation directive);
+this file now links to those documents instead of duplicating them.*

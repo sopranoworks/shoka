@@ -1,3 +1,14 @@
+---
+title: Frontmatter Convention
+summary: YAML frontmatter that lets overview tools reason about documents without reading their bodies. Advisory, not server-enforced.
+status: active
+tags: [convention, frontmatter, metadata, shoka]
+related:
+  - docs/conventions/document-lifecycle.md
+  - docs/conventions/failure-records.md
+  - docs/contracts/mcp-v1.md
+---
+
 # Frontmatter Convention
 
 Shoka stores plain Markdown files. To let overview windows and skills reason about
@@ -35,9 +46,12 @@ The first paragraph becomes the excerpt...
 |-----------|-----------------|----------|---------|
 | `title`   | string          | yes      | Human-readable document title. |
 | `summary` | string (≤200)   | yes      | One-line summary. Keep it ≤200 characters. |
-| `status`  | enum            | yes      | One of `draft`, `active`, `completed`, `archived`. |
+| `status`  | enum            | yes      | Lifecycle state: one of `draft`, `active`, `superseded`, `failed`, `archived`. Definitions and choice criteria live in `docs/conventions/document-lifecycle.md`. |
 | `tags`    | list of strings | no       | Free-form labels for discovery. |
 | `related` | list of paths   | no       | Other files (project-relative paths) this document relates to. |
+
+`status: failed` documents carry additional fields — see
+`docs/conventions/failure-records.md`.
 
 ## How Shoka uses it
 
@@ -54,3 +68,12 @@ The first paragraph becomes the excerpt...
 - If a file has no frontmatter, `read_summary` still returns its first heading and
   excerpt; the `frontmatter` object is simply empty.
 - Malformed YAML never causes an error; it yields an empty `frontmatter` object.
+
+## Sources
+
+- Source: `internal/markdown/markdown.go` (frontmatter parse; tolerant of
+  malformed/absent YAML; `MaxExcerptRunes = 200`), `internal/tools/summary.go:14-72`
+  (`read_summary` fields), `internal/tools/project.go:88-175`
+  (`list_files include_summaries`).
+- Convention: `docs/conventions/document-lifecycle.md` (the `status` enum),
+  `docs/conventions/failure-records.md` (`status: failed` extra fields).
