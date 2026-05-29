@@ -13,11 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// wireStart boots an in-process MCP server over the real SSE transport (auth
-// disabled) with the file/project/discovery tools registered, and connects a
-// real MCP client. This exercises the actual wire-level argument-schema
-// validation — the layer the handler-direct unit tests bypass, which is how F2
-// (optional fields wrongly required) shipped undetected.
+// wireStart boots an in-process MCP server over the real Streamable HTTP
+// transport (auth disabled) with the file/project/discovery tools registered, and
+// connects a real MCP client. This exercises the actual wire-level
+// argument-schema validation — the layer the handler-direct unit tests bypass,
+// which is how F2 (optional fields wrongly required) shipped undetected.
 func wireStart(t *testing.T) (*mcp.ClientSession, func()) {
 	t.Helper()
 	s, err := storage.NewFSGitStorage(t.TempDir())
@@ -34,11 +34,11 @@ func wireStart(t *testing.T) (*mcp.ClientSession, func()) {
 	mcp.AddTool(srv, &mcp.Tool{Name: "list_files_since"}, tools.ListFilesSinceHandler(s))
 	mcp.AddTool(srv, &mcp.Tool{Name: "search_files"}, tools.SearchFilesHandler(s))
 
-	h := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server { return srv }, nil)
+	h := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return srv }, nil)
 	httpSrv := httptest.NewServer(h)
 
 	cli := mcp.NewClient(&mcp.Implementation{Name: "wire-test-client", Version: "0.0.0"}, nil)
-	sess, err := cli.Connect(context.Background(), &mcp.SSEClientTransport{Endpoint: httpSrv.URL}, nil)
+	sess, err := cli.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: httpSrv.URL}, nil)
 	require.NoError(t, err)
 
 	return sess, func() { sess.Close(); httpSrv.Close() }

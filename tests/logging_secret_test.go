@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// syncBuffer is a goroutine-safe log sink (SSE serves on background goroutines).
+// syncBuffer is a goroutine-safe log sink (the transport serves on background goroutines).
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf strings.Builder
@@ -36,7 +36,7 @@ func (b *syncBuffer) String() string {
 }
 
 // bearerRT injects an Authorization header on every request (the SDK's
-// SSEClientTransport has no header field, only a custom http.Client).
+// StreamableClientTransport has no header field, only a custom http.Client).
 type bearerRT struct {
 	base  http.RoundTripper
 	token string
@@ -50,9 +50,10 @@ func (rt bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	return rt.base.RoundTrip(r2)
 }
 
-// TestLogging_NeverLeaksContentOrToken drives a real authenticated SSE session
-// through the full logging stack (transport middleware + SDK session logger +
-// tool wrapper) at DEBUG level and asserts neither secret appears in any log.
+// TestLogging_NeverLeaksContentOrToken drives a real authenticated Streamable
+// HTTP session through the full logging stack (transport middleware + SDK session
+// logger + tool wrapper) at DEBUG level and asserts neither secret appears in any
+// log.
 func TestLogging_NeverLeaksContentOrToken(t *testing.T) {
 	const (
 		token   = "SUPER-SECRET-BEARER-TOKEN-a1b2c3"
@@ -70,18 +71,19 @@ func TestLogging_NeverLeaksContentOrToken(t *testing.T) {
 	mcp.AddTool(srv, &mcp.Tool{Name: "create_project"}, tools.LoggedTool(logger, "create_project", tools.CreateProjectHandler(s)))
 	mcp.AddTool(srv, &mcp.Tool{Name: "write_file"}, tools.LoggedTool(logger, "write_file", tools.WriteFileHandler(s)))
 
-	// Production-shaped chain: logging outermost, then auth, then SSE handler.
-	sseHandler := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server { return srv }, nil)
+	// Production-shaped chain: logging outermost, then auth, then the Streamable
+	// HTTP handler.
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return srv }, nil)
 	a := auth.New(auth.Config{Enabled: true, Tokens: []string{token}})
-	handler := httplog.Middleware(logger)(a.Middleware(sseHandler))
+	handler := httplog.Middleware(logger)(a.Middleware(mcpHandler))
 
 	httpSrv := httptest.NewServer(handler)
 	defer httpSrv.Close()
 
 	client := &http.Client{Transport: bearerRT{base: http.DefaultTransport, token: token}}
 	cli := mcp.NewClient(&mcp.Implementation{Name: "secret-test-client", Version: "0.0.0"}, nil)
-	sess, err := cli.Connect(context.Background(), &mcp.SSEClientTransport{Endpoint: httpSrv.URL, HTTPClient: client}, nil)
-	require.NoError(t, err, "authenticated SSE connect must succeed (proves auth+flusher survive logging)")
+	sess, err := cli.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: httpSrv.URL, HTTPClient: client}, nil)
+	require.NoError(t, err, "authenticated Streamable HTTP connect must succeed (proves auth+flusher survive logging)")
 	defer sess.Close()
 
 	r, err := sess.CallTool(context.Background(), &mcp.CallToolParams{

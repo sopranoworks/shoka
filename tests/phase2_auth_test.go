@@ -100,7 +100,7 @@ func TestAuth_UIEndpoint_RequiresTokenAndOrigin(t *testing.T) {
 func TestAuth_MCPEndpoint_RequiresToken(t *testing.T) {
 	a := auth.New(auth.Config{Enabled: true, Tokens: []string{"secret"}})
 	mcpSrv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
-	h := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server { return mcpSrv }, nil)
+	h := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return mcpSrv }, nil)
 
 	server := httptest.NewServer(a.Middleware(h))
 	defer server.Close()
@@ -111,7 +111,10 @@ func TestAuth_MCPEndpoint_RequiresToken(t *testing.T) {
 	resp.Body.Close()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 
-	// Valid token -> SSE stream opens (not 401).
+	// Valid token -> the request reaches the MCP handler (no longer 401). The
+	// handler itself may answer with a 4xx other than 401 (e.g. a bare GET lacks
+	// the Accept: text/event-stream the Streamable HTTP transport requires); the
+	// point here is only that auth let it through.
 	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer secret")
