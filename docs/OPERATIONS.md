@@ -32,13 +32,13 @@ annotated example is `shoka.example.yaml`.
 |-----|------|----------|---------|---------|
 | `storage.base_dir` | string | **yes** | — | Directory holding project repos (`<base_dir>/<namespace>/<project>`). Relative paths resolve to the working dir; created on startup. |
 | `server.http.listen` | string | **yes** | — | Address for the web UI + WebSocket endpoints (`/`, `/ws/ui`, `/drafts/...`). |
-| `server.mcp.listen` | string | **yes** | — | Address for the MCP (SSE) endpoint. |
+| `server.mcp.listen` | string | **yes** | — | Address for the MCP (Streamable HTTP) endpoint; clients connect at the `/mcp` path. |
 | `server.http.external_url` | string | no | "" | Public URL reported by `get_server_info`. |
 | `server.mcp.external_url` | string | no | "" | Public URL reported by `get_server_info`. |
 | `server.http.tls.enabled` / `.cert_file` / `.key_file` | bool / string | no | false | TLS for the web listener. Same shape under `server.mcp.tls`. |
 | `server.auth.enabled` | bool | no | `false` | Enable Bearer-token auth. When false, no auth and all WS origins accepted. |
 | `server.auth.tokens` | list of strings | no | [] | Accepted bearer tokens (constant-time compared). |
-| `server.auth.allowed_origins` | list of strings | no | [] | When auth is on, permitted WebSocket `Origin` values (empty Origin rejected; MCP/SSE is not origin-checked). |
+| `server.auth.allowed_origins` | list of strings | no | [] | When auth is on, permitted WebSocket `Origin` values (empty Origin rejected; the MCP endpoint is bearer-authenticated, not origin-checked). |
 | `services.google_cloud.project_id` | string | no | "" | When set, registers `translate_file` (uses Application Default Credentials). |
 | `webhooks[].name` / `.url` / `.events` / `.secret` | strings / list | no | — | Outbound webhook subscriptions. `events` ⊆ {`file_written`,`file_deleted`,`project_created`}. `secret` enables the `X-Shoka-Signature` HMAC header. |
 
@@ -49,7 +49,7 @@ Validation: the server refuses to start without `storage.base_dir`,
 ## Logging
 
 Shoka emits structured log lines to **stderr**; stdout is reserved for the MCP
-SSE stream and must remain clean.
+transport's stream output and must remain clean.
 
 ### Configuration
 
@@ -76,8 +76,8 @@ An absent `server.log` block is fully backward-compatible: the server starts at
 |-------|--------|
 | `error` | The `tools/call`-during-initialization rejection (from the SDK — the session-init fault), tool handler errors/panics, storage commit failures. |
 | `warn` | Requests rejected with HTTP status ≥ 400 (unknown/expired session, auth failure), webhook delivery failures. |
-| `info` (default) | Server start/stop and listener addresses; SSE stream open/close; MCP session lifecycle (session connected/disconnected, via the SDK); tool-call received/completed with outcome; git commits (hash + path); webhook delivery success. |
-| `debug` | Everything at `info`, **plus** the per-message JSON-RPC method + session ID for each POST to the message endpoint, and finer SDK protocol detail. |
+| `info` (default) | Server start/stop and listener addresses; server→client stream open/close and session termination; MCP session lifecycle (session connected/disconnected, via the SDK); tool-call received/completed with outcome; git commits (hash + path); webhook delivery success. |
+| `debug` | Everything at `info`, **plus** the per-message JSON-RPC method + session ID for each POST to the MCP endpoint, and finer SDK protocol detail. |
 
 **Logs never contain file content or auth tokens** — only metadata (paths,
 method names, session IDs, outcome labels). This is enforced by design: the
@@ -88,37 +88,47 @@ logging layer never receives content or credential values.
 At `server.log.level: debug` the MCP endpoint additionally emits redacted,
 protocol-level traces to stderr to make wire-level faults diagnosable:
 
-- `mcp message received` — each inbound JSON-RPC request: `rpc_method`, `rpc_id`,
-  and `rpc_params` (the full params as JSON). The `write_file` `content` argument
-  is replaced with `<redacted N bytes>`; everything else is verbatim.
-- `mcp response sent` — each outbound JSON-RPC response carried on the SSE stream:
-  `rpc_id` and the full response `event_data`. `read_file` /
-  `read_file_at_version` `content` and `read_summary` `excerpt` are replaced with
-  `<redacted N bytes>`; everything else (including version hashes and error
-  messages) is verbatim.
-- `sse event sent` — every other SSE event, including the `endpoint` event whose
-  `event_data` carries the `?sessionid=...` correlation value.
+- `mcp message received` — each inbound JSON-RPC request (POST): `rpc_method`,
+  `rpc_id`, `conn_id`, `session_id`, and `rpc_params` (the full params as JSON).
+  The `write_file` `content` argument is replaced with `<redacted N bytes>`;
+  everything else is verbatim.
+- `mcp response sent` — each outbound JSON-RPC response (the POST response, whether
+  the SDK answers with `application/json` or a `text/event-stream` frame): `rpc_id`
+  and the full response `event_data`. `read_file` / `read_file_at_version`
+  `content` and `read_summary` `excerpt` are replaced with `<redacted N bytes>`;
+  everything else (including version hashes and error messages) is verbatim.
+- `mcp session established` — logged when the `initialize` response assigns a
+  Streamable HTTP `Mcp-Session-Id`; carries that `session_id` for correlation.
+- `mcp stream opened` / `mcp stream closed` — the optional standalone server→client
+  SSE stream (GET) opening and closing.
+- `mcp session terminated` — a client `DELETE` ending its session.
+- `mcp event sent` — any other server→client stream frame (a notification, ping,
+  etc.): only its `event_name` and `data_bytes` size are logged, never raw payload.
 - Session lifecycle (`server session connected`, `session initialized`,
-  `server session disconnected`, and the `method invalid during initialization`
-  rejection) is emitted by the MCP SDK itself via the configured logger.
+  `server session disconnected`) is emitted by the MCP SDK itself via the
+  configured logger.
 
 This output is best-effort diagnostic instrumentation only; it never changes the
 wire protocol, and file contents and bearer tokens are never logged. It is
 verbose — enable `debug` for diagnosis, not for steady-state operation.
 
-### Diagnosing the MCP session-initialization fault
+### Diagnosing MCP session faults
 
 If the MCP client fails to complete its handshake, run the server with
 `level: debug`. The debug stream will show:
 
-1. SSE stream opened (transport layer).
-2. Per-message JSON-RPC method + session ID for every POST to the message
-   endpoint.
-3. SDK session lifecycle events (session started, capability negotiation, etc.).
-4. Tool-call received/completed entries for any tool invocations that succeed.
+1. `mcp message received` — the inbound `initialize` POST and every later request.
+2. `mcp response sent` — the matching responses.
+3. `mcp session established` — the `Mcp-Session-Id` the server assigned at
+   `initialize`.
+4. SDK session lifecycle events (session started, capability negotiation, etc.).
+5. Tool-call received/completed entries for any tool invocations that succeed.
 
-Comparing these events against the expected SSE handshake in § 2 of
-`docs/contracts/mcp-v1.md` pinpoints where the session diverges.
+A `request rejected ... status=404` with a `session_id` is the **stale-session**
+signal: the client presented a session id this process does not know (typically
+because Shoka restarted). The client should re-initialize automatically; see § 2
+of `docs/contracts/mcp-v1.md`. Comparing these events against the Streamable HTTP
+flow in that section pinpoints where a session diverges.
 
 ## Backup
 
@@ -139,7 +149,9 @@ upgrade compatibility policy.
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | Server exits immediately with `... is required` | Missing `storage.base_dir`, `server.http.listen`, or `server.mcp.listen`. (`internal/config/config.go:58-69`.) |
-| HTTP **401** on the MCP endpoint | Auth enabled; request lacks a valid `Authorization: Bearer`. Note `?token=` is **not** accepted on MCP/SSE — header only. |
+| HTTP **401** on the MCP endpoint | Auth enabled; request lacks a valid `Authorization: Bearer`. Note `?token=` is **not** accepted on the MCP endpoint — header only. |
+| HTTP **404** on the MCP endpoint (`request rejected ... status=404` with a `session_id`) | The client presented an `Mcp-Session-Id` this process does not know (normal after a Shoka restart). Expected and self-healing: the client re-initializes. (Contract § 2.) |
+| HTTP **403** `invalid Host header` on the MCP endpoint | DNS-rebinding protection: a non-loopback `Host` reached a loopback-bound Shoka (often a reverse proxy forwarding the original `Host`). Fix the proxy `Host`, or start with `MCPGODEBUG=disablelocalhostprotection=1`. (Contract § 2.) |
 | WebSocket upgrade **401** | Auth on, no token. Pass the token via `?token=` (allowed on `/ws/ui`, `/drafts/`) or the header. |
 | WebSocket upgrade **403** | Auth on and the request `Origin` is not in `allowed_origins` (empty Origin is rejected). |
 | `translate_file` tool missing | `services.google_cloud.project_id` is unset, so the tool is not registered. |

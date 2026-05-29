@@ -29,7 +29,13 @@ server:
   http:
     listen: ":8080"       # web UI + WebSocket endpoints
   mcp:
-    listen: ":8081"       # MCP (SSE) endpoint for agents
+    listen: ":8081"       # MCP (Streamable HTTP) endpoint for agents, served at /mcp
+```
+
+Point an MCP client at the `/mcp` path on the MCP listener, e.g.:
+
+```sh
+claude mcp add --transport http shoka http://localhost:8081/mcp
 ```
 
 Authentication is **off** by default (single-operator local mode). See
@@ -54,7 +60,7 @@ against that document.
 ## Tech stack
 
 Go · [mcp-go-sdk](https://github.com/modelcontextprotocol/go-sdk) (MCP over
-SSE/HTTP) · [go-git](https://github.com/go-git/go-git) (versioning) ·
+Streamable HTTP) · [go-git](https://github.com/go-git/go-git) (versioning) ·
 [gorilla/websocket](https://github.com/gorilla/websocket) (drafts + UI) ·
 Google Cloud Translation v3 (optional). See `docs/ARCHITECTURE.md` for why.
 

@@ -45,26 +45,69 @@ directive disagreed, **the code wins**; such cases are flagged inline.
 
 ## 2. Transport
 
-- **Protocol:** MCP over **SSE**, spec `2024-11-05`. This is *not* the
-  streamable-HTTP transport. (Source: `cmd/server/main.go:86` —
-  `mcp.NewSSEHandler(...)`.)
-- **Listen address:** from config `server.mcp.listen` (e.g. `:8081`). The handler
-  is mounted as the MCP server's root handler and is **path-agnostic** — a GET to
-  any path opens the stream. (Source: `cmd/server/main.go:86-105`.)
-- **Handshake** (verified, verification report § 6 Task A): the client opens the
-  stream with `GET <any path>`; the server's first SSE event advertises the
-  message endpoint:
+- **Protocol:** MCP over **Streamable HTTP**, spec `2025-03-26` (refined
+  `2025-06-18`). SSE (the older `2024-11-05` HTTP+SSE transport) has been
+  **removed**; there is no SSE endpoint. (Source: `cmd/server/main.go:103-105` —
+  `mcp.NewStreamableHTTPHandler(...)`, SDK `go-sdk@v1.6.0/mcp/streamable.go:194`.)
+- **Endpoint:** the MCP listener `server.mcp.listen` (e.g. `:8081`). The handler
+  is the MCP listener's root handler and is **path-agnostic**, but the canonical,
+  documented endpoint path is **`/mcp`**. (Source: `cmd/server/main.go:103-121`.)
+  A client registers it with:
 
   ```
-  event: endpoint
-  data: /sse?sessionid=<SESSION_ID>
+  claude mcp add --transport http shoka http://localhost:<port>/mcp
   ```
 
-- **Message channel:** the client POSTs JSON-RPC messages to the advertised
-  `…?sessionid=<SESSION_ID>` endpoint (relative to the GET path).
+- **Single endpoint, three methods** ([spec][st]): the one `/mcp` URL serves
+  - **`POST`** — the client sends a JSON-RPC message; the server answers on the
+    same response, either as a single `application/json` body or as a
+    `text/event-stream` (the SDK default) carrying the response (and, if any, the
+    server→client messages tied to that request). The `POST` MUST send
+    `Accept: application/json, text/event-stream`.
+  - **`GET`** — opens the optional standalone server→client SSE stream
+    (`Accept: text/event-stream` required). Shoka pushes no unsolicited
+    server→client traffic in normal tool use, so this stream is informational.
+  - **`DELETE`** — terminates the session (the SDK client sends this on
+    `Close()`).
+- **Session identity (`Mcp-Session-Id`):** on the `initialize` response the
+  server assigns a session id in the **`Mcp-Session-Id`** response header. The
+  client MUST echo that header on **every** subsequent request. (Spec: [§
+  Transports][st]; SDK `streamable.go:289`, `streamable.go:1257`.)
+- **Stale-session recovery — `404 Not Found`:** if a request presents an
+  `Mcp-Session-Id` the server does not recognise — most importantly **after the
+  Shoka process restarts**, since sessions are in-memory — the server responds
+  **`404 Not Found`** ("session not found"). The SDK client surfaces this as
+  `ErrSessionMissing`; the client then re-initializes (a fresh `initialize` with
+  no session id) and continues. This is the spec-mandated behaviour and is what
+  makes a client survive a server restart. (Spec: *"The server MAY terminate the
+  session at any time, after which it MUST respond to requests containing that
+  session ID with HTTP 404 Not Found."* — [§ Transports][st]; SDK
+  `streamable.go:295-301`, `transport.go:35-37`. Verified live —
+  `meta/reports/2026-05-29-shoka-http-transport-complete.md`, the server-restart
+  test.)
+- **Resumption (`Last-Event-ID`):** the transport supports resuming a dropped
+  SSE stream by replaying events after the `Last-Event-ID` the client last saw
+  ([spec][st]; SDK `streamable.go:920-934`). Replay requires a server-side
+  `EventStore`; Shoka configures **none**, so events are not retained for replay —
+  a client that drops its stream simply reconnects (and, if its session is gone,
+  re-initializes per the 404 path above).
+- **DNS-rebinding protection (Host header):** the SDK's Streamable HTTP handler
+  enforces DNS-rebinding protection. When Shoka is reached on a loopback local
+  address (`127.0.0.1` / `::1` / `localhost`) but the request's `Host` header is
+  **not** a loopback name, the handler returns **`403 Forbidden: invalid Host
+  header`** *before* dispatching. The normal registration
+  `http://localhost:<port>/mcp` / `http://127.0.0.1:<port>/mcp` never triggers it
+  (`localhost` and `127.0.0.1` both count as loopback). It can bite only if a
+  non-loopback `Host` (a public hostname, or a reverse proxy's forwarded `Host`)
+  reaches a loopback-bound Shoka; in a reverse-proxy deployment, terminate so the
+  upstream `Host` is a loopback name, or disable the check by starting Shoka with
+  the SDK env var `MCPGODEBUG=disablelocalhostprotection=1`. (Source: SDK
+  `go-sdk@v1.6.0/mcp/streamable.go:252-258`.)
 
-(Source: verification report `meta/reports/2026-05-27-shoka-verification.md` § 2.1
-and § 6 Task A.)
+[st]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
+
+(Source: `cmd/server/main.go:103-121`; SDK `go-sdk@v1.6.0/mcp/streamable.go`;
+live verification `meta/reports/2026-05-29-shoka-http-transport-complete.md`.)
 
 ---
 
@@ -76,22 +119,22 @@ Controlled by config `server.auth` (Source: `internal/config/config.go:23-30`;
 - **`server.auth.enabled: false` (default):** no authentication; all requests pass
   and all WebSocket origins are accepted. (Source: `internal/auth/auth.go:39-44`.)
 - **`server.auth.enabled: true`:**
-  - **MCP/SSE requires `Authorization: Bearer <token>`** on every request. The
-    `?token=` query parameter is **NOT** accepted on MCP/SSE — only on the
-    WebSocket paths `/ws/ui` and `/drafts/`. (Source: `internal/auth/auth.go:39-75`
-    header-only `Authenticate`/`Middleware` vs. query-allowing
-    `AuthenticateWebSocket`/`MiddlewareAllowQueryToken`; wired at
-    `cmd/server/main.go:104` (MCP, header-only) and `:215-216` (WS, query-allowing).
-    This was finding **F1**, fixed:
+  - **The MCP endpoint requires `Authorization: Bearer <token>`** on every
+    request. The `?token=` query parameter is **NOT** accepted on the MCP
+    endpoint — only on the WebSocket paths `/ws/ui` and `/drafts/`. (Source:
+    `internal/auth/auth.go:39-75` header-only `Authenticate`/`Middleware` vs.
+    query-allowing `AuthenticateWebSocket`/`MiddlewareAllowQueryToken`; wired at
+    `cmd/server/main.go:121` (MCP, header-only) and the WS handlers
+    (query-allowing). This was finding **F1**, fixed:
     `meta/reports/2026-05-28-shoka-schema-fixes-complete.md`.)
   - Tokens are compared in **constant time** against the configured set. (Source:
     `internal/auth/auth.go:80-89`.)
   - **Failure response:** HTTP **401** with header `WWW-Authenticate: Bearer` and
     body `unauthorized`. (Source: `internal/auth/auth.go` middleware; verification
     report § 6 Task A.)
-  - The credential must be present on **every** request of the session — both the
-    GET stream and each POST to the message endpoint. (The SSE client must attach
-    the header to all requests.)
+  - The credential must be present on **every** request of the session — each
+    POST to `/mcp`, the optional GET stream, and the DELETE that ends the session.
+    (The Streamable HTTP client must attach the header to all requests.)
 
 ---
 
@@ -403,6 +446,7 @@ names, session IDs, outcome labels). See `docs/OPERATIONS.md` § Logging for
 configuration details (`server.log.level`, `server.log.format`).
 - **Diagnostic logging (non-normative).** When the server is run with
   `server.log.level: debug`, it emits redacted protocol-level traces (JSON-RPC
-  request/response bodies and SSE event payloads) to stderr. This is operational
-  instrumentation only: it does not change the wire protocol, message shapes, or
-  any behavior described above, and never logs file contents or credentials.
+  request/response bodies, the assigned `Mcp-Session-Id`, and server→client
+  stream frames) to stderr. This is operational instrumentation only: it does not
+  change the wire protocol, message shapes, or any behavior described above, and
+  never logs file contents or credentials.

@@ -21,9 +21,10 @@ Shoka is a single Go binary running two HTTP listeners (Source:
   repository at `<base_dir>/<namespace>/<project>`. Writes and deletes are atomic
   commits; history is the audit trail. No database. (Source:
   `internal/storage/fs_git.go`.)
-- **MCP server (SSE)** — `internal/tools` + the MCP Go SDK. Exposes the 13 tools
-  on the `server.mcp.listen` port over the MCP SSE transport (spec `2024-11-05`).
-  (Source: `cmd/server/main.go:85-88,131-208`.)
+- **MCP server (Streamable HTTP)** — `internal/tools` + the MCP Go SDK. Exposes
+  the 13 tools on the `server.mcp.listen` port (path `/mcp`) over the Streamable
+  HTTP transport (spec `2025-03-26`). (Source: `cmd/server/main.go:103-121`,
+  `setupMCPServer`.)
 - **Web UI (WebSocket + draft persistence)** — `internal/ui`, `internal/drafts`,
   plus an embedded React build served on the `server.http.listen` port. Drafts are
   persisted over a WebSocket (`/drafts/{namespace}/{project}`) and replayed on
@@ -36,7 +37,7 @@ Shoka is a single Go binary running two HTTP listeners (Source:
   `internal/storage/fs_git.go:41-51`; `cmd/server/main.go:47-57`;
   `internal/webhooks/webhooks.go`.)
 - **Auth middleware** — `internal/auth`. Optional Bearer-token authentication and
-  WebSocket origin policy; disabled by default. Header-only on MCP/SSE;
+  WebSocket origin policy; disabled by default. Header-only on the MCP endpoint;
   `?token=` query fallback allowed only on the WebSocket paths. (Source:
   `internal/auth/auth.go`; `cmd/server/main.go:104,215-216`.)
 
@@ -71,8 +72,9 @@ iOS Claude app → Remote Control → `claude code` (a per-project window) → S
 ```
 
 Clients do not connect to Shoka directly; a `claude code` instance acts as the
-window and is the MCP client. The only network surfaces are the MCP (SSE) endpoint
-and the web UI's WebSocket endpoints — there is no separate mobile REST API.
+window and is the MCP client. The only network surfaces are the MCP (Streamable
+HTTP) endpoint and the web UI's WebSocket endpoints — there is no separate mobile
+REST API.
 
 ## Sources
 

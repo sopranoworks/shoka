@@ -39,7 +39,7 @@ Practical guidance. For exact schemas and semantics, see `docs/contracts/mcp-v1.
 3. **Do not assume webhook side effects happened before your call returned.**
    Delivery is async and best-effort; the write succeeds even if every webhook
    target is down.
-4. **Do not put bearer tokens in URLs for MCP.** MCP/SSE accepts only the
+4. **Do not put bearer tokens in URLs for MCP.** The MCP endpoint accepts only the
    `Authorization: Bearer` header; `?token=` works on WebSocket paths only.
 5. **Do not use absolute paths or `..`.** Paths are project-relative; traversal
    and absolute paths are rejected.
