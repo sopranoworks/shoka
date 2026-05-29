@@ -1,7 +1,9 @@
-// Package httplog provides transport-layer logging middleware for Shoka's MCP
-// (SSE) endpoint. It logs request metadata only — never request headers (so
-// Authorization/?token= are never logged) and never the message params/content
-// (only the top-level JSON-RPC "method").
+// Package httplog provides transport-layer logging for Shoka's MCP (SSE) endpoint.
+// At INFO it logs SSE stream lifecycle and rejected requests (metadata only,
+// never headers — so Authorization/?token= are never logged). At DEBUG it adds
+// protocol-level observation: full JSON-RPC request/response bodies and SSE event
+// payloads, with the directive's §4 redaction applied (see jsonrpc.go, sse.go).
+// All DEBUG work is gated on logger.Enabled so INFO-level overhead is unchanged.
 package httplog
 
 import (
@@ -11,17 +13,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"time"
 )
 
-// methodRe extracts the top-level JSON-RPC method name from the start of a
-// message body. Matched against a bounded prefix only.
-var methodRe = regexp.MustCompile(`"method"\s*:\s*"([^"]+)"`)
-
-// Middleware logs SSE GET stream open/close (INFO), POST message receipt with
-// JSON-RPC method + session id (DEBUG), and any response with status >= 400
-// (WARN). A nil logger is replaced with a discard logger.
+// Middleware logs SSE GET stream open/close (INFO), POST JSON-RPC messages
+// (DEBUG, redacted), outbound SSE events (DEBUG, redacted), and any response with
+// status >= 400 (WARN). A nil logger is replaced with a discard logger.
 func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -30,59 +27,77 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			sessionID := r.URL.Query().Get("sessionid")
-			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			debug := logger.Enabled(r.Context(), slog.LevelDebug)
+
+			sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			var rw http.ResponseWriter = sr
 
 			switch r.Method {
 			case http.MethodGet:
 				connID := newConnID()
 				logger.LogAttrs(r.Context(), slog.LevelInfo, "sse stream opened",
 					slog.String("conn_id", connID), slog.String("remote", r.RemoteAddr))
-				next.ServeHTTP(rec, r)
+				if debug {
+					rw = &sseLogRecorder{statusRecorder: sr, logger: logger, ctx: r.Context(), connID: connID}
+				}
+				next.ServeHTTP(rw, r)
 				logger.LogAttrs(r.Context(), slog.LevelInfo, "sse stream closed",
 					slog.String("conn_id", connID), slog.String("remote", r.RemoteAddr),
-					slog.Int("status", rec.status), slog.Duration("duration", time.Since(start)))
+					slog.Int("status", sr.status), slog.Duration("duration", time.Since(start)))
 			case http.MethodPost:
-				method := peekMethod(r)
-				logger.LogAttrs(r.Context(), slog.LevelDebug, "mcp message received",
-					slog.String("rpc_method", method), slog.String("session_id", sessionID),
-					slog.String("remote", r.RemoteAddr))
-				next.ServeHTTP(rec, r)
+				if debug {
+					logRequest(r, logger, sessionID)
+				}
+				next.ServeHTTP(rw, r)
 			default:
-				next.ServeHTTP(rec, r)
+				next.ServeHTTP(rw, r)
 			}
 
-			if rec.status >= 400 {
+			if sr.status >= 400 {
 				logger.LogAttrs(r.Context(), slog.LevelWarn, "request rejected",
 					slog.String("http_method", r.Method), slog.String("path", r.URL.Path),
-					slog.String("session_id", sessionID), slog.Int("status", rec.status),
+					slog.String("session_id", sessionID), slog.Int("status", sr.status),
 					slog.String("remote", r.RemoteAddr))
 			}
 		})
 	}
 }
 
-// peekMethod reads only a bounded prefix of the body to extract the JSON-RPC
-// method, then restores the full body (prefix + untouched remainder) so the
-// downstream handler reads the complete, unmodified stream. The large content
-// body is never buffered.
-func peekMethod(r *http.Request) string {
+// logRequest reads the full POST body, restores it byte-identically for the
+// downstream handler, and logs the JSON-RPC method/id/params at DEBUG with §4
+// redaction. Best-effort: a panic here never reaches the handler, and the body is
+// always restored even on a read error. Only called when DEBUG is enabled, so the
+// full-body read never happens at production INFO level.
+func logRequest(r *http.Request, logger *slog.Logger, sessionID string) {
+	defer func() { _ = recover() }()
 	if r.Body == nil {
-		return ""
+		return
 	}
-	const peekMax = 1024
-	prefix, err := io.ReadAll(io.LimitReader(r.Body, peekMax))
-	// Always restore a working body, even on a partial read.
-	r.Body = &restoredBody{
-		Reader: io.MultiReader(bytes.NewReader(prefix), r.Body),
-		closer: r.Body,
+	body, _ := io.ReadAll(r.Body)
+	// Restore the exact bytes (plus any unread remainder) for the handler.
+	r.Body = &restoredBody{Reader: io.MultiReader(bytes.NewReader(body), r.Body), closer: r.Body}
+
+	method, id, params, ok := redactedRequest(body)
+	if !ok {
+		// Content-safe: never log raw bytes we could not structurally redact.
+		logger.LogAttrs(r.Context(), slog.LevelDebug, "mcp message received (unparseable)",
+			slog.String("session_id", sessionID),
+			slog.Int("body_bytes", len(body)),
+			slog.String("remote", r.RemoteAddr))
+		return
 	}
-	if err != nil {
-		return ""
+	attrs := []slog.Attr{
+		slog.String("rpc_method", method),
+		slog.String("session_id", sessionID),
+		slog.String("remote", r.RemoteAddr),
 	}
-	if m := methodRe.FindSubmatch(prefix); m != nil {
-		return string(m[1])
+	if id != "" {
+		attrs = append(attrs, slog.String("rpc_id", id))
 	}
-	return ""
+	if params != "" {
+		attrs = append(attrs, slog.String("rpc_params", params))
+	}
+	logger.LogAttrs(r.Context(), slog.LevelDebug, "mcp message received", attrs...)
 }
 
 type restoredBody struct {
@@ -99,8 +114,8 @@ func newConnID() string {
 }
 
 // statusRecorder captures the response status while forwarding everything to the
-// underlying ResponseWriter. It preserves http.Flusher (directly and via
-// Unwrap, for http.ResponseController) so SSE streaming is unaffected.
+// underlying ResponseWriter. It preserves http.Flusher (directly and via Unwrap,
+// for http.ResponseController) so SSE streaming is unaffected.
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int

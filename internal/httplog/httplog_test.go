@@ -96,6 +96,29 @@ func TestMiddleware_PreservesFlusher(t *testing.T) {
 	}
 }
 
+// At INFO level the protocol-logging work must not run: the body must reach the
+// handler intact and no DEBUG "mcp message received" line may be emitted. This
+// locks in the directive's performance contract (DEBUG-gated full-body reads).
+func TestMiddleware_POST_InfoLevel_BodyNotReadAndNoDebugLine(t *testing.T) {
+	var buf bytes.Buffer
+	lg := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	var seen string
+	h := Middleware(lg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seen = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	req := httptest.NewRequest(http.MethodPost, "/sse?sessionid=X", strings.NewReader(body))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if seen != body {
+		t.Fatalf("INFO-level middleware corrupted POST body: got %q", seen)
+	}
+	if strings.Contains(buf.String(), "mcp message received") {
+		t.Errorf("DEBUG line emitted at INFO level: %q", buf.String())
+	}
+}
+
 // A nil logger must be tolerated (best-effort logging must never fail a request).
 func TestMiddleware_NilLoggerDoesNotPanic(t *testing.T) {
 	served := false
