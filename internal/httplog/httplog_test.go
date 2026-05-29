@@ -20,10 +20,10 @@ func TestMiddleware_GETLogsOpenClose(t *testing.T) {
 	h := Middleware(lg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	out := buf.String()
-	if !strings.Contains(out, "sse stream opened") || !strings.Contains(out, "sse stream closed") {
+	if !strings.Contains(out, "mcp stream opened") || !strings.Contains(out, "mcp stream closed") {
 		t.Errorf("missing GET lifecycle: %q", out)
 	}
 }
@@ -37,7 +37,8 @@ func TestMiddleware_POSTLogsMethodAndSession_NotBody(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"content":"SECRET-BODY"}}}`
-	req := httptest.NewRequest(http.MethodPost, "/sse?sessionid=ABC123", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Mcp-Session-Id", "ABC123")
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	if seen != body {
@@ -55,16 +56,50 @@ func TestMiddleware_POSTLogsMethodAndSession_NotBody(t *testing.T) {
 	}
 }
 
+func TestMiddleware_LogsAssignedSessionOnInitialize(t *testing.T) {
+	lg, buf := dbgLogger()
+	// The initialize POST carries no session id; the server assigns it on the
+	// response header (Streamable HTTP), which the middleware surfaces.
+	h := Middleware(lg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Mcp-Session-Id", "ASSIGNED-XYZ")
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize"}`))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	out := buf.String()
+	if !strings.Contains(out, "mcp session established") || !strings.Contains(out, "ASSIGNED-XYZ") {
+		t.Errorf("assigned session id not logged: %q", out)
+	}
+}
+
+func TestMiddleware_LogsDeleteAsTermination(t *testing.T) {
+	lg, buf := dbgLogger()
+	h := Middleware(lg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
+	req.Header.Set("Mcp-Session-Id", "DEL-SESSION")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	out := buf.String()
+	if !strings.Contains(out, "mcp session terminated") || !strings.Contains(out, "DEL-SESSION") {
+		t.Errorf("DELETE termination not logged: %q", out)
+	}
+}
+
 func TestMiddleware_WarnsOnError(t *testing.T) {
 	lg, buf := dbgLogger()
 	h := Middleware(lg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/sse?sessionid=missing", strings.NewReader(`{"method":"tools/call"}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"method":"tools/call"}`))
+	req.Header.Set("Mcp-Session-Id", "stale-session")
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	out := buf.String()
 	if !strings.Contains(out, "request rejected") || !strings.Contains(out, "status=404") {
 		t.Errorf("expected WARN with status 404: %q", out)
+	}
+	if !strings.Contains(out, "stale-session") {
+		t.Errorf("stale session id should appear on the rejection line: %q", out)
 	}
 }
 
@@ -73,7 +108,8 @@ func TestMiddleware_NeverLogsAuthHeader(t *testing.T) {
 	h := Middleware(lg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/sse?sessionid=ABC", strings.NewReader(`{"method":"tools/list"}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"method":"tools/list"}`))
+	req.Header.Set("Mcp-Session-Id", "ABC")
 	req.Header.Set("Authorization", "Bearer SUPER-SECRET-TOKEN")
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if strings.Contains(buf.String(), "SUPER-SECRET-TOKEN") {
@@ -90,9 +126,9 @@ func TestMiddleware_PreservesFlusher(t *testing.T) {
 			flushed = true
 		}
 	}))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/sse", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/mcp", nil))
 	if !flushed {
-		t.Error("wrapped ResponseWriter lost http.Flusher; SSE streaming would break")
+		t.Error("wrapped ResponseWriter lost http.Flusher; event-stream streaming would break")
 	}
 }
 
@@ -109,7 +145,8 @@ func TestMiddleware_POST_InfoLevel_BodyNotReadAndNoDebugLine(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
-	req := httptest.NewRequest(http.MethodPost, "/sse?sessionid=X", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Mcp-Session-Id", "X")
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if seen != body {
 		t.Fatalf("INFO-level middleware corrupted POST body: got %q", seen)
@@ -126,7 +163,7 @@ func TestMiddleware_NilLoggerDoesNotPanic(t *testing.T) {
 		served = true
 		w.WriteHeader(http.StatusOK)
 	}))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/sse?sessionid=x", strings.NewReader(`{"method":"tools/list"}`)))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"method":"tools/list"}`)))
 	if !served {
 		t.Error("downstream handler was not invoked with a nil logger")
 	}

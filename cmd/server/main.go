@@ -94,9 +94,15 @@ func main() {
 	}
 
 	mcpServer := setupMCPServer(cfg, s, ts, logger)
-	mcpHandler := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
+	// MCP is served over the Streamable HTTP transport (single endpoint on the
+	// dedicated MCP listener; see docs/contracts/mcp-v1.md § Transport). The
+	// handler is path-agnostic, so the documented endpoint is the MCP listener's
+	// /mcp path. Stateful mode (the SDK default) is required: it validates the
+	// Mcp-Session-Id header and returns 404 for an unknown/stale session id,
+	// which is how a client recovers after a server restart.
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return mcpServer
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{Logger: logger})
 
 	webHandler, err := setupWebHandler(dm, uim, authenticator)
 	if err != nil {
