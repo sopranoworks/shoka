@@ -401,3 +401,8 @@ wire-visible behavior**: no request or response field is added, removed, or
 changed. Logs never contain file content or auth tokens — metadata only (method
 names, session IDs, outcome labels). See `docs/OPERATIONS.md` § Logging for
 configuration details (`server.log.level`, `server.log.format`).
+- **Diagnostic logging (non-normative).** When the server is run with
+  `server.log.level: debug`, it emits redacted protocol-level traces (JSON-RPC
+  request/response bodies and SSE event payloads) to stderr. This is operational
+  instrumentation only: it does not change the wire protocol, message shapes, or
+  any behavior described above, and never logs file contents or credentials.

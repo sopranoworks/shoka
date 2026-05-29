@@ -83,6 +83,29 @@ An absent `server.log` block is fully backward-compatible: the server starts at
 method names, session IDs, outcome labels). This is enforced by design: the
 logging layer never receives content or credential values.
 
+#### Protocol-level output at `debug`
+
+At `server.log.level: debug` the MCP endpoint additionally emits redacted,
+protocol-level traces to stderr to make wire-level faults diagnosable:
+
+- `mcp message received` — each inbound JSON-RPC request: `rpc_method`, `rpc_id`,
+  and `rpc_params` (the full params as JSON). The `write_file` `content` argument
+  is replaced with `<redacted N bytes>`; everything else is verbatim.
+- `mcp response sent` — each outbound JSON-RPC response carried on the SSE stream:
+  `rpc_id` and the full response `event_data`. `read_file` /
+  `read_file_at_version` `content` and `read_summary` `excerpt` are replaced with
+  `<redacted N bytes>`; everything else (including version hashes and error
+  messages) is verbatim.
+- `sse event sent` — every other SSE event, including the `endpoint` event whose
+  `event_data` carries the `?sessionid=...` correlation value.
+- Session lifecycle (`server session connected`, `session initialized`,
+  `server session disconnected`, and the `method invalid during initialization`
+  rejection) is emitted by the MCP SDK itself via the configured logger.
+
+This output is best-effort diagnostic instrumentation only; it never changes the
+wire protocol, and file contents and bearer tokens are never logged. It is
+verbose — enable `debug` for diagnosis, not for steady-state operation.
+
 ### Diagnosing the MCP session-initialization fault
 
 If the MCP client fails to complete its handshake, run the server with
