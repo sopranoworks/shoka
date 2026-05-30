@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/shoka/mcp-server/internal/storage/catalog"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
 	"github.com/shoka/mcp-server/internal/storage/wal"
 	"github.com/shoka/mcp-server/internal/storage/walworker"
@@ -40,6 +42,22 @@ type FSGitStorage struct {
 
 	stateMu sync.RWMutex
 	states  map[string]ProjectState
+
+	// catalogs holds one open per-project catalog (the 2026-05-30 catalog
+	// directive) keyed by "<namespace>/<project>". Catalogs are opened/rebuilt at
+	// startup, created on CreateProject, and opened lazily otherwise. The bbolt
+	// handles are concurrency-safe; catMu guards only the map.
+	catMu    sync.Mutex
+	catalogs map[string]*catalog.Catalog
+
+	// Catalog observability counters, surfaced through the metrics Source (§10).
+	catUpdateFailedWrite   atomic.Int64
+	catUpdateFailedDelete  atomic.Int64
+	catInvariantViolations atomic.Int64
+	catRebuildMissing      atomic.Int64
+	catRebuildCorrupt      atomic.Int64
+	catRebuildSchema       atomic.Int64
+	catRebuildUnreadable   atomic.Int64
 
 	// notify is the in-process notification center (internal/notify). It may be
 	// nil; every call site uses the nil-safe receiver method, so storage never
@@ -162,6 +180,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		wal:           w,
 		maxWALEntries: maxWAL,
 		states:        make(map[string]ProjectState),
+		catalogs:      make(map[string]*catalog.Catalog),
 		notify:        opts.NotifyCenter,
 	}
 	s.pool = walworker.NewPool(w, s.commitEntry, opts.WALWorker)
@@ -179,6 +198,16 @@ func (s *FSGitStorage) Close() error {
 	if s.wal != nil {
 		_ = s.wal.Close()
 	}
+	s.catMu.Lock()
+	for key, c := range s.catalogs {
+		if c != nil {
+			if err := c.Close(); err != nil {
+				s.log().Warn("catalog close failed", "project", key, "err", err)
+			}
+		}
+		delete(s.catalogs, key)
+	}
+	s.catMu.Unlock()
 	return nil
 }
 
@@ -229,6 +258,15 @@ func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 		return fmt.Errorf("failed to initialize git repository: %w", err)
 	}
 	s.setState(namespace, projectName, StateHealthy)
+	// Catalog (§5.5): the new project gets a catalog DB. catalogFor opens it if a
+	// stale DB somehow exists, else creates it. Failure here is a hard failure for
+	// create_project — the project directory and git repo are left for the
+	// operator to clean up (consistent with "surface the inconsistent state").
+	if _, cerr := s.catalogFor(namespace, projectName); cerr != nil {
+		s.log().Error("catalog create failed for new project",
+			"namespace", namespace, "project", projectName, "err", cerr)
+		return fmt.Errorf("create catalog: %w", cerr)
+	}
 	// Notification center: a genuine new project was created. The early
 	// ErrRepositoryAlreadyExists return above is intentionally NOT published —
 	// re-creating an existing project is not a user-visible mutation.
@@ -304,6 +342,9 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 		}); err != nil {
 			return fmt.Errorf("failed to append to WAL: %w", err)
 		}
+		// Catalog update (working tree → WAL → catalog, §5.1). Best-effort: it
+		// never fails the write, since the working tree and WAL already succeeded.
+		s.catalogPut(namespace, projectName, rel, newEtag, len(content), fullPath)
 		return nil
 	})
 	if lockErr != nil {
@@ -334,12 +375,27 @@ func (s *FSGitStorage) ReadFileWithETag(namespace, projectName, path string) (st
 	if s.State(namespace, projectName) == StateDangerous {
 		return "", "", ErrProjectDangerous
 	}
-	fullPath, _, err := relWithin(projectPath, path)
+	fullPath, rel, err := relWithin(projectPath, path)
 	if err != nil {
 		return "", "", err
 	}
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Not found in the working tree. Consult the catalog (cold path only):
+			// if the catalog claims this path exists, the core invariant is broken
+			// (catalog membership must imply working-tree presence). Surface it as
+			// a warning + metric + notify event, but still return not-found to the
+			// caller (§5.4 / design-log §6.1). Never creates a catalog on a read.
+			if c := s.catalogForRead(namespace, projectName); c != nil {
+				if had, herr := c.HasFile(rel); herr == nil && had {
+					s.log().Warn("catalog invariant violation: catalog has path but working tree does not",
+						"namespace", namespace, "project", projectName, "path", rel)
+					s.catInvariantViolations.Add(1)
+					s.notify.Notify("catalog.invariant_violation", namespace+"/"+projectName, rel)
+				}
+			}
+		}
 		return "", "", fmt.Errorf("failed to read file: %w", err)
 	}
 	return string(content), sha256Hex(content), nil
@@ -427,9 +483,10 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 		if ifMatch != nil && *ifMatch != currentEtag {
 			return &VersionConflictError{Expected: *ifMatch, Current: currentEtag}
 		}
-		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove file from disk: %w", err)
-		}
+		// Delete ordering (§5.2 / design log §6.2): catalog → WAL → working tree.
+		// Disown before destroying, so the catalog never claims a path the working
+		// tree still lacks. The catalog delete is best-effort.
+		s.catalogDelete(namespace, projectName, rel)
 		if _, err := s.wal.Append(wal.Entry{
 			Namespace: namespace,
 			Project:   projectName,
@@ -437,6 +494,9 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 			Op:        "delete",
 		}); err != nil {
 			return fmt.Errorf("failed to append to WAL: %w", err)
+		}
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove file from disk: %w", err)
 		}
 		return nil
 	})
@@ -506,37 +566,48 @@ func (s *FSGitStorage) ListFiles(namespace, projectName, path string) ([]string,
 	if err != nil {
 		return nil, nil, err
 	}
+	if s.State(namespace, projectName) == StateDangerous {
+		return nil, nil, ErrProjectDangerous
+	}
 	searchPath := filepath.Join(projectPath, path)
 	relSearch, err := filepath.Rel(projectPath, searchPath)
 	if err != nil || (relSearch != "." && (strings.HasPrefix(relSearch, "..") || strings.HasPrefix(relSearch, "/"))) {
 		return nil, nil, fmt.Errorf("invalid search path: %s", path)
 	}
-	entries, err := os.ReadDir(searchPath)
+
+	// Listing is sourced from the catalog — the set of files Shoka manages — so
+	// working-tree noise (.DS_Store, .claude/, …) never appears (§5.3). Each
+	// entry's modified_at, by contrast, is the live working-tree mtime: this
+	// keeps it byte-identical with read_summary and the shipped 2026-05-30
+	// modified-at contract, whose tests are non-negotiable. (This refines §5.3,
+	// which would have sourced modified_at from the catalog.)
+	cat, err := s.catalogFor(namespace, projectName)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, map[string]time.Time{}, nil
-		}
-		return nil, nil, fmt.Errorf("failed to list files: %w", err)
+		return nil, nil, fmt.Errorf("failed to open catalog: %w", err)
 	}
+	catEntries, subdirs, err := cat.List(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list catalog: %w", err)
+	}
+
 	files := []string{}
-	modTimes := make(map[string]time.Time, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == ".git" || name == ".drafts" || name == ".shoka" {
-			continue
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			// Entry disappeared between ReadDir and Info (e.g. concurrent
-			// delete). Omit it from both the listing and the mtime map.
-			continue
-		}
-		display := name
-		if entry.IsDir() {
-			display = name + "/"
+	modTimes := make(map[string]time.Time, len(catEntries)+len(subdirs))
+	add := func(display, name string) {
+		info, serr := os.Stat(filepath.Join(searchPath, name))
+		if serr != nil {
+			// Catalog claims the entry but the working tree lacks it (invariant
+			// violation) or it vanished mid-scan: omit it rather than surface a
+			// phantom. The read path is what flags invariant violations.
+			return
 		}
 		files = append(files, display)
 		modTimes[display] = info.ModTime()
+	}
+	for _, e := range catEntries {
+		add(e.Name, e.Name)
+	}
+	for _, d := range subdirs {
+		add(d+"/", d)
 	}
 	return files, modTimes, nil
 }

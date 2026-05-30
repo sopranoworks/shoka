@@ -8,6 +8,13 @@
 // WAL — it is a lossy, side-channel observation point that future consumers
 // (Web UI auto-refresh, drift-rescan triggers) read from via Snapshot/Since.
 // Publishing never affects storage correctness.
+//
+// Event kinds published by storage:
+//   - "file.write"                  — a write_file succeeded (target=ns/project, path=rel)
+//   - "file.delete"                 — a delete_file succeeded
+//   - "project.create"              — a new project was created (empty path)
+//   - "catalog.invariant_violation" — read_file found a path in the catalog but
+//     not in the working tree (the 2026-05-30 catalog directive §5.6)
 package notify
 
 import (
