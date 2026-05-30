@@ -1,6 +1,10 @@
 package storage
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,21 +16,44 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/shoka/mcp-server/internal/storage/filelock"
+	"github.com/shoka/mcp-server/internal/storage/wal"
+	"github.com/shoka/mcp-server/internal/storage/walworker"
 	"github.com/shoka/mcp-server/internal/utils"
 )
 
-// FSGitStorage implements StorageService using the local filesystem and Git.
+// FSGitStorage implements StorageService with the file system as the ground
+// truth and git as a background audit log (the 2026-05-30 storage redesign).
+//
+// Reads are pure os.ReadFile — no lock, no git. Writes take a per-file lock only
+// across the check-and-write critical section, append to a write-ahead log, and
+// return immediately; the git commit happens later in a background worker pool.
+// The old global s.mu is gone.
 type FSGitStorage struct {
 	baseDir string
-	// mu serializes writes/deletes so the optimistic-locking check-and-commit is
-	// atomic and concurrent go-git operations don't race on the worktree index.
-	mu            sync.Mutex
+
+	locks         *filelock.Manager
+	wal           *wal.Log
+	pool          *walworker.Pool
+	maxWALEntries int
+
+	stateMu sync.RWMutex
+	states  map[string]ProjectState
+
 	changeHandler ChangeHandler
 	logger        *slog.Logger
 }
 
-// ChangeEvent describes a successful mutation, delivered to a registered handler.
+// Options carries the storage-redesign tunables (§12). Zero values take the
+// component packages' defaults.
+type Options struct {
+	FileLock      filelock.Config
+	WALMaxEntries int
+	WALWorker     walworker.Config
+}
+
+// ChangeEvent describes a successful mutation, delivered to a registered handler
+// after the background git commit lands.
 type ChangeEvent struct {
 	Event      string // file_written | file_deleted | project_created
 	Namespace  string
@@ -40,14 +67,35 @@ type ChangeEvent struct {
 // block (e.g. it should fan out to webhooks asynchronously).
 type ChangeHandler func(ChangeEvent)
 
-// SetChangeHandler registers a handler invoked after successful writes, deletes,
-// and project creation, covering every write path (MCP tools and the web UI).
-func (s *FSGitStorage) SetChangeHandler(h ChangeHandler) {
-	s.changeHandler = h
+// Typed errors returned by the write path. Callers (and the MCP tool layer in
+// §8) distinguish them to produce the structured {reason} responses.
+var (
+	// ErrProjectDangerous means the project's .git is unreadable/absent.
+	ErrProjectDangerous = errors.New("project is in dangerous state: git repository is unreadable")
+	// ErrProjectCorrupted means the working tree drifted from git HEAD outside
+	// the redesign's write path (hand-edit, git pull, another tool).
+	ErrProjectCorrupted = errors.New("project is in corrupted state: working tree has uncommitted drift")
+	// ErrWriteDisabled means the WAL has backed up past its threshold.
+	ErrWriteDisabled = errors.New("writes are disabled: write-ahead log is full")
+)
+
+// VersionConflictError is returned by writes/deletes when the caller's expected
+// value (if_match) does not match the file's current etag. Current is the
+// current etag (sha256 of the file's content right now).
+type VersionConflictError struct {
+	Expected string
+	Current  string
 }
 
-// SetLogger attaches a structured logger. Safe to call once at startup; a nil
-// logger (the default) discards all storage log output.
+func (e *VersionConflictError) Error() string {
+	return fmt.Sprintf("etag conflict: expected %q but current etag is %q", e.Expected, e.Current)
+}
+
+// SetChangeHandler registers a handler invoked after successful writes, deletes,
+// and project creation.
+func (s *FSGitStorage) SetChangeHandler(h ChangeHandler) { s.changeHandler = h }
+
+// SetLogger attaches a structured logger.
 func (s *FSGitStorage) SetLogger(l *slog.Logger) { s.logger = l }
 
 func (s *FSGitStorage) log() *slog.Logger {
@@ -70,30 +118,59 @@ func (s *FSGitStorage) emit(ev ChangeEvent) {
 	}
 }
 
-// VersionConflictError is returned by versioned writes/deletes when the caller's
-// expected version does not match the file's current version.
-type VersionConflictError struct {
-	Expected string
-	Current  string
-}
-
-func (e *VersionConflictError) Error() string {
-	return fmt.Sprintf("version conflict: expected %q but current version is %q", e.Expected, e.Current)
-}
-
-// NewFSGitStorage creates a new FSGitStorage instance.
+// NewFSGitStorage creates storage with default tunables.
 func NewFSGitStorage(baseDir string) (*FSGitStorage, error) {
+	return NewFSGitStorageWithOptions(baseDir, Options{})
+}
+
+// NewFSGitStorageWithOptions creates storage and starts the lock reaper and the
+// background commit worker pool. Any entries already in the WAL (from a previous
+// run) are drained on startup.
+func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, error) {
 	absBaseDir, err := filepath.Abs(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path for base directory: %w", err)
 	}
-
-	if err := os.MkdirAll(absBaseDir, 0755); err != nil {
+	if err := os.MkdirAll(absBaseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create base directory: %w", err)
 	}
 
-	return &FSGitStorage{baseDir: absBaseDir}, nil
+	w, err := wal.Open(absBaseDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open WAL: %w", err)
+	}
+
+	maxWAL := opts.WALMaxEntries
+	if maxWAL <= 0 {
+		maxWAL = 1000
+	}
+
+	s := &FSGitStorage{
+		baseDir:       absBaseDir,
+		locks:         filelock.NewManager(opts.FileLock),
+		wal:           w,
+		maxWALEntries: maxWAL,
+		states:        make(map[string]ProjectState),
+	}
+	s.pool = walworker.NewPool(w, s.commitEntry, opts.WALWorker)
+	return s, nil
 }
+
+// Close stops the worker pool and lock reaper. WAL files on disk are preserved.
+func (s *FSGitStorage) Close() error {
+	if s.pool != nil {
+		_ = s.pool.Shutdown(30 * time.Second)
+	}
+	if s.locks != nil {
+		s.locks.Stop()
+	}
+	if s.wal != nil {
+		_ = s.wal.Close()
+	}
+	return nil
+}
+
+func projectKey(namespace, projectName string) string { return namespace + "/" + projectName }
 
 func (s *FSGitStorage) getProjectPath(namespace, projectName string) (string, error) {
 	if namespace == "" {
@@ -108,17 +185,30 @@ func (s *FSGitStorage) getProjectPath(namespace, projectName string) (string, er
 	return filepath.Join(s.baseDir, namespace, projectName), nil
 }
 
+// relWithin validates path traversal and returns the slash-relative path.
+func relWithin(projectPath, path string) (string, string, error) {
+	fullPath := filepath.Join(projectPath, path)
+	rel, err := filepath.Rel(projectPath, fullPath)
+	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+		return "", "", fmt.Errorf("invalid file path: %s", path)
+	}
+	return fullPath, filepath.ToSlash(rel), nil
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 // CreateProject initializes a new project directory and a Git repository within it.
 func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return err
 	}
-
-	if err := os.MkdirAll(projectPath, 0755); err != nil {
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
 		return fmt.Errorf("failed to create project directory: %w", err)
 	}
-
 	_, err = git.PlainInit(projectPath, false)
 	if err != nil {
 		if err == git.ErrRepositoryAlreadyExists {
@@ -126,124 +216,113 @@ func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 		}
 		return fmt.Errorf("failed to initialize git repository: %w", err)
 	}
-
+	s.setState(namespace, projectName, StateHealthy)
 	s.emit(ChangeEvent{
 		Event:     "project_created",
 		Namespace: namespace,
 		Project:   projectName,
 		Timestamp: time.Now(),
 	})
-
 	return nil
 }
 
-// WriteFile writes content to a file in a project and performs an atomic Git commit.
+// WriteFile writes content with no optimistic-concurrency check.
 func (s *FSGitStorage) WriteFile(namespace, projectName, path, content string) error {
-	_, err := s.writeFile(namespace, projectName, path, content, "")
+	_, err := s.write(context.Background(), "", namespace, projectName, path, content, nil)
 	return err
 }
 
-// WriteFileVersioned writes content with optimistic locking. When expectedVersion
-// is non-empty it must equal the file's current version (the hash of the most
-// recent commit touching the file); otherwise a *VersionConflictError is returned
-// and no write occurs. It returns the hash of the new commit.
+// WriteFileVersioned writes with optimistic locking. A non-empty expectedVersion
+// must equal the file's current etag (sha256 of its content) or a
+// *VersionConflictError is returned. Returns the new etag.
 func (s *FSGitStorage) WriteFileVersioned(namespace, projectName, path, content, expectedVersion string) (string, error) {
-	return s.writeFile(namespace, projectName, path, content, expectedVersion)
+	return s.write(context.Background(), "", namespace, projectName, path, content, ifMatchPtr(expectedVersion))
 }
 
-func (s *FSGitStorage) writeFile(namespace, projectName, path, content, expectedVersion string) (string, error) {
+// Write is the redesign's write entry point (used by the §8 tool layer). ifMatch
+// nil skips the check; non-nil requires the current etag to equal *ifMatch.
+func (s *FSGitStorage) Write(ctx context.Context, sessionID, namespace, projectName, path, content string, ifMatch *string) (string, error) {
+	return s.write(ctx, sessionID, namespace, projectName, path, content, ifMatch)
+}
+
+func ifMatchPtr(expected string) *string {
+	if expected == "" {
+		return nil
+	}
+	return &expected
+}
+
+func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectName, path, content string, ifMatch *string) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return "", err
 	}
-	fullPath := filepath.Join(projectPath, path)
-
-	// Robust path traversal protection
-	rel, err := filepath.Rel(projectPath, fullPath)
-	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
-		return "", fmt.Errorf("invalid file path: %s", path)
+	fullPath, rel, err := relWithin(projectPath, path)
+	if err != nil {
+		return "", err
+	}
+	if err := s.checkWritable(namespace, projectName); err != nil {
+		return "", err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if expectedVersion != "" {
-		current, err := s.currentVersion(projectPath, rel)
-		if err != nil {
-			return "", err
+	var newEtag string
+	lockErr := s.locks.WithLock(ctx, sessionID, fullPath, func() error {
+		current, _ := os.ReadFile(fullPath) // empty if absent
+		currentEtag := sha256Hex(current)
+		if ifMatch != nil && *ifMatch != currentEtag {
+			return &VersionConflictError{Expected: *ifMatch, Current: currentEtag}
 		}
-		if current != expectedVersion {
-			return "", &VersionConflictError{Expected: expectedVersion, Current: current}
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			return fmt.Errorf("failed to create directories for file: %w", err)
 		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return "", fmt.Errorf("failed to create directories for file: %w", err)
-	}
-
-	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("failed to write file: %w", err)
-	}
-
-	// Git commit
-	r, err := git.PlainOpen(projectPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open git repository: %w", err)
-	}
-
-	w, err := r.Worktree()
-	if err != nil {
-		return "", fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	if _, err := w.Add(rel); err != nil { // Use relative path for git add
-		return "", fmt.Errorf("failed to add file to git: %w", err)
-	}
-
-	hash, err := w.Commit(fmt.Sprintf("Update %s", rel), &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "MCP Server",
-			Email: "mcp-server@shoka.io",
-			When:  time.Now(),
-		},
+		if err := atomicWriteFile(fullPath, []byte(content)); err != nil {
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+		newEtag = sha256Hex([]byte(content))
+		if _, err := s.wal.Append(wal.Entry{
+			Namespace: namespace,
+			Project:   projectName,
+			Path:      rel,
+			Op:        "write",
+			Content:   []byte(content),
+		}); err != nil {
+			return fmt.Errorf("failed to append to WAL: %w", err)
+		}
+		return nil
 	})
-	if err != nil {
-		s.log().Error("git commit failed", "op", "write", "path", rel, "error", err)
-		return "", fmt.Errorf("failed to commit changes: %w", err)
+	if lockErr != nil {
+		return "", lockErr
 	}
-
-	s.emit(ChangeEvent{
-		Event:      "file_written",
-		Namespace:  namespace,
-		Project:    projectName,
-		Path:       path,
-		CommitHash: hash.String(),
-		Timestamp:  time.Now(),
-	})
-
-	return hash.String(), nil
+	s.pool.Notify()
+	return newEtag, nil
 }
 
-// ReadFile reads the content of a file from a project.
+// ReadFile reads the content of a file from a project. No lock, no git access.
 func (s *FSGitStorage) ReadFile(namespace, projectName, path string) (string, error) {
+	content, _, err := s.ReadFileWithETag(namespace, projectName, path)
+	return content, err
+}
+
+// ReadFileWithETag reads a file and returns its content and etag (sha256 of the
+// content). It takes no lock and never touches git. Dangerous projects are
+// refused.
+func (s *FSGitStorage) ReadFileWithETag(namespace, projectName, path string) (string, string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	fullPath := filepath.Join(projectPath, path)
-
-	// Robust path traversal protection
-	rel, err := filepath.Rel(projectPath, fullPath)
-	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
-		return "", fmt.Errorf("invalid file path: %s", path)
+	if s.State(namespace, projectName) == StateDangerous {
+		return "", "", ErrProjectDangerous
 	}
-
+	fullPath, _, err := relWithin(projectPath, path)
+	if err != nil {
+		return "", "", err
+	}
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
+		return "", "", fmt.Errorf("failed to read file: %w", err)
 	}
-
-	return string(content), nil
+	return string(content), sha256Hex(content), nil
 }
 
 // ListProjects returns a list of project names within a namespace.
@@ -255,7 +334,6 @@ func (s *FSGitStorage) ListProjects(namespace string) ([]string, error) {
 		return nil, fmt.Errorf("invalid namespace: %s", namespace)
 	}
 	namespacePath := filepath.Join(s.baseDir, namespace)
-
 	entries, err := os.ReadDir(namespacePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -263,97 +341,113 @@ func (s *FSGitStorage) ListProjects(namespace string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("failed to read namespace directory: %w", err)
 	}
-
 	var projects []string
 	for _, entry := range entries {
 		if entry.IsDir() {
 			projects = append(projects, entry.Name())
 		}
 	}
-
 	return projects, nil
 }
 
-// DeleteFile deletes a file from a project and performs an atomic Git commit.
+// DeleteFile deletes a file with no optimistic-concurrency check.
 func (s *FSGitStorage) DeleteFile(namespace, projectName, path string) error {
-	_, err := s.deleteFile(namespace, projectName, path, "")
+	_, err := s.deleteFile(context.Background(), "", namespace, projectName, path, nil)
 	return err
 }
 
-// DeleteFileVersioned deletes a file with optimistic locking (see WriteFileVersioned),
-// returning the hash of the new (delete) commit.
+// DeleteFileVersioned deletes with optimistic locking (see WriteFileVersioned).
 func (s *FSGitStorage) DeleteFileVersioned(namespace, projectName, path, expectedVersion string) (string, error) {
-	return s.deleteFile(namespace, projectName, path, expectedVersion)
+	return s.deleteFile(context.Background(), "", namespace, projectName, path, ifMatchPtr(expectedVersion))
 }
 
-func (s *FSGitStorage) deleteFile(namespace, projectName, path, expectedVersion string) (string, error) {
+// Delete is the redesign's delete entry point (used by the §8 tool layer).
+func (s *FSGitStorage) Delete(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string) error {
+	_, err := s.deleteFile(ctx, sessionID, namespace, projectName, path, ifMatch)
+	return err
+}
+
+func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return "", err
 	}
-	fullPath := filepath.Join(projectPath, path)
-
-	// Robust path traversal protection
-	rel, err := filepath.Rel(projectPath, fullPath)
-	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
-		return "", fmt.Errorf("invalid file path: %s", path)
+	fullPath, rel, err := relWithin(projectPath, path)
+	if err != nil {
+		return "", err
+	}
+	if err := s.checkWritable(namespace, projectName); err != nil {
+		return "", err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if expectedVersion != "" {
-		current, err := s.currentVersion(projectPath, rel)
-		if err != nil {
-			return "", err
+	lockErr := s.locks.WithLock(ctx, sessionID, fullPath, func() error {
+		current, _ := os.ReadFile(fullPath)
+		currentEtag := sha256Hex(current)
+		if ifMatch != nil && *ifMatch != currentEtag {
+			return &VersionConflictError{Expected: *ifMatch, Current: currentEtag}
 		}
-		if current != expectedVersion {
-			return "", &VersionConflictError{Expected: expectedVersion, Current: current}
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove file from disk: %w", err)
 		}
-	}
-
-	// Remove from disk
-	if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("failed to remove file from disk: %w", err)
-	}
-
-	// Git commit
-	r, err := git.PlainOpen(projectPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open git repository: %w", err)
-	}
-
-	w, err := r.Worktree()
-	if err != nil {
-		return "", fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	if _, err := w.Remove(rel); err != nil {
-		return "", fmt.Errorf("failed to remove file from git: %w", err)
-	}
-
-	hash, err := w.Commit(fmt.Sprintf("Delete %s", rel), &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "MCP Server",
-			Email: "mcp-server@shoka.io",
-			When:  time.Now(),
-		},
+		if _, err := s.wal.Append(wal.Entry{
+			Namespace: namespace,
+			Project:   projectName,
+			Path:      rel,
+			Op:        "delete",
+		}); err != nil {
+			return fmt.Errorf("failed to append to WAL: %w", err)
+		}
+		return nil
 	})
-	if err != nil {
-		s.log().Error("git commit failed", "op", "delete", "path", rel, "error", err)
-		return "", fmt.Errorf("failed to commit changes: %w", err)
+	if lockErr != nil {
+		return "", lockErr
 	}
+	s.pool.Notify()
+	return "", nil
+}
 
-	s.emit(ChangeEvent{
-		Event:      "file_deleted",
-		Namespace:  namespace,
-		Project:    projectName,
-		Path:       path,
-		CommitHash: hash.String(),
-		Timestamp:  time.Now(),
-	})
+// checkWritable rejects writes when the project is corrupted/dangerous or the
+// WAL is full.
+func (s *FSGitStorage) checkWritable(namespace, projectName string) error {
+	switch s.State(namespace, projectName) {
+	case StateDangerous:
+		return ErrProjectDangerous
+	case StateCorrupted:
+		return ErrProjectCorrupted
+	}
+	if s.wal.PendingCount() >= s.maxWALEntries {
+		return ErrWriteDisabled
+	}
+	return nil
+}
 
-	return hash.String(), nil
+// atomicWriteFile writes data to a temp file in the same directory and renames
+// it into place, so a reader never sees a partially-written file.
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-write-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // ListFiles returns a list of files in a project path (non-recursive).
@@ -362,15 +456,11 @@ func (s *FSGitStorage) ListFiles(namespace, projectName, path string) ([]string,
 	if err != nil {
 		return nil, err
 	}
-
 	searchPath := filepath.Join(projectPath, path)
-
-	// Robust path traversal protection
 	relSearch, err := filepath.Rel(projectPath, searchPath)
 	if err != nil || (relSearch != "." && (strings.HasPrefix(relSearch, "..") || strings.HasPrefix(relSearch, "/"))) {
 		return nil, fmt.Errorf("invalid search path: %s", path)
 	}
-
 	entries, err := os.ReadDir(searchPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -378,11 +468,10 @@ func (s *FSGitStorage) ListFiles(namespace, projectName, path string) ([]string,
 		}
 		return nil, fmt.Errorf("failed to list files: %w", err)
 	}
-
 	var files []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == ".git" || name == ".drafts" {
+		if name == ".git" || name == ".drafts" || name == ".shoka" {
 			continue
 		}
 		if entry.IsDir() {
@@ -391,33 +480,33 @@ func (s *FSGitStorage) ListFiles(namespace, projectName, path string) ([]string,
 			files = append(files, name)
 		}
 	}
-
 	return files, nil
 }
 
-// GetHistory returns the commit history for a specific file.
+// GetHistory returns the commit history for a specific file (git-backed).
 func (s *FSGitStorage) GetHistory(namespace, projectName, path string, limit int) ([]CommitInfo, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return nil, err
 	}
-
 	r, err := git.PlainOpen(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
-
+	if _, err := r.Head(); err != nil {
+		// No commits yet (e.g. a write is still pending in the WAL). Not an error.
+		return []CommitInfo{}, nil
+	}
 	logOptions := &git.LogOptions{Order: git.LogOrderCommitterTime}
 	if path != "" {
-		// Ensure path is relative and clean
 		fullPath := filepath.Join(projectPath, path)
 		rel, err := filepath.Rel(projectPath, fullPath)
 		if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 			return nil, fmt.Errorf("invalid file path: %s", path)
 		}
+		rel = filepath.ToSlash(rel)
 		logOptions.FileName = &rel
 	}
-
 	cIter, err := r.Log(logOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get git log: %w", err)
@@ -429,7 +518,6 @@ func (s *FSGitStorage) GetHistory(namespace, projectName, path string, limit int
 		if limit > 0 && len(history) >= limit {
 			break
 		}
-
 		c, err := cIter.Next()
 		if err != nil {
 			if err == io.EOF {
@@ -437,7 +525,6 @@ func (s *FSGitStorage) GetHistory(namespace, projectName, path string, limit int
 			}
 			return nil, fmt.Errorf("failed to get next commit: %w", err)
 		}
-
 		history = append(history, CommitInfo{
 			Hash:    c.Hash.String(),
 			Author:  c.Author.Name,
@@ -445,94 +532,100 @@ func (s *FSGitStorage) GetHistory(namespace, projectName, path string, limit int
 			Message: c.Message,
 		})
 	}
-
 	return history, nil
 }
 
 // ReadFileAtVersion reads the content of a file at a specific Git commit hash.
+// This is the "past access" API; it is git-backed and isolated from the write
+// path's lock manager.
 func (s *FSGitStorage) ReadFileAtVersion(namespace, projectName, path, hash string) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return "", err
 	}
-
-	// Robust path traversal protection
-	fullPath := filepath.Join(projectPath, path)
-	rel, err := filepath.Rel(projectPath, fullPath)
-	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
-		return "", fmt.Errorf("invalid file path: %s", path)
+	_, rel, err := relWithin(projectPath, path)
+	if err != nil {
+		return "", err
 	}
-
 	r, err := git.PlainOpen(projectPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open git repository: %w", err)
 	}
-
-	h := plumbing.NewHash(hash)
-	commit, err := r.CommitObject(h)
+	commit, err := r.CommitObject(plumbing.NewHash(hash))
 	if err != nil {
 		return "", fmt.Errorf("failed to get commit object: %w", err)
 	}
-
 	tree, err := commit.Tree()
 	if err != nil {
 		return "", fmt.Errorf("failed to get tree: %w", err)
 	}
-
 	file, err := tree.File(rel)
 	if err != nil {
 		return "", fmt.Errorf("failed to get file from tree: %w", err)
 	}
-
 	content, err := file.Contents()
 	if err != nil {
 		return "", fmt.Errorf("failed to read file contents: %w", err)
 	}
-
 	return content, nil
 }
 
-// GetCurrentVersion returns the hash of the most recent commit that modified the
-// file at path, or "" if the file has no commit history.
+// GetCurrentVersion returns the current etag (sha256 of the file's content), or
+// "" if the file does not exist. It validates the path (rejecting traversal),
+// takes no lock, and never touches git.
 func (s *FSGitStorage) GetCurrentVersion(namespace, projectName, path string) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return "", err
 	}
-	fullPath := filepath.Join(projectPath, path)
-	rel, err := filepath.Rel(projectPath, fullPath)
-	if filepath.IsAbs(path) || err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
-		return "", fmt.Errorf("invalid file path: %s", path)
+	fullPath, _, err := relWithin(projectPath, path)
+	if err != nil {
+		return "", err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.currentVersion(projectPath, rel)
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", nil // absent → no version (mirrors the previous "" semantics)
+	}
+	return sha256Hex(content), nil
 }
 
-// currentVersion returns the latest commit hash touching rel within projectPath.
-// The caller must hold s.mu.
-func (s *FSGitStorage) currentVersion(projectPath, rel string) (string, error) {
-	r, err := git.PlainOpen(projectPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open git repository: %w", err)
-	}
-	if _, err := r.Head(); err != nil {
-		// No commits yet.
-		return "", nil
-	}
-	cIter, err := r.Log(&git.LogOptions{Order: git.LogOrderCommitterTime, FileName: &rel})
-	if err != nil {
-		return "", fmt.Errorf("failed to read git log: %w", err)
-	}
-	defer cIter.Close()
+// --- WAL / worker observability (for get_server_info §8.6 and metrics §11) ---
 
-	c, err := cIter.Next()
-	if err == io.EOF {
-		return "", nil
+// WALPending returns the number of WAL entries awaiting a git commit.
+func (s *FSGitStorage) WALPending() int { return s.wal.PendingCount() }
+
+// WALPendingBytes returns the summed size of pending WAL entries.
+func (s *FSGitStorage) WALPendingBytes() int64 { return s.wal.PendingBytes() }
+
+// WALWriteDisabled reports whether the WAL has backed up past its threshold.
+func (s *FSGitStorage) WALWriteDisabled() bool { return s.wal.PendingCount() >= s.maxWALEntries }
+
+// WALMaxEntries returns the configured write-disabled threshold.
+func (s *FSGitStorage) WALMaxEntries() int { return s.maxWALEntries }
+
+// WALOldestEntryAge returns the age of the oldest pending WAL entry.
+func (s *FSGitStorage) WALOldestEntryAge() time.Duration { return s.wal.OldestEntryAge() }
+
+// WorkerStats returns the background commit pool's stats.
+func (s *FSGitStorage) WorkerStats() walworker.Stats { return s.pool.Stats() }
+
+// LockStats returns the file-lock manager's active leases and forced-release count.
+func (s *FSGitStorage) LockStats() (activeLeases int, forcedReleases int64) {
+	return len(s.locks.ActiveLeases()), s.locks.ForcedReleaseCount()
+}
+
+// WaitForWAL blocks until the WAL has drained (no pending entries) or timeout
+// elapses. It returns true if the WAL drained. Intended for tests and for
+// drift detection's "after the WAL has caught up" precondition.
+func (s *FSGitStorage) WaitForWAL(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if s.wal.PendingCount() == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if err != nil {
-		return "", fmt.Errorf("failed to read commit: %w", err)
-	}
-	return c.Hash.String(), nil
 }

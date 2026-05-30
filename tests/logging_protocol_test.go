@@ -32,6 +32,7 @@ func TestLogging_Protocol(t *testing.T) {
 
 	s, err := storage.NewFSGitStorage(t.TempDir())
 	require.NoError(t, err)
+	defer s.Close()
 	s.SetLogger(logger)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "shoka-proto-test", Version: "0.0.0"}, &mcp.ServerOptions{Logger: logger})

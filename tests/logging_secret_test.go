@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/auth"
@@ -65,6 +66,7 @@ func TestLogging_NeverLeaksContentOrToken(t *testing.T) {
 
 	s, err := storage.NewFSGitStorage(t.TempDir())
 	require.NoError(t, err)
+	defer s.Close()
 	s.SetLogger(logger)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "shoka-secret-test", Version: "0.0.0"}, &mcp.ServerOptions{Logger: logger})
@@ -97,6 +99,10 @@ func TestLogging_NeverLeaksContentOrToken(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, r.IsError, wireText(r))
+
+	// Let the background commit finish so its log line is included in the
+	// leak check (the commit logs the hash+path, never the content).
+	s.WaitForWAL(10 * time.Second)
 
 	logs := sink.String()
 	require.NotEmpty(t, logs, "expected DEBUG logs to be produced")

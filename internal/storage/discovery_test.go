@@ -20,6 +20,7 @@ func TestListFilesSince_TimestampIncludesNewWrites(t *testing.T) {
 	if _, err := s.WriteFileVersioned("ns", "proj", "a.md", "hello", ""); err != nil {
 		t.Fatal(err)
 	}
+	drain(t, s) // commits are asynchronous
 	changes, err := s.ListFilesSince("ns", "proj", before)
 	if err != nil {
 		t.Fatal(err)
@@ -38,10 +39,21 @@ func TestListFilesSince_TimestampIncludesNewWrites(t *testing.T) {
 
 func TestListFilesSince_HashIsExclusive(t *testing.T) {
 	s := newTestStorage(t)
-	h1, _ := s.WriteFileVersioned("ns", "proj", "a.md", "v1", "")
+	// The write API now returns a content etag, not a commit hash; fetch the real
+	// commit hash for a.md from the (drained) history to use as the 'since' bound.
+	if _, err := s.WriteFileVersioned("ns", "proj", "a.md", "v1", ""); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, s)
+	histA, err := s.GetHistory("ns", "proj", "a.md", 1)
+	if err != nil || len(histA) != 1 {
+		t.Fatalf("history for a.md: %v (%d entries)", err, len(histA))
+	}
+	h1 := histA[0].Hash
 	if _, err := s.WriteFileVersioned("ns", "proj", "b.md", "v1", ""); err != nil {
 		t.Fatal(err)
 	}
+	drain(t, s)
 	changes, err := s.ListFilesSince("ns", "proj", h1)
 	if err != nil {
 		t.Fatal(err)
@@ -58,9 +70,11 @@ func TestListFilesSince_ReportsDeletion(t *testing.T) {
 	s := newTestStorage(t)
 	before := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	s.WriteFileVersioned("ns", "proj", "a.md", "v1", "")
+	drain(t, s)
 	if _, err := s.DeleteFileVersioned("ns", "proj", "a.md", ""); err != nil {
 		t.Fatal(err)
 	}
+	drain(t, s)
 	changes, err := s.ListFilesSince("ns", "proj", before)
 	if err != nil {
 		t.Fatal(err)

@@ -52,6 +52,7 @@ func TestFailedWriteLeavesNoCommit(t *testing.T) {
 	if _, err := s.WriteFileVersioned("ns", "proj", "../escape.md", "bad", ""); err == nil {
 		t.Fatal("expected invalid write to fail")
 	}
+	drain(t, s) // commits are asynchronous; wait for the valid write to land
 	hist, err := s.GetHistory("ns", "proj", "", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +69,7 @@ func TestHistoryRetrievableByHash(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	drain(t, s) // commits are asynchronous; wait for all three to land
 	hist, err := s.GetHistory("ns", "proj", "h.md", 0)
 	if err != nil {
 		t.Fatal(err)

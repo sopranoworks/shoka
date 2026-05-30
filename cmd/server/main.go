@@ -24,6 +24,8 @@ import (
 	"github.com/shoka/mcp-server/internal/httplog"
 	"github.com/shoka/mcp-server/internal/logging"
 	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/shoka/mcp-server/internal/storage/filelock"
+	"github.com/shoka/mcp-server/internal/storage/walworker"
 	"github.com/shoka/mcp-server/internal/tools"
 	"github.com/shoka/mcp-server/internal/translation"
 	"github.com/shoka/mcp-server/internal/ui"
@@ -59,11 +61,32 @@ func main() {
 		startProfileServer(ctx, *profileAddr, logger)
 	}
 
-	s, err := storage.NewFSGitStorage(cfg.Storage.BaseDir)
+	storageOpts := storage.Options{
+		FileLock: filelock.Config{
+			MaxLeaseDuration: cfg.FileLock.MaxLeaseDuration.Std(),
+			ReaperInterval:   cfg.FileLock.ReaperInterval.Std(),
+		},
+		WALMaxEntries: cfg.WAL.MaxEntries,
+		WALWorker: walworker.Config{
+			MinWorkers:     cfg.WALWorker.MinWorkers,
+			MaxWorkers:     cfg.WALWorker.MaxWorkers,
+			IdleTimeout:    cfg.WALWorker.IdleTimeout.Std(),
+			ScanInterval:   cfg.WALWorker.ScanInterval.Std(),
+			BackoffInitial: cfg.WALWorker.BackoffInitial.Std(),
+			BackoffMax:     cfg.WALWorker.BackoffMax.Std(),
+		},
+	}
+	s, err := storage.NewFSGitStorageWithOptions(cfg.Storage.BaseDir, storageOpts)
 	if err != nil {
 		log.Fatalf("failed to initialize storage: %v", err)
 	}
 	s.SetLogger(logger)
+	defer s.Close()
+
+	// Working-tree-vs-git drift detection (background; never blocks listen).
+	if cfg.Storage.DriftScan.OnStartupEnabled() {
+		s.StartDriftScan(ctx, cfg.Storage.DriftScan.Interval.Std())
+	}
 
 	notifier := webhooks.New(toWebhookConfigs(cfg.Webhooks))
 	notifier.SetLogger(logger)

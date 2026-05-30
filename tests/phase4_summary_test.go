@@ -19,6 +19,7 @@ func TestPhase4_ReadSummary(t *testing.T) {
 	content := "---\ntitle: Doc One\nsummary: short\nstatus: active\n---\n# Heading One\n\nThe opening paragraph.\n\nMore body that should not appear in the excerpt fully.\n"
 	_, _, err := write(ctx, nil, tools.WriteFileInput{Namespace: "ns", ProjectName: "proj", Path: "doc.md", Content: content})
 	require.NoError(t, err)
+	drainTool(t, s) // version/modified_at come from git history (async commit)
 
 	summary := tools.ReadSummaryHandler(s)
 	res, out, err := summary(ctx, nil, tools.ReadSummaryInput{Namespace: "ns", ProjectName: "proj", Path: "doc.md"})

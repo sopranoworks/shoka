@@ -23,6 +23,7 @@ func newConcreteStorage(t *testing.T) *storage.FSGitStorage {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	s, err := storage.NewFSGitStorage(dir)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.CreateProject("ns", "proj"))
 	return s
 }
@@ -62,6 +63,7 @@ func TestPhase6_WriteEmitsWebhook(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, res)
 
+	drainTool(t, s) // the webhook fires from the background commit (async)
 	n.Wait()
 	select {
 	case ev := <-got:
@@ -88,5 +90,6 @@ func TestPhase6_WebhookFailureDoesNotFailWrite(t *testing.T) {
 	require.Nil(t, res)
 	assert.NotEmpty(t, out.Version, "the write must succeed even when the webhook delivery fails")
 
+	drainTool(t, s)
 	n.Wait() // must not hang despite the dead endpoint
 }

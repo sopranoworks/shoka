@@ -66,6 +66,7 @@ func TestAuth_UIEndpoint_RequiresTokenAndOrigin(t *testing.T) {
 
 	s, err := storage.NewFSGitStorage(tempDir)
 	require.NoError(t, err)
+	defer s.Close()
 	dm, err := drafts.NewManager(tempDir)
 	require.NoError(t, err)
 	uim := ui.NewManager(s, dm)

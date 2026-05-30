@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -23,6 +24,7 @@ func TestPhase2Tools_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}
+	defer s.Close()
 
 	ctx := context.Background()
 	namespace := "phase2-ns"
@@ -94,6 +96,12 @@ func TestPhase2Tools_Integration(t *testing.T) {
 			t.Error("expected error reading deleted file, got nil")
 		}
 
+		// Commits are asynchronous; wait for the delete (and the earlier writes)
+		// to land before inspecting git HEAD.
+		if !s.WaitForWAL(10 * time.Second) {
+			t.Fatal("WAL did not drain")
+		}
+
 		// Verify Git commit
 		projectPath := filepath.Join(tmpDir, namespace, projectName)
 		r, _ := git.PlainOpen(projectPath)
@@ -109,6 +117,9 @@ func TestPhase2Tools_Integration(t *testing.T) {
 		// Create/Update a file multiple times
 		s.WriteFile(namespace, projectName, "history.txt", "v1")
 		s.WriteFile(namespace, projectName, "history.txt", "v2")
+		if !s.WaitForWAL(10 * time.Second) {
+			t.Fatal("WAL did not drain")
+		}
 
 		handler := tools.GetHistoryHandler(s)
 		input := tools.GetHistoryInput{

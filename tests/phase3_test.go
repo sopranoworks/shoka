@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
@@ -11,15 +12,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newToolStorage(t *testing.T) storage.StorageService {
+func newToolStorage(t *testing.T) *storage.FSGitStorage {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "shoka-phase3-*")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	s, err := storage.NewFSGitStorage(dir)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() }) // runs before RemoveAll: stops the worker pool
 	require.NoError(t, s.CreateProject("ns", "proj"))
 	return s
+}
+
+// drainTool waits for the background commit worker to flush the WAL to git, so
+// git-derived assertions (history, ListFilesSince, read_summary version,
+// webhooks) are observable. Commits are asynchronous in the redesign.
+func drainTool(t *testing.T, s *storage.FSGitStorage) {
+	t.Helper()
+	if !s.WaitForWAL(10 * time.Second) {
+		t.Fatalf("WAL did not drain within 10s (pending=%d)", s.WALPending())
+	}
 }
 
 // Two clients read the same version, both attempt a write with that version;

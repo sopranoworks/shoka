@@ -18,6 +18,7 @@ func TestPhase5_ListFilesSince_FindsWrite(t *testing.T) {
 	write := tools.WriteFileHandler(s)
 	_, _, err := write(ctx, nil, tools.WriteFileInput{Namespace: "ns", ProjectName: "proj", Path: "a.md", Content: "hi"})
 	require.NoError(t, err)
+	drainTool(t, s) // ListFilesSince is git-backed (async commit)
 
 	since := tools.ListFilesSinceHandler(s)
 	res, out, err := since(ctx, nil, tools.ListFilesSinceInput{Namespace: "ns", ProjectName: "proj", Since: before})
@@ -84,6 +85,7 @@ func TestPhase5_GetHistorySince_HashExclusive(t *testing.T) {
 		_, _, err := write(ctx, nil, tools.WriteFileInput{Namespace: "ns", ProjectName: "proj", Path: "h.txt", Content: v})
 		require.NoError(t, err)
 	}
+	drainTool(t, s) // GetHistory is git-backed (async commit)
 
 	history := tools.GetHistoryHandler(s)
 	_, all, err := history(ctx, nil, tools.GetHistoryInput{Namespace: "ns", ProjectName: "proj", Path: "h.txt"})

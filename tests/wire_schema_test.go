@@ -41,7 +41,7 @@ func wireStart(t *testing.T) (*mcp.ClientSession, func()) {
 	sess, err := cli.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: httpSrv.URL}, nil)
 	require.NoError(t, err)
 
-	return sess, func() { sess.Close(); httpSrv.Close() }
+	return sess, func() { sess.Close(); httpSrv.Close(); s.Close() }
 }
 
 func wireCall(t *testing.T, sess *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {

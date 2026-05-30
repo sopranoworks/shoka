@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 )
 
 func newTestStorage(t *testing.T) *FSGitStorage {
@@ -17,10 +18,23 @@ func newTestStorage(t *testing.T) *FSGitStorage {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Close runs before the RemoveAll above (cleanups are LIFO): it stops the
+	// background worker pool so the temp dir's .git is no longer in use.
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.CreateProject("ns", "proj"); err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// drain blocks until the background worker pool has committed every pending WAL
+// entry to git. Required before asserting on git state, since commits are now
+// asynchronous.
+func drain(t *testing.T, s *FSGitStorage) {
+	t.Helper()
+	if !s.WaitForWAL(10 * time.Second) {
+		t.Fatalf("WAL did not drain within 10s (pending=%d)", s.WALPending())
+	}
 }
 
 func TestGetCurrentVersion_NoHistory(t *testing.T) {

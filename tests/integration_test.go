@@ -1,16 +1,17 @@
 package tests
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
-	"context"
 )
 
 func TestMCPTools_Integration(t *testing.T) {
@@ -24,6 +25,7 @@ func TestMCPTools_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}
+	defer s.Close()
 
 	ctx := context.Background()
 
@@ -133,6 +135,7 @@ func TestFSGitStorage_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}
+	defer s.Close()
 
 	namespace := "test-ns"
 	projectName := "test-project"
@@ -172,6 +175,11 @@ func TestFSGitStorage_Integration(t *testing.T) {
 		}
 		if string(gotContent) != content {
 			t.Errorf("expected content %q, got %q", content, string(gotContent))
+		}
+
+		// Commits are asynchronous; wait for the background worker to commit.
+		if !s.WaitForWAL(10 * time.Second) {
+			t.Fatal("WAL did not drain")
 		}
 
 		// Verify Git commit
