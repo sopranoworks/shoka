@@ -167,6 +167,19 @@ func (m *Manager) sendResponse(conn *websocket.Conn, msgType MessageType, payloa
 	conn.WriteMessage(websocket.TextMessage, data)
 }
 
+// ProjectInfo is one project entry in the GET_PROJECTS response: its name and
+// its health state (healthy | corrupted | dangerous) for the status badge.
+type ProjectInfo struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// projectStateReader is the optional capability the storage layer provides for
+// per-project health; type-asserted so the UI need not widen StorageService.
+type projectStateReader interface {
+	State(namespace, projectName string) storage.ProjectState
+}
+
 func (m *Manager) handleGetProjects(conn *websocket.Conn, payload json.RawMessage) {
 	var p GetProjectsPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -174,13 +187,26 @@ func (m *Manager) handleGetProjects(conn *websocket.Conn, payload json.RawMessag
 		return
 	}
 
-	projects, err := m.storage.ListProjects(p.Namespace)
+	ns := p.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	projects, err := m.storage.ListProjects(ns)
 	if err != nil {
 		m.sendError(conn, fmt.Sprintf("Failed to list projects: %v", err))
 		return
 	}
 
-	m.sendResponse(conn, GetProjects, projects)
+	sr, _ := m.storage.(projectStateReader)
+	infos := make([]ProjectInfo, 0, len(projects))
+	for _, name := range projects {
+		state := string(storage.StateHealthy)
+		if sr != nil {
+			state = string(sr.State(ns, name))
+		}
+		infos = append(infos, ProjectInfo{Name: name, State: state})
+	}
+	m.sendResponse(conn, GetProjects, infos)
 }
 
 func (m *Manager) handleCreateProject(conn *websocket.Conn, payload json.RawMessage) {

@@ -5,7 +5,8 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: '../dist',
+    // Build directly into the directory the Go server embeds (server/embed.go).
+    outDir: '../server/dist',
     emptyOutDir: true,
   },
 })
