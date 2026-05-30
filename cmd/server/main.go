@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/shoka/mcp-server/internal/adminapi"
 	"github.com/shoka/mcp-server/internal/auth"
 	"github.com/shoka/mcp-server/internal/config"
 	"github.com/shoka/mcp-server/internal/drafts"
@@ -36,6 +38,19 @@ import (
 )
 
 func main() {
+	// Subcommand dispatch: `shoka project ...` / `shoka wal ...` run the CLI;
+	// anything else (flags or nothing) runs the server.
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "project", "wal":
+			if err := runCLI(os.Args[1:]); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	configPath := flag.String("config", "shoka.yaml", "Path to configuration file")
 	profileAddr := flag.String("profile-addr", "", "If set, serve net/http/pprof on this loopback address (e.g. localhost:9060). Empty disables profiling.")
 	flag.Parse()
@@ -145,7 +160,7 @@ func main() {
 		return mcpServer
 	}, &mcp.StreamableHTTPOptions{Logger: logger})
 
-	webHandler, err := setupWebHandler(dm, uim, authenticator)
+	webHandler, err := setupWebHandler(s, dm, uim, authenticator)
 	if err != nil {
 		log.Fatalf("failed to setup web handler: %v", err)
 	}
@@ -265,13 +280,17 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 	return mcpServer
 }
 
-func setupWebHandler(dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator) (http.Handler, error) {
+func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// WebSocket endpoints accept the ?token= query fallback (browsers cannot set
 	// an Authorization header on a WS handshake). The MCP/SSE endpoint uses the
 	// header-only Middleware (see runServer wiring) so tokens never ride in URLs.
 	mux.Handle("/drafts/", authenticator.MiddlewareAllowQueryToken(dm))
 	mux.Handle("/ws/ui", authenticator.MiddlewareAllowQueryToken(uim))
+
+	// Admin API (project state/rescan/recover) — shared by the `shoka project`
+	// CLI and the Web UI recovery dialog. Header-bearer auth (no ?token=).
+	mux.Handle("/api/", authenticator.Middleware(adminapi.New(s)))
 
 	// Serve static files from embedded FS
 	distFS, err := fs.Sub(server.DistFS, "dist")
