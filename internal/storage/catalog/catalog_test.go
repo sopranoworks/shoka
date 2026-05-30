@@ -363,8 +363,8 @@ func TestOpenCorruptFile(t *testing.T) {
 		_ = c.Close()
 		t.Fatal("Open(corrupt) returned nil error")
 	}
-	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrSchemaMismatch) {
-		t.Errorf("Open(corrupt) err = %v, want a wrapped bbolt error", err)
+	if !errors.Is(err, ErrCorrupt) {
+		t.Errorf("Open(corrupt) err = %v, want ErrCorrupt", err)
 	}
 }
 

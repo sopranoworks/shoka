@@ -55,6 +55,13 @@ func (s *FSGitStorage) RecoverProject(namespace, projectName string, mode Recove
 				return fmt.Errorf("commit recovery: %w", err)
 			}
 		}
+		// Rebuild the catalog from the new HEAD so it agrees with the adopted
+		// working tree (design log §9 / directive §8: recovery rebuilds the
+		// catalog as a side effect).
+		if rerr := s.rebuildAndRegister(namespace, projectName); rerr != nil {
+			s.log().Warn("recovery: catalog rebuild failed (non-fatal)",
+				"namespace", namespace, "project", projectName, "err", rerr)
+		}
 		s.setState(namespace, projectName, StateHealthy)
 		return nil
 
@@ -76,6 +83,12 @@ func (s *FSGitStorage) RecoverProject(namespace, projectName string, mode Recove
 		}
 		if err := w.Clean(&git.CleanOptions{Dir: true}); err != nil {
 			return fmt.Errorf("clean untracked: %w", err)
+		}
+		// Rebuild the catalog from HEAD now that the working tree has been reset
+		// to it (directive §8: recovery rebuilds the catalog as a side effect).
+		if rerr := s.rebuildAndRegister(namespace, projectName); rerr != nil {
+			s.log().Warn("recovery: catalog rebuild failed (non-fatal)",
+				"namespace", namespace, "project", projectName, "err", rerr)
 		}
 		s.setState(namespace, projectName, StateHealthy)
 		return nil

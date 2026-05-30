@@ -91,6 +91,14 @@ func Open(path string) (*Catalog, error) {
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
+		// A file that is not a valid bbolt database (e.g. arbitrary garbage, a
+		// truncated or version-mismatched DB) is a corruption to be rebuilt from
+		// git, distinct from a lock timeout or permission error (unreadable).
+		if errors.Is(err, bolt.ErrInvalid) ||
+			errors.Is(err, bolt.ErrVersionMismatch) ||
+			errors.Is(err, bolt.ErrChecksum) {
+			return nil, fmt.Errorf("%w: %v", ErrCorrupt, err)
+		}
 		return nil, fmt.Errorf("catalog: open %s: %w", path, err)
 	}
 	c := &Catalog{db: db, path: path}

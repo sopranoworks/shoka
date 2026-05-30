@@ -11,15 +11,15 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-// DriftSummary reports how a project's working tree differs from its git HEAD.
+// DriftSummary reports how a project differs from its catalog (the set of files
+// Shoka manages).
 type DriftSummary struct {
 	State    ProjectState
-	Added    []string // in working tree, not in HEAD (untracked)
-	Modified []string // in both, content differs
-	Deleted  []string // in HEAD, missing from working tree
+	Added    []string // in the working tree, not in the catalog (external/noise; informational)
+	Modified []string // in both, content differs from the catalog etag
+	Deleted  []string // in the catalog, missing from the working tree (invariant violation)
 }
 
 // HasDrift reports whether any path differs.
@@ -27,100 +27,75 @@ func (d DriftSummary) HasDrift() bool {
 	return len(d.Added)+len(d.Modified)+len(d.Deleted) > 0
 }
 
-// DetectDrift compares a project's working tree against its git HEAD by content
-// hash and updates the project's state. Per the directive §7.4, but with one
-// refinement: a repository that opens cleanly yet has no commits (a freshly
-// initialised project) is healthy when its working tree is empty and corrupted
-// when it is not — rather than "dangerous". Dangerous is reserved for a .git
-// that cannot be opened. (Flagged in the completion report.)
+// DetectDrift computes a project's state from the catalog invariant (directive
+// §8): catalog → working tree (a catalog entry with no working-tree file is a
+// "Deleted" violation), catalog ↔ working tree etag (a mismatch is "Modified"),
+// and working tree → catalog (files on disk that the catalog does not know
+// about are "Added" — external noise like .DS_Store/.claude/, reported for the
+// operator but NOT a corrupting condition). Dangerous is reserved for a project
+// whose .git cannot be opened. The catalog is disposable: if it cannot be
+// opened it is rebuilt from git HEAD before verification.
 func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return DriftSummary{}, err
 	}
 
-	r, err := git.PlainOpen(projectPath)
-	if err != nil {
+	// Dangerous: .git is missing/unreadable.
+	if _, oerr := git.PlainOpen(projectPath); oerr != nil {
 		s.setState(namespace, projectName, StateDangerous)
 		return DriftSummary{State: StateDangerous}, nil
 	}
 
-	headHashes, hasHead, err := headContentHashes(r)
+	cat, err := s.catalogFor(namespace, projectName)
 	if err != nil {
-		s.setState(namespace, projectName, StateDangerous)
-		return DriftSummary{State: StateDangerous}, nil
+		// The catalog is disposable — rebuild it from git HEAD.
+		if rerr := s.rebuildAndRegister(namespace, projectName); rerr != nil {
+			s.setState(namespace, projectName, StateDangerous)
+			return DriftSummary{State: StateDangerous}, nil
+		}
+		cat, err = s.catalogFor(namespace, projectName)
+		if err != nil {
+			s.setState(namespace, projectName, StateDangerous)
+			return DriftSummary{State: StateDangerous}, nil
+		}
 	}
 
-	wtHashes, err := workingTreeContentHashes(projectPath)
-	if err != nil {
-		return DriftSummary{}, err
+	violations, verr := cat.VerifyInvariant(projectPath)
+	if verr != nil {
+		s.setState(namespace, projectName, StateDangerous)
+		return DriftSummary{State: StateDangerous}, nil
 	}
 
 	var sum DriftSummary
-	for p := range headHashes {
-		if _, ok := wtHashes[p]; !ok {
-			sum.Deleted = append(sum.Deleted, p)
+	for _, v := range violations {
+		switch v.Kind {
+		case "missing_from_working_tree":
+			sum.Deleted = append(sum.Deleted, v.Path)
+		case "etag_mismatch":
+			sum.Modified = append(sum.Modified, v.Path)
 		}
 	}
-	for p, h := range wtHashes {
-		hh, ok := headHashes[p]
-		if !ok {
-			sum.Added = append(sum.Added, p)
-			continue
-		}
-		if hh != h {
-			sum.Modified = append(sum.Modified, p)
+	// Added: working-tree files the catalog does not record. Informational only;
+	// they never change the state (the catalog deliberately filters this noise).
+	if wt, werr := workingTreeContentHashes(projectPath); werr == nil {
+		for p := range wt {
+			if has, herr := cat.HasFile(p); herr == nil && !has {
+				sum.Added = append(sum.Added, p)
+			}
 		}
 	}
 	sort.Strings(sum.Added)
 	sort.Strings(sum.Modified)
 	sort.Strings(sum.Deleted)
 
-	switch {
-	case !hasHead:
-		if len(wtHashes) == 0 {
-			sum.State = StateHealthy
-		} else {
-			sum.State = StateCorrupted
-		}
-	case sum.HasDrift():
+	if len(sum.Modified)+len(sum.Deleted) > 0 {
 		sum.State = StateCorrupted
-	default:
+	} else {
 		sum.State = StateHealthy
 	}
-
 	s.setState(namespace, projectName, sum.State)
 	return sum, nil
-}
-
-// headContentHashes maps each path at HEAD to the sha256 of its content. The
-// second return is false when the repo has no commits yet (not an error).
-func headContentHashes(r *git.Repository) (map[string]string, bool, error) {
-	ref, err := r.Head()
-	if err != nil {
-		return map[string]string{}, false, nil // no commits yet
-	}
-	commit, err := r.CommitObject(ref.Hash())
-	if err != nil {
-		return nil, false, err
-	}
-	tree, err := commit.Tree()
-	if err != nil {
-		return nil, false, err
-	}
-	m := map[string]string{}
-	err = tree.Files().ForEach(func(f *object.File) error {
-		content, cerr := f.Contents()
-		if cerr != nil {
-			return nil
-		}
-		m[f.Name] = sha256Hex([]byte(content))
-		return nil
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	return m, true, nil
 }
 
 // workingTreeContentHashes maps each working-tree path to the sha256 of its
@@ -161,15 +136,15 @@ func workingTreeContentHashes(projectPath string) (map[string]string, error) {
 	return m, nil
 }
 
-// StartDriftScan runs drift detection over every project on a background
-// goroutine: once at startup (after the WAL drains) and then every interval if
-// interval > 0. It never blocks the caller.
+// StartDriftScan starts a background goroutine that re-runs drift detection over
+// every project every interval. The initial pass is the caller's responsibility
+// (StartupInit runs it as the blocking startup gate); this only schedules the
+// periodic re-scans. interval <= 0 disables it.
 func (s *FSGitStorage) StartDriftScan(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
 	go func() {
-		s.scanAllProjects()
-		if interval <= 0 {
-			return
-		}
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -184,29 +159,12 @@ func (s *FSGitStorage) StartDriftScan(ctx context.Context, interval time.Duratio
 }
 
 // scanAllProjects waits for the WAL to drain, then runs DetectDrift on every
-// <namespace>/<project> under the base directory.
+// project under the base directory.
 func (s *FSGitStorage) scanAllProjects() {
 	s.WaitForWAL(2 * time.Minute)
-	nsEntries, err := os.ReadDir(s.baseDir)
-	if err != nil {
-		s.log().Error("drift scan: cannot read base dir", "error", err)
-		return
-	}
-	for _, ns := range nsEntries {
-		if !ns.IsDir() || ns.Name() == ".shoka" {
-			continue
-		}
-		projEntries, err := os.ReadDir(filepath.Join(s.baseDir, ns.Name()))
-		if err != nil {
-			continue
-		}
-		for _, pr := range projEntries {
-			if !pr.IsDir() {
-				continue
-			}
-			if _, err := s.DetectDrift(ns.Name(), pr.Name()); err != nil {
-				s.log().Error("drift scan failed", "project", projectKey(ns.Name(), pr.Name()), "error", err)
-			}
+	for _, p := range s.discoverProjects() {
+		if _, err := s.DetectDrift(p.namespace, p.name); err != nil {
+			s.log().Error("drift scan failed", "project", projectKey(p.namespace, p.name), "error", err)
 		}
 	}
 }

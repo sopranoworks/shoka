@@ -108,7 +108,14 @@ func main() {
 	s.SetLogger(logger)
 	defer s.Close()
 
-	// Working-tree-vs-git drift detection (background; never blocks listen).
+	// Blocking startup gate (catalog directive §6): drain the WAL, then open or
+	// rebuild every project's catalog and compute its drift state. This MUST
+	// complete before either listener accepts a connection, so callers never
+	// observe a project mid-initialisation.
+	s.StartupInit(ctx)
+
+	// Periodic background drift re-scan (the startup pass above already ran the
+	// first one). Disabled when the interval is zero.
 	if cfg.Storage.DriftScan.OnStartupEnabled() {
 		s.StartDriftScan(ctx, cfg.Storage.DriftScan.Interval.Std())
 	}
