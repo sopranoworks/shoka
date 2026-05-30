@@ -23,6 +23,7 @@ import (
 	"github.com/shoka/mcp-server/internal/drafts"
 	"github.com/shoka/mcp-server/internal/httplog"
 	"github.com/shoka/mcp-server/internal/logging"
+	"github.com/shoka/mcp-server/internal/metrics"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
 	"github.com/shoka/mcp-server/internal/storage/walworker"
@@ -86,6 +87,12 @@ func main() {
 	// Working-tree-vs-git drift detection (background; never blocks listen).
 	if cfg.Storage.DriftScan.OnStartupEnabled() {
 		s.StartDriftScan(ctx, cfg.Storage.DriftScan.Interval.Std())
+	}
+
+	// Optional Prometheus metrics endpoint: default off, loopback-only (mirrors
+	// the pprof endpoint's defaults).
+	if cfg.Metrics.Addr != "" {
+		startMetricsServer(ctx, cfg.Metrics.Addr, s, logger)
 	}
 
 	notifier := webhooks.New(toWebhookConfigs(cfg.Webhooks))
@@ -340,6 +347,40 @@ func startProfileServer(ctx context.Context, addr string, logger *slog.Logger) {
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("pprof server error", "error", err)
+		}
+	}()
+}
+
+// startMetricsServer starts a dedicated http.Server exposing /metrics in
+// Prometheus format. Like the pprof endpoint, it is loopback-only (a non-loopback
+// host is rewritten to localhost with a WARN) and is only started when the
+// metrics.addr config is non-empty. The server shuts down when ctx is done.
+func startMetricsServer(ctx context.Context, addr string, src metrics.Source, logger *slog.Logger) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		logger.Error("invalid metrics.addr; metrics endpoint not started", "addr", addr, "error", err)
+		return
+	}
+	if !isLoopbackHost(host) {
+		logger.Warn("metrics.addr is not a loopback host; forcing localhost", "given", host)
+		host = "localhost"
+		addr = net.JoinHostPort(host, port)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler(src))
+	srv := &http.Server{Addr: addr, Handler: mux}
+	logger.Info("metrics endpoint enabled", "addr", addr)
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server error", "error", err)
 		}
 	}()
 }

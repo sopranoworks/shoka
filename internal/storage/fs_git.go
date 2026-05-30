@@ -609,6 +609,24 @@ func (s *FSGitStorage) WALOldestEntryAge() time.Duration { return s.wal.OldestEn
 // WorkerStats returns the background commit pool's stats.
 func (s *FSGitStorage) WorkerStats() walworker.Stats { return s.pool.Stats() }
 
+// CommitStats returns the cumulative successful and failed background-commit
+// counts, for the shoka_wal_commits_total metric.
+func (s *FSGitStorage) CommitStats() (success, failure int64) {
+	st := s.pool.Stats()
+	return st.CommitsTotal, st.CommitsFailed
+}
+
+// ProjectStates returns each tracked project ("namespace/project") mapped to its
+// state string, for the shoka_project_state metric.
+func (s *FSGitStorage) ProjectStates() map[string]string {
+	src := s.AllStates()
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = string(v)
+	}
+	return out
+}
+
 // LockStats returns the file-lock manager's active leases and forced-release count.
 func (s *FSGitStorage) LockStats() (activeLeases int, forcedReleases int64) {
 	return len(s.locks.ActiveLeases()), s.locks.ForcedReleaseCount()
