@@ -150,6 +150,19 @@ func (s *FSGitStorage) CatalogStatsAll() []CatalogStats {
 	return out
 }
 
+// CatalogFileCounts returns each registered project's catalog file and
+// directory counts keyed by "<namespace>/<project>" as [2]int{files, dirs}, for
+// the metrics gauges (§10). Uses only primitives so the metrics package need
+// not import storage.
+func (s *FSGitStorage) CatalogFileCounts() map[string][2]int {
+	stats := s.CatalogStatsAll()
+	out := make(map[string][2]int, len(stats))
+	for _, st := range stats {
+		out[st.Namespace+"/"+st.Project] = [2]int{st.Files, st.Dirs}
+	}
+	return out
+}
+
 // CatalogCounters returns the catalog observability counters (§10), for the
 // metrics Source.
 func (s *FSGitStorage) CatalogCounters() (updateFailedWrite, updateFailedDelete, invariantViolations, rebuildMissing, rebuildCorrupt, rebuildSchema, rebuildUnreadable int64) {

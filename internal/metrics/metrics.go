@@ -25,6 +25,10 @@ type Source interface {
 	CommitStats() (success, failure int64)
 	LockStats() (activeLeases int, forcedReleases int64)
 	ProjectStates() map[string]string // "namespace/project" -> "healthy|corrupted|dangerous"
+
+	// Catalog metrics (the 2026-05-30 catalog directive §10).
+	CatalogCounters() (updateFailedWrite, updateFailedDelete, invariantViolations, rebuildMissing, rebuildCorrupt, rebuildSchema, rebuildUnreadable int64)
+	CatalogFileCounts() map[string][2]int // "namespace/project" -> {files, dirs}
 }
 
 var projectStateLabels = []string{"healthy", "corrupted", "dangerous"}
@@ -41,20 +45,31 @@ type collector struct {
 	activeLeases     *prometheus.Desc
 	forcedReleases   *prometheus.Desc
 	projectState     *prometheus.Desc
+
+	catalogRebuild      *prometheus.Desc
+	catalogInvariant    *prometheus.Desc
+	catalogUpdateFailed *prometheus.Desc
+	catalogFiles        *prometheus.Desc
+	catalogDirs         *prometheus.Desc
 }
 
 func newCollector(src Source) *collector {
 	return &collector{
-		src:              src,
-		walPending:       prometheus.NewDesc("shoka_wal_pending_entries", "WAL entries awaiting a background git commit.", nil, nil),
-		walPendingBytes:  prometheus.NewDesc("shoka_wal_pending_bytes", "Summed content size of pending WAL entries.", nil, nil),
-		walOldestAge:     prometheus.NewDesc("shoka_wal_oldest_entry_age_seconds", "Age of the oldest pending WAL entry, in seconds.", nil, nil),
-		walMaxEntries:    prometheus.NewDesc("shoka_wal_max_entries", "Configured WAL write-disabled threshold.", nil, nil),
-		walWriteDisabled: prometheus.NewDesc("shoka_wal_write_disabled", "1 when writes are disabled because the WAL is full, else 0.", nil, nil),
-		commitsTotal:     prometheus.NewDesc("shoka_wal_commits_total", "Background git commits by result.", []string{"result"}, nil),
-		activeLeases:     prometheus.NewDesc("shoka_filelock_active_leases", "Currently-held file locks.", nil, nil),
-		forcedReleases:   prometheus.NewDesc("shoka_filelock_forced_release_total", "Stale file-lock leases reaped.", nil, nil),
-		projectState:     prometheus.NewDesc("shoka_project_state", "Per-project state (1 for the current state, 0 otherwise).", []string{"namespace", "project", "state"}, nil),
+		src:                 src,
+		walPending:          prometheus.NewDesc("shoka_wal_pending_entries", "WAL entries awaiting a background git commit.", nil, nil),
+		walPendingBytes:     prometheus.NewDesc("shoka_wal_pending_bytes", "Summed content size of pending WAL entries.", nil, nil),
+		walOldestAge:        prometheus.NewDesc("shoka_wal_oldest_entry_age_seconds", "Age of the oldest pending WAL entry, in seconds.", nil, nil),
+		walMaxEntries:       prometheus.NewDesc("shoka_wal_max_entries", "Configured WAL write-disabled threshold.", nil, nil),
+		walWriteDisabled:    prometheus.NewDesc("shoka_wal_write_disabled", "1 when writes are disabled because the WAL is full, else 0.", nil, nil),
+		commitsTotal:        prometheus.NewDesc("shoka_wal_commits_total", "Background git commits by result.", []string{"result"}, nil),
+		activeLeases:        prometheus.NewDesc("shoka_filelock_active_leases", "Currently-held file locks.", nil, nil),
+		forcedReleases:      prometheus.NewDesc("shoka_filelock_forced_release_total", "Stale file-lock leases reaped.", nil, nil),
+		projectState:        prometheus.NewDesc("shoka_project_state", "Per-project state (1 for the current state, 0 otherwise).", []string{"namespace", "project", "state"}, nil),
+		catalogRebuild:      prometheus.NewDesc("shoka_catalog_rebuild_total", "Per-project catalogs rebuilt at startup, by reason.", []string{"reason"}, nil),
+		catalogInvariant:    prometheus.NewDesc("shoka_catalog_invariant_violations_total", "Times read_file found a path in the catalog but not in the working tree.", nil, nil),
+		catalogUpdateFailed: prometheus.NewDesc("shoka_catalog_update_failed_total", "Catalog updates that failed on an otherwise-successful operation, by operation.", []string{"operation"}, nil),
+		catalogFiles:        prometheus.NewDesc("shoka_catalog_files", "Files recorded in each project's catalog.", []string{"namespace", "project"}, nil),
+		catalogDirs:         prometheus.NewDesc("shoka_catalog_dirs", "Directory buckets in each project's catalog.", []string{"namespace", "project"}, nil),
 	}
 }
 
@@ -68,6 +83,11 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.activeLeases
 	ch <- c.forcedReleases
 	ch <- c.projectState
+	ch <- c.catalogRebuild
+	ch <- c.catalogInvariant
+	ch <- c.catalogUpdateFailed
+	ch <- c.catalogFiles
+	ch <- c.catalogDirs
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
@@ -96,6 +116,24 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			}
 			ch <- prometheus.MustNewConstMetric(c.projectState, prometheus.GaugeValue, v, ns, project, label)
 		}
+	}
+
+	cnt := func(d *prometheus.Desc, v int64, labels ...string) {
+		ch <- prometheus.MustNewConstMetric(d, prometheus.CounterValue, float64(v), labels...)
+	}
+	uw, ud, iv, rm, rc, rs, ru := c.src.CatalogCounters()
+	cnt(c.catalogInvariant, iv)
+	cnt(c.catalogUpdateFailed, uw, "write")
+	cnt(c.catalogUpdateFailed, ud, "delete")
+	cnt(c.catalogRebuild, rm, "missing")
+	cnt(c.catalogRebuild, rc, "corrupt")
+	cnt(c.catalogRebuild, rs, "schema_mismatch")
+	cnt(c.catalogRebuild, ru, "unreadable")
+
+	for key, fd := range c.src.CatalogFileCounts() {
+		ns, project := splitProjectKey(key)
+		ch <- prometheus.MustNewConstMetric(c.catalogFiles, prometheus.GaugeValue, float64(fd[0]), ns, project)
+		ch <- prometheus.MustNewConstMetric(c.catalogDirs, prometheus.GaugeValue, float64(fd[1]), ns, project)
 	}
 }
 

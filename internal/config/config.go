@@ -114,6 +114,12 @@ type WALWorkerConfig struct {
 	BackoffMax     Duration `yaml:"backoff_max"`     // default 30s
 }
 
+// CatalogConfig configures the per-project catalog (the 2026-05-30 catalog
+// directive). It currently exposes no tunable fields — bbolt defaults are used
+// and the DB path is implicit (<base_dir>/<namespace>/<project>.db). The struct
+// exists so a future directive can add knobs without changing the config schema.
+type CatalogConfig struct{}
+
 // MetricsConfig configures the optional Prometheus metrics endpoint. An empty
 // Addr (the default) leaves the endpoint unregistered. A non-empty Addr is
 // forced to a loopback host, mirroring the pprof endpoint's defaults.
@@ -142,6 +148,7 @@ type Config struct {
 	WALWorker WALWorkerConfig `yaml:"wal_worker"`
 	Notify    NotifyConfig    `yaml:"notify"`
 	Metrics   MetricsConfig   `yaml:"metrics"`
+	Catalog   CatalogConfig   `yaml:"catalog"`
 	Webhooks  []WebhookConfig `yaml:"webhooks"`
 }
 

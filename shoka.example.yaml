@@ -91,6 +91,13 @@ notify:
 metrics:
   addr: ""   # e.g. "localhost:9090" to enable /metrics
 
+# Per-project catalog (the bbolt cache of Shoka-managed files at
+# <base_dir>/<namespace>/<project>.db). Currently no tunable fields — bbolt
+# defaults are used and the catalog is disposable (rebuilt from git when missing
+# or unreadable). The section exists so future options can be added without
+# invalidating the config schema.
+catalog: {}
+
 services:
   google_cloud:
     # Leave empty to run without translation. When set, the translate_file tool

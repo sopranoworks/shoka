@@ -23,6 +23,14 @@ func (fakeSource) LockStats() (int, int64)          { return 2, 5 }
 func (fakeSource) ProjectStates() map[string]string {
 	return map[string]string{"shoka/maintenance": "healthy", "rohrpost/dev": "corrupted"}
 }
+func (fakeSource) CatalogCounters() (int64, int64, int64, int64, int64, int64, int64) {
+	// updateFailedWrite, updateFailedDelete, invariantViolations,
+	// rebuildMissing, rebuildCorrupt, rebuildSchema, rebuildUnreadable
+	return 7, 3, 9, 2, 1, 0, 4
+}
+func (fakeSource) CatalogFileCounts() map[string][2]int {
+	return map[string][2]int{"shoka/maintenance": {12, 4}}
+}
 
 func TestMetrics_Exposition(t *testing.T) {
 	srv := httptest.NewServer(Handler(fakeSource{}))
@@ -52,4 +60,17 @@ func TestMetrics_Exposition(t *testing.T) {
 	assert.Contains(t, out, `shoka_project_state{namespace="shoka",project="maintenance",state="healthy"} 1`)
 	assert.Contains(t, out, `shoka_project_state{namespace="shoka",project="maintenance",state="corrupted"} 0`)
 	assert.Contains(t, out, `shoka_project_state{namespace="rohrpost",project="dev",state="corrupted"} 1`)
+
+	// Catalog counters (§10).
+	assert.Contains(t, out, "shoka_catalog_invariant_violations_total 9")
+	assert.Contains(t, out, `shoka_catalog_update_failed_total{operation="write"} 7`)
+	assert.Contains(t, out, `shoka_catalog_update_failed_total{operation="delete"} 3`)
+	assert.Contains(t, out, `shoka_catalog_rebuild_total{reason="missing"} 2`)
+	assert.Contains(t, out, `shoka_catalog_rebuild_total{reason="corrupt"} 1`)
+	assert.Contains(t, out, `shoka_catalog_rebuild_total{reason="schema_mismatch"} 0`)
+	assert.Contains(t, out, `shoka_catalog_rebuild_total{reason="unreadable"} 4`)
+
+	// Catalog per-project gauges (§10).
+	assert.Contains(t, out, `shoka_catalog_files{namespace="shoka",project="maintenance"} 12`)
+	assert.Contains(t, out, `shoka_catalog_dirs{namespace="shoka",project="maintenance"} 4`)
 }
