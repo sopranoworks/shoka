@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/markdown"
@@ -114,12 +115,19 @@ type FileSummary struct {
 	Frontmatter map[string]any `json:"frontmatter,omitempty"`
 	Heading     string         `json:"heading,omitempty"`
 	ETag        string         `json:"etag,omitempty"`
+	// ModifiedAt mirrors the top-level ModifiedAt[path] for this file: the
+	// working-tree mtime in RFC3339 nanosecond UTC format.
+	ModifiedAt string `json:"modified_at,omitempty"`
 }
 
 type ListFilesOutput struct {
 	Files []string `json:"files"`
+	// ModifiedAt maps every entry in Files (directories included, trailing "/")
+	// to its working-tree modification time (os.Stat().ModTime()) in RFC3339
+	// nanosecond UTC format. Always present.
+	ModifiedAt map[string]string `json:"modified_at"`
 	// Summaries maps each (non-directory) file name to its frontmatter, heading,
-	// and etag. Populated only when include_summaries is true.
+	// etag, and modified_at. Populated only when include_summaries is true.
 	Summaries map[string]FileSummary `json:"summaries,omitempty"`
 }
 
@@ -142,7 +150,7 @@ func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, ListFilesOutput{}, nil
 		}
 
-		files, err := s.ListFiles(input.Namespace, input.ProjectName, input.Path)
+		files, modTimes, err := s.ListFiles(input.Namespace, input.ProjectName, input.Path)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to list files: %v", err)}},
@@ -150,7 +158,16 @@ func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, ListFilesOutput{}, nil
 		}
 
-		out := ListFilesOutput{Files: files}
+		// modified_at is always present, keyed by every entry in files, as
+		// RFC3339 nanosecond UTC (the working-tree mtime).
+		modifiedAt := make(map[string]string, len(files))
+		for _, f := range files {
+			if t, ok := modTimes[f]; ok {
+				modifiedAt[f] = t.UTC().Format(time.RFC3339Nano)
+			}
+		}
+
+		out := ListFilesOutput{Files: files, ModifiedAt: modifiedAt}
 
 		if input.IncludeSummaries {
 			summaries := make(map[string]FileSummary)
@@ -164,7 +181,8 @@ func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 					continue
 				}
 				sum := markdown.Parse(content)
-				summaries[f] = FileSummary{Frontmatter: sum.Frontmatter, Heading: sum.Heading, ETag: etag}
+				// summaries[<path>].modified_at mirrors the top-level value.
+				summaries[f] = FileSummary{Frontmatter: sum.Frontmatter, Heading: sum.Heading, ETag: etag, ModifiedAt: modifiedAt[f]}
 			}
 			out.Summaries = summaries
 		}

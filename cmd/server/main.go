@@ -251,7 +251,7 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_files",
-		Description: "List files in a project path",
+		Description: "List files in a project path; each response includes a modified_at map giving every entry's working-tree modification time (RFC3339 nanosecond UTC)",
 	}, tools.LoggedTool(logger, "list_files", tools.ListFilesHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{

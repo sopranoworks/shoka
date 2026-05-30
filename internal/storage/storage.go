@@ -28,6 +28,11 @@ type StorageService interface {
 	// SHA-256 of the content). No lock, no git access.
 	ReadFileWithETag(namespace, projectName, path string) (string, string, error)
 
+	// StatModTime returns a single file's working-tree filesystem mtime
+	// (os.Stat().ModTime()) — the same inode mtime ListFiles reports. No lock,
+	// no git access; reflects the latest write immediately.
+	StatModTime(namespace, projectName, path string) (time.Time, error)
+
 	// Write writes content with optimistic concurrency. ifMatch nil skips the
 	// check; non-nil requires the current etag to equal *ifMatch (a
 	// *VersionConflictError is returned otherwise). Returns the new etag.
@@ -52,8 +57,10 @@ type StorageService interface {
 	// DeleteFile deletes a file from a project and performs an atomic Git commit.
 	DeleteFile(namespace, projectName, path string) error
 
-	// ListFiles returns a list of files in a project path.
-	ListFiles(namespace, projectName, path string) ([]string, error)
+	// ListFiles returns the non-recursive listing of a project path: entry
+	// names (directories carry a trailing "/") and a parallel map of each
+	// entry's working-tree modification time, keyed by the same display name.
+	ListFiles(namespace, projectName, path string) ([]string, map[string]time.Time, error)
 
 	// GetHistory returns the commit history for a specific file.
 	GetHistory(namespace, projectName, path string, limit int) ([]CommitInfo, error)

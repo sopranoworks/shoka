@@ -234,11 +234,23 @@ Apply to every tool unless noted:
   summaries.
 - **Input:** `namespace` (opt), `project_name` (**required**), `path` (opt,
   default project root), `include_summaries` (bool, opt, default `false`).
-- **Output:** `files` (array; directories carry a trailing `/`); `summaries`
-  (object: file → `{frontmatter, heading, etag}`) present only when
+- **Output:** `files` (array; directories carry a trailing `/`); `modified_at`
+  (object: entry → RFC3339 timestamp; **always present**, keyed by every entry in
+  `files`, directories included); `summaries` (object: file →
+  `{frontmatter, heading, etag, modified_at}`) present only when
   `include_summaries`. `.git`, `.drafts`, and `.shoka` are never listed. **No
   status filtering** — every file is returned regardless of frontmatter `status`.
   (Source: `internal/tools/project.go`.)
+  > `modified_at` is the **file-system mtime** (`os.Stat().ModTime()`) in RFC3339
+  > **nanosecond** precision, UTC. It reflects the **working tree**, not the git
+  > audit log, so it is available immediately after a write. It shares its source,
+  > format, and timing with `read_summary`'s `modified_at` **by design** — for any
+  > path that exists, `read_summary.modified_at`, `list_files.modified_at[<path>]`,
+  > and (when `include_summaries` is set) `summaries[<path>].modified_at` return the
+  > **same string** at the same moment. (`get_history` still returns git commit
+  > times, which is the correct semantic for a history listing.) Directory mtimes
+  > are included for consistency but typically change only when entries are added or
+  > removed, not when a child's contents change.
   > Removed in the storage redesign: the `include_versions` argument and the
   > `versions` output map. Callers that want an etag pass `include_summaries`
   > (each summary carries `etag`) or call `read_file`.
@@ -313,9 +325,13 @@ Apply to every tool unless noted:
   (**required**).
 - **Output:** `frontmatter` (object; empty if absent/malformed), `heading`
   (first heading), `excerpt` (first paragraph, capped at **200 runes**), `size`
-  (int, bytes), `etag` (opaque content SHA-256), `modified_at` (RFC3339 of the
-  last commit, omitted until the background commit lands). (Source:
-  `internal/tools/summary.go`; `docs/conventions/frontmatter.md`.)
+  (int, bytes), `etag` (opaque content SHA-256), `modified_at` (working-tree
+  filesystem mtime, `os.Stat().ModTime()`, RFC3339 **nanosecond** precision, UTC).
+  `modified_at` shares its semantics with `list_files.modified_at` **by design** —
+  the same path returns the **same string** in both (and in `list_files`
+  summaries) at the same moment, available immediately after a write without
+  waiting for the background git commit. (Source: `internal/tools/summary.go`;
+  `docs/conventions/frontmatter.md`.)
 - **Side effects:** none.
 
 ### 4.11 `list_files_since`

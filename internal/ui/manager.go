@@ -243,7 +243,7 @@ func (m *Manager) handleGetTree(conn *websocket.Conn, payload json.RawMessage) {
 }
 
 func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, error) {
-	files, err := m.storage.ListFiles(namespace, projectName, path)
+	files, _, err := m.storage.ListFiles(namespace, projectName, path)
 	if err != nil {
 		return nil, err
 	}

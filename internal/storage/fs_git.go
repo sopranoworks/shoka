@@ -345,6 +345,27 @@ func (s *FSGitStorage) ReadFileWithETag(namespace, projectName, path string) (st
 	return string(content), sha256Hex(content), nil
 }
 
+// StatModTime returns the working-tree filesystem modification time of a single
+// file (os.Stat().ModTime()) — the same inode mtime that ListFiles reports via
+// fs.DirEntry.Info(). It takes no lock and never touches git, so it reflects the
+// latest write immediately rather than waiting for the background commit. The
+// missing-file and other os.Stat errors are returned to the caller, not masked.
+func (s *FSGitStorage) StatModTime(namespace, projectName, path string) (time.Time, error) {
+	projectPath, err := s.getProjectPath(namespace, projectName)
+	if err != nil {
+		return time.Time{}, err
+	}
+	fullPath, _, err := relWithin(projectPath, path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to stat file: %w", err)
+	}
+	return info.ModTime(), nil
+}
+
 // ListProjects returns a list of project names within a namespace.
 func (s *FSGitStorage) ListProjects(namespace string) ([]string, error) {
 	if namespace == "" {
@@ -474,36 +495,50 @@ func atomicWriteFile(path string, data []byte) error {
 }
 
 // ListFiles returns a list of files in a project path (non-recursive).
-func (s *FSGitStorage) ListFiles(namespace, projectName, path string) ([]string, error) {
+// ListFiles returns the non-recursive listing of a project path: the entry
+// names (directories carry a trailing "/") and a parallel map of each entry's
+// working-tree modification time (os.Stat().ModTime()). The map is keyed by the
+// same display name that appears in the returned slice. An entry that vanishes
+// between the directory scan and its stat (fs.DirEntry.Info error) is omitted
+// from both the slice and the map (§4.3 of the modified_at directive).
+func (s *FSGitStorage) ListFiles(namespace, projectName, path string) ([]string, map[string]time.Time, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	searchPath := filepath.Join(projectPath, path)
 	relSearch, err := filepath.Rel(projectPath, searchPath)
 	if err != nil || (relSearch != "." && (strings.HasPrefix(relSearch, "..") || strings.HasPrefix(relSearch, "/"))) {
-		return nil, fmt.Errorf("invalid search path: %s", path)
+		return nil, nil, fmt.Errorf("invalid search path: %s", path)
 	}
 	entries, err := os.ReadDir(searchPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []string{}, nil
+			return []string{}, map[string]time.Time{}, nil
 		}
-		return nil, fmt.Errorf("failed to list files: %w", err)
+		return nil, nil, fmt.Errorf("failed to list files: %w", err)
 	}
-	var files []string
+	files := []string{}
+	modTimes := make(map[string]time.Time, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == ".git" || name == ".drafts" || name == ".shoka" {
 			continue
 		}
-		if entry.IsDir() {
-			files = append(files, name+"/")
-		} else {
-			files = append(files, name)
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			// Entry disappeared between ReadDir and Info (e.g. concurrent
+			// delete). Omit it from both the listing and the mtime map.
+			continue
 		}
+		display := name
+		if entry.IsDir() {
+			display = name + "/"
+		}
+		files = append(files, display)
+		modTimes[display] = info.ModTime()
 	}
-	return files, nil
+	return files, modTimes, nil
 }
 
 // GetHistory returns the commit history for a specific file (git-backed).

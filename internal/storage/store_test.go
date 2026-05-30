@@ -109,6 +109,52 @@ func TestStore_ConcurrentWritesDistinctFiles(t *testing.T) {
 	}
 }
 
+func TestStore_ListFilesReturnsModTimes(t *testing.T) {
+	s := newTestStorage(t) // project ns/proj exists
+
+	// Write one file, then a second strictly later (explicit mtimes via Chtimes
+	// so the ordering assertion does not depend on wall-clock resolution).
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "first.md", "1", nil)
+	require.NoError(t, err)
+	_, err = s.Write(context.Background(), "sess", "ns", "proj", "second.md", "2", nil)
+	require.NoError(t, err)
+
+	projDir := filepath.Join(s.baseDir, "ns", "proj")
+	t1 := time.Now().Add(-2 * time.Hour)
+	t2 := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, os.Chtimes(filepath.Join(projDir, "first.md"), t1, t1))
+	require.NoError(t, os.Chtimes(filepath.Join(projDir, "second.md"), t2, t2))
+
+	files, modTimes, err := s.ListFiles("ns", "proj", "")
+	require.NoError(t, err)
+	assert.Contains(t, files, "first.md")
+	assert.Contains(t, files, "second.md")
+
+	// Every listed entry has a non-zero mtime in the map.
+	for _, f := range files {
+		mt, ok := modTimes[f]
+		require.True(t, ok, "modTimes must have an entry for %q", f)
+		assert.False(t, mt.IsZero(), "mtime for %q must be non-zero", f)
+	}
+
+	// The later-written file has a strictly greater mtime.
+	assert.True(t, modTimes["second.md"].After(modTimes["first.md"]),
+		"second.md mtime (%s) should be after first.md (%s)", modTimes["second.md"], modTimes["first.md"])
+}
+
+func TestStore_ListFilesModTimeIncludesDirectories(t *testing.T) {
+	s := newTestStorage(t)
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "sub/inner.md", "x", nil)
+	require.NoError(t, err)
+
+	files, modTimes, err := s.ListFiles("ns", "proj", "")
+	require.NoError(t, err)
+	require.Contains(t, files, "sub/", "directory entry should carry a trailing slash")
+	mt, ok := modTimes["sub/"]
+	require.True(t, ok, "directory entries must appear in modTimes keyed with the trailing slash")
+	assert.False(t, mt.IsZero())
+}
+
 func TestStore_WriteDisabledWhenWALFull(t *testing.T) {
 	s := newTestStorage(t)
 	// Stop the worker so the WAL cannot drain, then stuff it past the threshold.

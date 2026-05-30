@@ -63,10 +63,12 @@ func ReadSummaryHandler(s storage.StorageService) func(context.Context, *mcp.Cal
 			ETag:        etag,
 		}
 
-		// modified_at remains git-derived (the last commit's time); it appears
-		// once the background commit for this file lands.
-		if hist, herr := s.GetHistory(input.Namespace, input.ProjectName, input.Path, 1); herr == nil && len(hist) > 0 {
-			out.ModifiedAt = hist[0].Date.UTC().Format(time.RFC3339)
+		// modified_at is the working-tree filesystem mtime (os.Stat().ModTime()),
+		// formatted RFC3339 with nanosecond precision in UTC — byte-identical to
+		// list_files.modified_at for the same path. It reflects the write
+		// immediately and never waits for the background git commit.
+		if mt, mterr := s.StatModTime(input.Namespace, input.ProjectName, input.Path); mterr == nil {
+			out.ModifiedAt = mt.UTC().Format(time.RFC3339Nano)
 		}
 
 		return nil, out, nil
