@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
 	"github.com/shoka/mcp-server/internal/storage/wal"
 	"github.com/shoka/mcp-server/internal/storage/walworker"
@@ -40,6 +41,12 @@ type FSGitStorage struct {
 	stateMu sync.RWMutex
 	states  map[string]ProjectState
 
+	// notify is the in-process notification center (internal/notify). It may be
+	// nil; every call site uses the nil-safe receiver method, so storage never
+	// guards it. It is a side-channel: a failure to publish (impossible in the
+	// MVP) must never affect a storage operation's outcome.
+	notify *notify.Center
+
 	changeHandler ChangeHandler
 	logger        *slog.Logger
 }
@@ -50,6 +57,10 @@ type Options struct {
 	FileLock      filelock.Config
 	WALMaxEntries int
 	WALWorker     walworker.Config
+	// NotifyCenter is the in-process notification center events are published
+	// to on successful mutations. It may be nil; storage tolerates that (the
+	// hooks become no-ops).
+	NotifyCenter *notify.Center
 }
 
 // ChangeEvent describes a successful mutation, delivered to a registered handler
@@ -151,6 +162,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		wal:           w,
 		maxWALEntries: maxWAL,
 		states:        make(map[string]ProjectState),
+		notify:        opts.NotifyCenter,
 	}
 	s.pool = walworker.NewPool(w, s.commitEntry, opts.WALWorker)
 	return s, nil
@@ -217,6 +229,10 @@ func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 		return fmt.Errorf("failed to initialize git repository: %w", err)
 	}
 	s.setState(namespace, projectName, StateHealthy)
+	// Notification center: a genuine new project was created. The early
+	// ErrRepositoryAlreadyExists return above is intentionally NOT published —
+	// re-creating an existing project is not a user-visible mutation.
+	s.notify.Notify("project.create", namespace+"/"+projectName, "")
 	s.emit(ChangeEvent{
 		Event:     "project_created",
 		Namespace: namespace,
@@ -294,6 +310,10 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 		return "", lockErr
 	}
 	s.pool.Notify()
+	// Notification center: publish only on success, after the write is durable
+	// (atomic file write + WAL append committed under the lock). rel is the
+	// cleaned within-project path, matching the WAL record.
+	s.notify.Notify("file.write", namespace+"/"+projectName, rel)
 	return newEtag, nil
 }
 
@@ -403,6 +423,9 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 		return "", lockErr
 	}
 	s.pool.Notify()
+	// Notification center: publish only on success. rel is the cleaned
+	// within-project path, matching the WAL record.
+	s.notify.Notify("file.delete", namespace+"/"+projectName, rel)
 	return "", nil
 }
 
