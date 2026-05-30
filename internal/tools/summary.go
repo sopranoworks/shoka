@@ -24,7 +24,7 @@ type ReadSummaryOutput struct {
 	Heading     string         `json:"heading"`
 	Excerpt     string         `json:"excerpt"`
 	Size        int            `json:"size"`
-	Version     string         `json:"version,omitempty"`
+	ETag        string         `json:"etag,omitempty"`
 	ModifiedAt  string         `json:"modified_at,omitempty"`
 }
 
@@ -46,7 +46,7 @@ func ReadSummaryHandler(s storage.StorageService) func(context.Context, *mcp.Cal
 			}, ReadSummaryOutput{}, nil
 		}
 
-		content, err := s.ReadFile(input.Namespace, input.ProjectName, input.Path)
+		content, etag, err := s.ReadFileWithETag(input.Namespace, input.ProjectName, input.Path)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to read file: %v", err)}},
@@ -60,10 +60,12 @@ func ReadSummaryHandler(s storage.StorageService) func(context.Context, *mcp.Cal
 			Heading:     sum.Heading,
 			Excerpt:     sum.Excerpt,
 			Size:        len(content),
+			ETag:        etag,
 		}
 
+		// modified_at remains git-derived (the last commit's time); it appears
+		// once the background commit for this file lands.
 		if hist, herr := s.GetHistory(input.Namespace, input.ProjectName, input.Path, 1); herr == nil && len(hist) > 0 {
-			out.Version = hist[0].Hash
 			out.ModifiedAt = hist[0].Date.UTC().Format(time.RFC3339)
 		}
 

@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // CommitInfo represents Git commit metadata.
 type CommitInfo struct {
@@ -20,6 +23,18 @@ type StorageService interface {
 
 	// ReadFile reads the content of a file from a project.
 	ReadFile(namespace, projectName, path string) (string, error)
+
+	// ReadFileWithETag reads a file and returns its content and etag (the
+	// SHA-256 of the content). No lock, no git access.
+	ReadFileWithETag(namespace, projectName, path string) (string, string, error)
+
+	// Write writes content with optimistic concurrency. ifMatch nil skips the
+	// check; non-nil requires the current etag to equal *ifMatch (a
+	// *VersionConflictError is returned otherwise). Returns the new etag.
+	Write(ctx context.Context, sessionID, namespace, projectName, path, content string, ifMatch *string) (string, error)
+
+	// Delete removes a file with optimistic concurrency (see Write).
+	Delete(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string) error
 
 	// ListProjects returns a list of project names within a namespace.
 	ListProjects(namespace string) ([]string, error)

@@ -179,7 +179,7 @@ func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
 	return out
 }
 
-func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation.TranslationService, logger *slog.Logger) *mcp.Server {
+func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.TranslationService, logger *slog.Logger) *mcp.Server {
 	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "shoka",
@@ -191,7 +191,7 @@ func setupMCPServer(cfg *config.Config, s storage.StorageService, ts translation
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "get_server_info",
 		Description: "Get information about the server's public URL and configuration",
-	}, tools.LoggedTool(logger, "get_server_info", tools.GetServerInfoHandler(cfg)))
+	}, tools.LoggedTool(logger, "get_server_info", tools.GetServerInfoHandler(cfg, s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "create_project",

@@ -31,7 +31,7 @@ func TestPhase4_ReadSummary(t *testing.T) {
 	assert.Equal(t, "Heading One", out.Heading)
 	assert.Equal(t, "The opening paragraph.", out.Excerpt)
 	assert.Equal(t, len(content), out.Size)
-	assert.NotEmpty(t, out.Version)
+	assert.NotEmpty(t, out.ETag)
 	assert.NotEmpty(t, out.ModifiedAt)
 	// The full body must not leak through the excerpt.
 	assert.NotContains(t, out.Excerpt, "More body")

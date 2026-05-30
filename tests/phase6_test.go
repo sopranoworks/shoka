@@ -88,7 +88,7 @@ func TestPhase6_WebhookFailureDoesNotFailWrite(t *testing.T) {
 	res, out, err := write(ctx, nil, tools.WriteFileInput{Namespace: "ns", ProjectName: "proj", Path: "a.md", Content: "hi"})
 	require.NoError(t, err)
 	require.Nil(t, res)
-	assert.NotEmpty(t, out.Version, "the write must succeed even when the webhook delivery fails")
+	assert.NotEmpty(t, out.ETag, "the write must succeed even when the webhook delivery fails")
 
 	drainTool(t, s)
 	n.Wait() // must not hang despite the dead endpoint

@@ -83,36 +83,36 @@ func TestWireSchema_OptionalFieldsMayBeOmitted(t *testing.T) {
 	r := wireCall(t, sess, "create_project", map[string]any{"project_name": "p"})
 	assert.False(t, r.IsError, "create_project (omit namespace): %s", wireText(r))
 
-	// write_file without namespace AND without expected_version.
+	// write_file without namespace AND without if_match.
 	r = wireCall(t, sess, "write_file", map[string]any{"project_name": "p", "path": "a.md", "content": "hello world"})
-	assert.False(t, r.IsError, "write_file (omit namespace + expected_version): %s", wireText(r))
+	assert.False(t, r.IsError, "write_file (omit namespace + if_match): %s", wireText(r))
 
-	// read_file without namespace; capture version for the locking checks.
+	// read_file without namespace; capture etag for the locking checks.
 	r = wireCall(t, sess, "read_file", map[string]any{"project_name": "p", "path": "a.md"})
 	assert.False(t, r.IsError, "read_file (omit namespace): %s", wireText(r))
-	ver := wireStructString(r, "version")
-	require.NotEmpty(t, ver, "read_file should report a version")
+	etag := wireStructString(r, "etag")
+	require.NotEmpty(t, etag, "read_file should report an etag")
 
-	// write_file WITH a correct expected_version still works (present-field path).
-	r = wireCall(t, sess, "write_file", map[string]any{"project_name": "p", "path": "a.md", "content": "v2", "expected_version": ver})
-	assert.False(t, r.IsError, "write_file (correct expected_version): %s", wireText(r))
+	// write_file WITH a correct if_match still works (present-field path).
+	r = wireCall(t, sess, "write_file", map[string]any{"project_name": "p", "path": "a.md", "content": "v2", "if_match": etag})
+	assert.False(t, r.IsError, "write_file (correct if_match): %s", wireText(r))
 
-	// write_file WITH a stale expected_version still conflicts (locking preserved).
-	r = wireCall(t, sess, "write_file", map[string]any{"project_name": "p", "path": "a.md", "content": "v3", "expected_version": "1111111111111111111111111111111111111111"})
-	assert.True(t, r.IsError, "write_file (stale expected_version) must still conflict")
+	// write_file WITH a stale if_match still conflicts (locking preserved).
+	r = wireCall(t, sess, "write_file", map[string]any{"project_name": "p", "path": "a.md", "content": "v3", "if_match": "0000000000000000000000000000000000000000000000000000000000000000"})
+	assert.True(t, r.IsError, "write_file (stale if_match) must still conflict")
 
-	// delete_file without expected_version.
+	// delete_file without if_match.
 	r = wireCall(t, sess, "write_file", map[string]any{"project_name": "p", "path": "del.md", "content": "x"})
 	require.False(t, r.IsError, "setup write for delete: %s", wireText(r))
 	r = wireCall(t, sess, "delete_file", map[string]any{"project_name": "p", "path": "del.md"})
-	assert.False(t, r.IsError, "delete_file (omit expected_version): %s", wireText(r))
+	assert.False(t, r.IsError, "delete_file (omit if_match): %s", wireText(r))
 
-	// list_files without include_versions / include_summaries.
+	// list_files without include_summaries.
 	r = wireCall(t, sess, "list_files", map[string]any{"project_name": "p"})
 	assert.False(t, r.IsError, "list_files (omit includes): %s", wireText(r))
-	// list_files WITH include_versions=true still works (present-field path).
-	r = wireCall(t, sess, "list_files", map[string]any{"project_name": "p", "include_versions": true})
-	assert.False(t, r.IsError, "list_files (include_versions=true): %s", wireText(r))
+	// list_files WITH include_summaries=true still works (present-field path).
+	r = wireCall(t, sess, "list_files", map[string]any{"project_name": "p", "include_summaries": true})
+	assert.False(t, r.IsError, "list_files (include_summaries=true): %s", wireText(r))
 
 	// get_history without since.
 	r = wireCall(t, sess, "get_history", map[string]any{"project_name": "p"})

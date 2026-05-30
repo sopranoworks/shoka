@@ -20,9 +20,10 @@ type ReadFileInput struct {
 
 type ReadFileOutput struct {
 	Content string `json:"content"`
-	// Version is the commit hash the file is currently at, suitable for passing
-	// back as expected_version on a subsequent write_file/delete_file.
-	Version string `json:"version"`
+	// ETag is an opaque token (the SHA-256 of the content). Pass it as if_match on
+	// a subsequent write_file/delete_file to assert the file has not changed. It
+	// is NOT a git commit hash and is not valid input to read_file_at_version.
+	ETag string `json:"etag"`
 }
 
 func ReadFileHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, ReadFileInput) (*mcp.CallToolResult, ReadFileOutput, error) {
@@ -44,7 +45,7 @@ func ReadFileHandler(s storage.StorageService) func(context.Context, *mcp.CallTo
 			}, ReadFileOutput{}, nil
 		}
 
-		content, err := s.ReadFile(input.Namespace, input.ProjectName, input.Path)
+		content, etag, err := s.ReadFileWithETag(input.Namespace, input.ProjectName, input.Path)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to read file: %v", err)}},
@@ -52,31 +53,28 @@ func ReadFileHandler(s storage.StorageService) func(context.Context, *mcp.CallTo
 			}, ReadFileOutput{}, nil
 		}
 
-		version, verr := s.GetCurrentVersion(input.Namespace, input.ProjectName, input.Path)
-		if verr != nil {
-			version = ""
-		}
-
-		return nil, ReadFileOutput{Content: content, Version: version}, nil
+		return nil, ReadFileOutput{Content: content, ETag: etag}, nil
 	}
 }
 
 type WriteFileInput struct {
-	Namespace       string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
-	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path            string `json:"path" jsonschema:"required, the path to the file to write"`
-	Content         string `json:"content" jsonschema:"required, the content to write to the file"`
-	ExpectedVersion string `json:"expected_version,omitempty" jsonschema:"optional, the commit hash the file is expected to be at (from read_file); if set and stale, the write is rejected with a version conflict and no change is made"`
+	Namespace   string  `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName string  `json:"project_name" jsonschema:"required, the name of the project"`
+	Path        string  `json:"path" jsonschema:"required, the path to the file to write"`
+	Content     string  `json:"content" jsonschema:"required, the content to write to the file"`
+	IfMatch     *string `json:"if_match,omitempty" jsonschema:"optional, the etag the file is expected to be at (from read_file); if set and stale, the write is rejected with a conflict and no change is made"`
 }
 
 type WriteFileOutput struct {
-	Message string `json:"message"`
-	// Version is the commit hash produced by this write.
-	Version string `json:"version,omitempty"`
-	// Conflict is true when expected_version did not match; CurrentVersion then
-	// holds the file's actual current version.
-	Conflict       bool   `json:"conflict,omitempty"`
-	CurrentVersion string `json:"current_version,omitempty"`
+	Message string `json:"message,omitempty"`
+	// ETag is the new etag (SHA-256 of the written content) on success.
+	ETag string `json:"etag,omitempty"`
+	// Conflict is true when if_match did not match; CurrentETag then holds the
+	// file's actual current etag.
+	Conflict    bool   `json:"conflict,omitempty"`
+	CurrentETag string `json:"current_etag,omitempty"`
+	// Reason is set on a project-state refusal: "corrupted" | "dangerous" | "write_disabled".
+	Reason string `json:"reason,omitempty"`
 }
 
 func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, WriteFileInput) (*mcp.CallToolResult, WriteFileOutput, error) {
@@ -98,14 +96,17 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, WriteFileOutput{}, nil
 		}
 
-		version, err := s.WriteFileVersioned(input.Namespace, input.ProjectName, input.Path, input.Content, input.ExpectedVersion)
+		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, input.Path, input.Content, input.IfMatch)
 		if err != nil {
-			var conflict *storage.VersionConflictError
-			if errors.As(err, &conflict) {
+			if text, conflict, reason, ok := classifyWriteErr(err); ok {
 				return &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
-					IsError: true,
-				}, WriteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
+						Content: []mcp.Content{&mcp.TextContent{Text: text}},
+						IsError: true,
+					}, WriteFileOutput{
+						Conflict:    conflict != "",
+						CurrentETag: conflict,
+						Reason:      reason,
+					}, nil
 			}
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to write file: %v", err)}},
@@ -113,22 +114,42 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, WriteFileOutput{}, nil
 		}
 
-		return nil, WriteFileOutput{Message: fmt.Sprintf("File %s written successfully", input.Path), Version: version}, nil
+		return nil, WriteFileOutput{Message: fmt.Sprintf("File %s written successfully", input.Path), ETag: etag}, nil
 	}
 }
 
+// classifyWriteErr maps a storage write/delete error to a user message plus the
+// structured fields for conflict (current etag) or project-state (reason). ok is
+// false for an unrecognised error.
+func classifyWriteErr(err error) (text, currentETag, reason string, ok bool) {
+	var conflict *storage.VersionConflictError
+	if errors.As(err, &conflict) {
+		return fmt.Sprintf("etag conflict: file is now at %s (you sent if_match %s); re-read the file and retry with the current etag", conflict.Current, conflict.Expected),
+			conflict.Current, "", true
+	}
+	switch {
+	case errors.Is(err, storage.ErrProjectDangerous):
+		return "project is in a dangerous state (git repository unreadable); recover it before writing", "", "dangerous", true
+	case errors.Is(err, storage.ErrProjectCorrupted):
+		return "project is in a corrupted state (uncommitted working-tree drift); recover it before writing", "", "corrupted", true
+	case errors.Is(err, storage.ErrWriteDisabled):
+		return "writes are temporarily disabled (write-ahead log is full); retry once it drains", "", "write_disabled", true
+	}
+	return "", "", "", false
+}
+
 type DeleteFileInput struct {
-	Namespace       string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
-	ProjectName     string `json:"project_name" jsonschema:"required, the name of the project"`
-	Path            string `json:"path" jsonschema:"required, the path to the file to delete"`
-	ExpectedVersion string `json:"expected_version,omitempty" jsonschema:"optional, the commit hash the file is expected to be at; if set and stale, the delete is rejected with a version conflict"`
+	Namespace   string  `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName string  `json:"project_name" jsonschema:"required, the name of the project"`
+	Path        string  `json:"path" jsonschema:"required, the path to the file to delete"`
+	IfMatch     *string `json:"if_match,omitempty" jsonschema:"optional, the etag the file is expected to be at; if set and stale, the delete is rejected with a conflict"`
 }
 
 type DeleteFileOutput struct {
-	Message        string `json:"message"`
-	Version        string `json:"version,omitempty"`
-	Conflict       bool   `json:"conflict,omitempty"`
-	CurrentVersion string `json:"current_version,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Conflict    bool   `json:"conflict,omitempty"`
+	CurrentETag string `json:"current_etag,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, DeleteFileInput) (*mcp.CallToolResult, DeleteFileOutput, error) {
@@ -150,14 +171,17 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 			}, DeleteFileOutput{}, nil
 		}
 
-		version, err := s.DeleteFileVersioned(input.Namespace, input.ProjectName, input.Path, input.ExpectedVersion)
+		err := s.Delete(ctx, "", input.Namespace, input.ProjectName, input.Path, input.IfMatch)
 		if err != nil {
-			var conflict *storage.VersionConflictError
-			if errors.As(err, &conflict) {
+			if text, conflict, reason, ok := classifyWriteErr(err); ok {
 				return &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("version conflict: file is now at %s (you expected %s); re-read the file and retry with the current version", conflict.Current, conflict.Expected)}},
-					IsError: true,
-				}, DeleteFileOutput{Conflict: true, CurrentVersion: conflict.Current}, nil
+						Content: []mcp.Content{&mcp.TextContent{Text: text}},
+						IsError: true,
+					}, DeleteFileOutput{
+						Conflict:    conflict != "",
+						CurrentETag: conflict,
+						Reason:      reason,
+					}, nil
 			}
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to delete file: %v", err)}},
@@ -165,7 +189,7 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 			}, DeleteFileOutput{}, nil
 		}
 
-		return nil, DeleteFileOutput{Message: fmt.Sprintf("File %s deleted successfully", input.Path), Version: version}, nil
+		return nil, DeleteFileOutput{Message: fmt.Sprintf("File %s deleted successfully", input.Path)}, nil
 	}
 }
 

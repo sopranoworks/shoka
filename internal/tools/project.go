@@ -89,24 +89,21 @@ type ListFilesInput struct {
 	Namespace        string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName      string `json:"project_name" jsonschema:"required, the name of the project"`
 	Path             string `json:"path,omitempty" jsonschema:"optional, the path to list files from (defaults to root)"`
-	IncludeVersions  bool   `json:"include_versions,omitempty" jsonschema:"optional, when true include each file's current commit hash in 'versions'"`
-	IncludeSummaries bool   `json:"include_summaries,omitempty" jsonschema:"optional, when true include each file's frontmatter and first heading in 'summaries' so an overview can be built without reading full files"`
+	IncludeSummaries bool   `json:"include_summaries,omitempty" jsonschema:"optional, when true include each file's frontmatter, first heading, and etag in 'summaries' so an overview can be built without reading full files"`
 }
 
-// FileSummary is the per-file frontmatter + first heading returned by
+// FileSummary is the per-file frontmatter, first heading, and etag returned by
 // list_files when include_summaries is set.
 type FileSummary struct {
 	Frontmatter map[string]any `json:"frontmatter,omitempty"`
 	Heading     string         `json:"heading,omitempty"`
+	ETag        string         `json:"etag,omitempty"`
 }
 
 type ListFilesOutput struct {
 	Files []string `json:"files"`
-	// Versions maps each (non-directory) file name to its current commit hash.
-	// Populated only when include_versions is true.
-	Versions map[string]string `json:"versions,omitempty"`
-	// Summaries maps each (non-directory) file name to its frontmatter + heading.
-	// Populated only when include_summaries is true.
+	// Summaries maps each (non-directory) file name to its frontmatter, heading,
+	// and etag. Populated only when include_summaries is true.
 	Summaries map[string]FileSummary `json:"summaries,omitempty"`
 }
 
@@ -139,20 +136,6 @@ func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 
 		out := ListFilesOutput{Files: files}
 
-		if input.IncludeVersions {
-			versions := make(map[string]string)
-			for _, f := range files {
-				if strings.HasSuffix(f, "/") {
-					continue // directory
-				}
-				full := filepath.Join(input.Path, f)
-				if v, verr := s.GetCurrentVersion(input.Namespace, input.ProjectName, full); verr == nil {
-					versions[f] = v
-				}
-			}
-			out.Versions = versions
-		}
-
 		if input.IncludeSummaries {
 			summaries := make(map[string]FileSummary)
 			for _, f := range files {
@@ -160,12 +143,12 @@ func ListFilesHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 					continue // directory
 				}
 				full := filepath.Join(input.Path, f)
-				content, rerr := s.ReadFile(input.Namespace, input.ProjectName, full)
+				content, etag, rerr := s.ReadFileWithETag(input.Namespace, input.ProjectName, full)
 				if rerr != nil {
 					continue
 				}
 				sum := markdown.Parse(content)
-				summaries[f] = FileSummary{Frontmatter: sum.Frontmatter, Heading: sum.Heading}
+				summaries[f] = FileSummary{Frontmatter: sum.Frontmatter, Heading: sum.Heading, ETag: etag}
 			}
 			out.Summaries = summaries
 		}
