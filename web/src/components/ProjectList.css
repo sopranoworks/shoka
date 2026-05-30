@@ -38,6 +38,35 @@
   background-color: #1a7f37;
 }
 
+.namespace-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.namespace-selector label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #636c76;
+}
+
+.namespace-selector select {
+  flex: 1;
+  padding: 5px 12px;
+  font-size: 14px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background-color: #f6f8fa;
+}
+
+.namespace-selector select:focus {
+  background-color: #ffffff;
+  border-color: #0969da;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.3);
+}
+
 .search-container {
   margin-bottom: 16px;
 }

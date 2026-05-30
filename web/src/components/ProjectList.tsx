@@ -12,6 +12,7 @@ interface Project {
 }
 
 interface ProjectInfo {
+  namespace: string;
   name: string;
   state: ProjectState;
 }
@@ -27,7 +28,10 @@ interface ProjectListProps {
   onSelectProject: (namespace: string, name: string) => void;
 }
 
-const NAMESPACE = 'default';
+// "" means "all namespaces". The operator's choice is persisted so it survives
+// reloads (B-13 namespace selector; restored under B-22).
+const NS_STORAGE_KEY = 'shoka.selectedNamespace';
+const ALL_NAMESPACES = '';
 
 function stateBadge(state: ProjectState) {
   switch (state) {
@@ -45,11 +49,16 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [recovering, setRecovering] = useState<Project | null>(null);
+  const [selectedNamespace, setSelectedNamespace] = useState<string>(
+    () => localStorage.getItem(NS_STORAGE_KEY) ?? ALL_NAMESPACES
+  );
   const { socket, connected } = useWebSocket();
 
+  // The server returns every project across all namespaces (the payload's
+  // namespace is ignored); narrowing happens client-side via the selector.
   const refresh = () => {
     if (socket && connected) {
-      socket.send(JSON.stringify({ type: 'GET_PROJECTS', payload: { namespace: NAMESPACE } }));
+      socket.send(JSON.stringify({ type: 'GET_PROJECTS', payload: {} }));
     }
   };
 
@@ -59,7 +68,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
         const msg = JSON.parse(event.data);
         if (msg.type === 'GET_PROJECTS') {
           const infos = (msg.payload as ProjectInfo[]) || [];
-          setProjects(infos.map(p => ({ name: p.name, namespace: NAMESPACE, state: p.state || 'healthy' })));
+          setProjects(infos.map(p => ({ namespace: p.namespace, name: p.name, state: p.state || 'healthy' })));
           setLoading(false);
         }
       };
@@ -72,7 +81,8 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
   const handleCreateProject = () => {
     const name = prompt('Enter project name:');
     if (name && socket) {
-      socket.send(JSON.stringify({ type: 'CREATE_PROJECT', payload: { namespace: NAMESPACE, projectName: name } }));
+      const ns = selectedNamespace || 'default';
+      socket.send(JSON.stringify({ type: 'CREATE_PROJECT', payload: { namespace: ns, projectName: name } }));
       refresh();
     }
   };
@@ -91,7 +101,30 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
     }
   };
 
-  const filteredProjects = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+  // Dropdown options: every namespace currently present, plus the active
+  // selection (so it persists even if that namespace momentarily has no
+  // projects). Sorted ascending.
+  const namespaceOptions = Array.from(
+    new Set([
+      ...projects.map(p => p.namespace),
+      ...(selectedNamespace !== ALL_NAMESPACES ? [selectedNamespace] : []),
+    ])
+  ).sort();
+
+  const filteredProjects = projects.filter(
+    p =>
+      (selectedNamespace === ALL_NAMESPACES || p.namespace === selectedNamespace) &&
+      p.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const handleSelectNamespace = (ns: string) => {
+    setSelectedNamespace(ns);
+    if (ns === ALL_NAMESPACES) {
+      localStorage.removeItem(NS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(NS_STORAGE_KEY, ns);
+    }
+  };
 
   return (
     <div className="project-list-container">
@@ -101,6 +134,20 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
           <Plus size={16} />
           New
         </button>
+      </div>
+
+      <div className="namespace-selector">
+        <label htmlFor="namespace-select">Namespace</label>
+        <select
+          id="namespace-select"
+          value={selectedNamespace}
+          onChange={(e) => handleSelectNamespace(e.target.value)}
+        >
+          <option value={ALL_NAMESPACES}>All namespaces</option>
+          {namespaceOptions.map(ns => (
+            <option key={ns} value={ns}>{ns}</option>
+          ))}
+        </select>
       </div>
 
       <div className="search-container" style={{ position: 'relative' }}>
@@ -123,7 +170,9 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
             filteredProjects.map((project) => (
               <div key={`${project.namespace}/${project.name}`} className="project-item" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Book size={16} className="project-icon" />
-                <span className="project-namespace">{project.namespace} /</span>
+                {selectedNamespace === ALL_NAMESPACES && (
+                  <span className="project-namespace">{project.namespace} /</span>
+                )}
                 <span className="project-name" style={{ cursor: 'pointer', flex: 1 }} onClick={() => onProjectClick(project)}>{project.name}</span>
                 {stateBadge(project.state)}
                 <button title="Re-scan" onClick={(e) => { e.stopPropagation(); rescan(project); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#636c76', display: 'inline-flex' }}>

@@ -117,8 +117,10 @@ func TestMCPTools_Integration(t *testing.T) {
 		if res != nil && res.IsError {
 			t.Fatalf("tool returned error: %v", res.Content[0].(*mcp.TextContent).Text)
 		}
-		if len(output.Projects) != 1 || output.Projects[0] != "tool-project" {
-			t.Errorf("expected projects ['tool-project'], got %v", output.Projects)
+		// list_projects returns the prefixed "<ns>/<name>" shape in both the
+		// scoped and unscoped cases (B-22 / B-13 namespace surface).
+		if len(output.Projects) != 1 || output.Projects[0] != "tool-ns/tool-project" {
+			t.Errorf("expected projects ['tool-ns/tool-project'], got %v", output.Projects)
 		}
 	})
 }

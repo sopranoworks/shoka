@@ -39,6 +39,14 @@ type StorageService interface {
 	// ListProjects returns a list of project names within a namespace.
 	ListProjects(namespace string) ([]string, error)
 
+	// ListNamespaces returns every namespace with at least one project on disk,
+	// sorted ascending.
+	ListNamespaces() ([]string, error)
+
+	// ListAllProjects returns every project across every namespace as a sorted
+	// slice of "<namespace>/<name>" strings.
+	ListAllProjects() ([]string, error)
+
 	// New methods for Phase 2
 
 	// DeleteFile deletes a file from a project and performs an atomic Git commit.

@@ -53,19 +53,32 @@ func CreateProjectHandler(s storage.StorageService) func(context.Context, *mcp.C
 }
 
 type ListProjectsInput struct {
-	Namespace string `json:"namespace,omitempty" jsonschema:"optional, the namespace to list projects from (defaults to 'default')"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional, the namespace to scope to; when omitted, projects from all namespaces are returned"`
 }
 
 type ListProjectsOutput struct {
 	Projects []string `json:"projects"`
 }
 
+// ListProjectsHandler returns "<namespace>/<name>" entries. With no namespace
+// argument it returns every project across all namespaces; with an explicit
+// namespace it returns only that namespace's projects, in the same prefixed
+// shape. (Restores the B-13 namespace surface; see B-22.)
 func ListProjectsHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, ListProjectsInput) (*mcp.CallToolResult, ListProjectsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ListProjectsInput) (*mcp.CallToolResult, ListProjectsOutput, error) {
+		// No namespace → all namespaces, "<ns>/<name>", sorted.
 		if input.Namespace == "" {
-			input.Namespace = "default"
+			projects, err := s.ListAllProjects()
+			if err != nil {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to list projects: %v", err)}},
+					IsError: true,
+				}, ListProjectsOutput{}, nil
+			}
+			return nil, ListProjectsOutput{Projects: projects}, nil
 		}
 
+		// Explicit namespace → only that namespace, same "<ns>/<name>" shape.
 		if !utils.IsValidName(input.Namespace) {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: "invalid namespace: only alphanumeric, hyphen, and underscore are allowed"}},
@@ -73,14 +86,17 @@ func ListProjectsHandler(s storage.StorageService) func(context.Context, *mcp.Ca
 			}, ListProjectsOutput{}, nil
 		}
 
-		projects, err := s.ListProjects(input.Namespace)
+		names, err := s.ListProjects(input.Namespace)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to list projects: %v", err)}},
 				IsError: true,
 			}, ListProjectsOutput{}, nil
 		}
-
+		projects := make([]string, 0, len(names))
+		for _, name := range names {
+			projects = append(projects, input.Namespace+"/"+name)
+		}
 		return nil, ListProjectsOutput{Projects: projects}, nil
 	}
 }

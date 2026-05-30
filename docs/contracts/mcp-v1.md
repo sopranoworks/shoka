@@ -202,12 +202,22 @@ Apply to every tool unless noted:
 - **Errors:** none expected. **Side effects:** none.
 
 ### 4.2 `list_projects`
-- **Purpose:** list project names in a namespace.
-- **Input:** `namespace` (string, optional, default `"default"`).
-- **Output:** `projects` (array of strings; empty array if the namespace has no
-  projects). (Source: `internal/tools/project.go:55-86`;
-  `internal/storage/fs_git.go:229-254`.)
-- **Side effects:** none.
+- **Purpose:** list projects, across all namespaces or scoped to one.
+- **Input:** `namespace` (string, **optional**). When omitted, projects from
+  **all** namespaces are returned; when given, only that namespace's projects.
+- **Output:** `projects` (array of strings; empty array if there are no matching
+  projects). Each entry is a `"<namespace>/<name>"` string — the namespace prefix
+  is present in **both** modes. Sorted ascending (namespace, then name).
+  - `list_projects()` → e.g. `["rohrpost/rohrpost-dev", "shoka/maintenance"]`
+  - `list_projects(namespace="shoka")` → e.g. `["shoka/maintenance"]`
+- **Side effects:** none. Read-only: no lock, no git access.
+
+  > **Shape note (2026-05-30, B-22 / B-13):** entries are the prefixed
+  > `"<namespace>/<name>"` form in both the unscoped and scoped cases — one shape,
+  > merely filtered when a namespace is given. This restores the shape B-13
+  > originally documented. An omitted `namespace` means **all namespaces**, not
+  > the `"default"` namespace. (Source: `internal/tools/project.go`;
+  > `internal/storage/namespace.go`.)
 
 ### 4.3 `create_project`
 - **Purpose:** create a project and initialize its Git repository.

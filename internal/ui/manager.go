@@ -31,10 +31,6 @@ type WSMessage struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-type GetProjectsPayload struct {
-	Namespace string `json:"namespace"`
-}
-
 type CreateProjectPayload struct {
 	Namespace   string `json:"namespace"`
 	ProjectName string `json:"projectName"`
@@ -167,11 +163,13 @@ func (m *Manager) sendResponse(conn *websocket.Conn, msgType MessageType, payloa
 	conn.WriteMessage(websocket.TextMessage, data)
 }
 
-// ProjectInfo is one project entry in the GET_PROJECTS response: its name and
-// its health state (healthy | corrupted | dangerous) for the status badge.
+// ProjectInfo is one project entry in the GET_PROJECTS response: its namespace,
+// name, and health state (healthy | corrupted | dangerous) for the status badge.
+// The namespace lets the Web UI group and filter across namespaces (B-13 / B-22).
 type ProjectInfo struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	State     string `json:"state"`
 }
 
 // projectStateReader is the optional capability the storage layer provides for
@@ -180,31 +178,33 @@ type projectStateReader interface {
 	State(namespace, projectName string) storage.ProjectState
 }
 
+// handleGetProjects returns one entry per project across every namespace, each
+// carrying its namespace, name, and health state. The payload's namespace field
+// is ignored: the Web UI receives the full set and filters client-side (B-13 /
+// B-22). The state badge and recovery dialog (storage redesign) read the same
+// state field, unchanged.
 func (m *Manager) handleGetProjects(conn *websocket.Conn, payload json.RawMessage) {
-	var p GetProjectsPayload
-	if err := json.Unmarshal(payload, &p); err != nil {
-		m.sendError(conn, "Invalid payload for GET_PROJECTS")
-		return
-	}
-
-	ns := p.Namespace
-	if ns == "" {
-		ns = "default"
-	}
-	projects, err := m.storage.ListProjects(ns)
+	namespaces, err := m.storage.ListNamespaces()
 	if err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to list projects: %v", err))
+		m.sendError(conn, fmt.Sprintf("Failed to list namespaces: %v", err))
 		return
 	}
 
 	sr, _ := m.storage.(projectStateReader)
-	infos := make([]ProjectInfo, 0, len(projects))
-	for _, name := range projects {
-		state := string(storage.StateHealthy)
-		if sr != nil {
-			state = string(sr.State(ns, name))
+	infos := make([]ProjectInfo, 0)
+	for _, ns := range namespaces {
+		projects, err := m.storage.ListProjects(ns)
+		if err != nil {
+			m.sendError(conn, fmt.Sprintf("Failed to list projects: %v", err))
+			return
 		}
-		infos = append(infos, ProjectInfo{Name: name, State: state})
+		for _, name := range projects {
+			state := string(storage.StateHealthy)
+			if sr != nil {
+				state = string(sr.State(ns, name))
+			}
+			infos = append(infos, ProjectInfo{Namespace: ns, Name: name, State: state})
+		}
 	}
 	m.sendResponse(conn, GetProjects, infos)
 }
@@ -253,7 +253,7 @@ func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, erro
 		isDir := strings.HasSuffix(f, "/")
 		name := strings.TrimSuffix(f, "/")
 		nodePath := filepath.Join(path, name)
-		
+
 		node := FileNode{
 			Name:  name,
 			Path:  nodePath,
