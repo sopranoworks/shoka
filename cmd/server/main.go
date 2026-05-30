@@ -7,9 +7,12 @@ import (
 	"io/fs"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +34,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "shoka.yaml", "Path to configuration file")
+	profileAddr := flag.String("profile-addr", "", "If set, serve net/http/pprof on this loopback address (e.g. localhost:9060). Empty disables profiling.")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -47,6 +51,13 @@ func main() {
 	// Setup context with signal handling
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Optional pprof endpoint: default off, loopback-only. Block and mutex
+	// profiling rates are enabled only when the flag is set, so production runs
+	// pay nothing. (Used by cmd/stress for the storage write-path investigation.)
+	if *profileAddr != "" {
+		startProfileServer(ctx, *profileAddr, logger)
+	}
 
 	s, err := storage.NewFSGitStorage(cfg.Storage.BaseDir)
 	if err != nil {
@@ -256,6 +267,58 @@ func setupWebHandler(dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Au
 	})
 
 	return mux, nil
+}
+
+// isLoopbackHost reports whether host is a loopback address or "localhost".
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// startProfileServer starts a dedicated http.Server exposing net/http/pprof on
+// addr. The host is forced to loopback (a non-loopback host is rewritten to
+// localhost with a WARN) so profiling is never reachable off-box. Block and
+// mutex profiling are enabled here — and only here — so they cost nothing when
+// the --profile-addr flag is absent. The server shuts down when ctx is done.
+func startProfileServer(ctx context.Context, addr string, logger *slog.Logger) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		logger.Error("invalid --profile-addr; pprof endpoint not started", "addr", addr, "error", err)
+		return
+	}
+	if !isLoopbackHost(host) {
+		logger.Warn("--profile-addr is not a loopback host; forcing localhost", "given", host)
+		host = "localhost"
+		addr = net.JoinHostPort(host, port)
+	}
+
+	runtime.SetBlockProfileRate(1)
+	runtime.SetMutexProfileFraction(1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	srv := &http.Server{Addr: addr, Handler: mux}
+	logger.Info("pprof profiling endpoint enabled", "addr", addr)
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("pprof server error", "error", err)
+		}
+	}()
 }
 
 func runServer(ctx context.Context, name string, settings config.ServerSettings, handler http.Handler, logger *slog.Logger) error {

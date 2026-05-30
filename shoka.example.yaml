@@ -49,6 +49,40 @@ storage:
   # created automatically on startup.
   base_dir: "./data"
 
+  # Working-tree-vs-git drift detection. At startup (and optionally on an
+  # interval) Shoka checks each project's working tree against its git HEAD and
+  # marks projects healthy / corrupted / dangerous. Defaults shown.
+  drift_scan:
+    on_startup: true   # run a scan once at startup
+    interval: 0        # 0 = no periodic re-scan; e.g. "5m" to enable
+
+# Per-file write lock manager. Reads take no lock; each write holds a per-file
+# lock only across the check-and-write critical section. Defaults shown.
+filelock:
+  max_lease_duration: 5m   # a stale lease is reaped after this long
+  reaper_interval: 1s
+
+# Write-ahead log. Every write/delete is appended here before the background
+# worker commits it to git. If the WAL backs up past max_entries, writes are
+# refused (write-disabled mode) until it drains. Defaults shown.
+wal:
+  max_entries: 1000
+
+# Background git-commit worker pool that drains the WAL. Per-project order is
+# preserved; different projects commit concurrently. Defaults shown.
+wal_worker:
+  min_workers: 1
+  max_workers: 8
+  idle_timeout: 30s
+  scan_interval: 100ms
+  backoff_initial: 100ms
+  backoff_max: 30s
+
+# Optional Prometheus metrics endpoint. Like the pprof endpoint (--profile-addr),
+# it is off by default and forced to a loopback host when set.
+metrics:
+  addr: ""   # e.g. "localhost:9090" to enable /metrics
+
 services:
   google_cloud:
     # Leave empty to run without translation. When set, the translate_file tool

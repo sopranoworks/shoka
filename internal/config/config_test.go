@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -236,5 +237,106 @@ server:
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid configuration")
 		assert.Contains(t, err.Error(), "server.mcp.listen is required")
+	})
+}
+
+// writeConfig is a small helper for the storage-redesign config tests.
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	tmpFile, err := os.CreateTemp("", "config*.yaml")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.Remove(tmpFile.Name()) })
+	_, err = tmpFile.WriteString(body)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+	return tmpFile.Name()
+}
+
+const minimalServerStorage = `
+server:
+  http:
+    listen: ":8080"
+  mcp:
+    listen: ":8081"
+storage:
+  base_dir: "/tmp/shoka"
+`
+
+func TestLoad_StorageRedesignDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, minimalServerStorage))
+	require.NoError(t, err)
+
+	// §12 baked-in defaults applied when the blocks are absent.
+	assert.Equal(t, 5*time.Minute, cfg.FileLock.MaxLeaseDuration.Std())
+	assert.Equal(t, 1*time.Second, cfg.FileLock.ReaperInterval.Std())
+	assert.Equal(t, 1000, cfg.WAL.MaxEntries)
+	assert.Equal(t, 1, cfg.WALWorker.MinWorkers)
+	assert.Equal(t, 8, cfg.WALWorker.MaxWorkers)
+	assert.Equal(t, 30*time.Second, cfg.WALWorker.IdleTimeout.Std())
+	assert.Equal(t, 100*time.Millisecond, cfg.WALWorker.ScanInterval.Std())
+	assert.Equal(t, 100*time.Millisecond, cfg.WALWorker.BackoffInitial.Std())
+	assert.Equal(t, 30*time.Second, cfg.WALWorker.BackoffMax.Std())
+
+	// drift_scan.on_startup defaults to true; interval defaults to 0 (disabled).
+	assert.True(t, cfg.Storage.DriftScan.OnStartupEnabled())
+	assert.Equal(t, time.Duration(0), cfg.Storage.DriftScan.Interval.Std())
+
+	// metrics endpoint is off by default.
+	assert.Equal(t, "", cfg.Metrics.Addr)
+}
+
+func TestLoad_StorageRedesignOverrides(t *testing.T) {
+	body := minimalServerStorage + `  drift_scan:
+    on_startup: false
+    interval: 5m
+filelock:
+  max_lease_duration: 2m
+  reaper_interval: 500ms
+wal:
+  max_entries: 50
+wal_worker:
+  min_workers: 2
+  max_workers: 4
+  idle_timeout: 10s
+  scan_interval: 250ms
+  backoff_initial: 50ms
+  backoff_max: 1m
+metrics:
+  addr: "localhost:9090"
+`
+	cfg, err := Load(writeConfig(t, body))
+	require.NoError(t, err)
+
+	// Explicit on_startup:false must be honoured (not overwritten by the default).
+	assert.False(t, cfg.Storage.DriftScan.OnStartupEnabled())
+	assert.Equal(t, 5*time.Minute, cfg.Storage.DriftScan.Interval.Std())
+	assert.Equal(t, 2*time.Minute, cfg.FileLock.MaxLeaseDuration.Std())
+	assert.Equal(t, 500*time.Millisecond, cfg.FileLock.ReaperInterval.Std())
+	assert.Equal(t, 50, cfg.WAL.MaxEntries)
+	assert.Equal(t, 2, cfg.WALWorker.MinWorkers)
+	assert.Equal(t, 4, cfg.WALWorker.MaxWorkers)
+	assert.Equal(t, 10*time.Second, cfg.WALWorker.IdleTimeout.Std())
+	assert.Equal(t, 250*time.Millisecond, cfg.WALWorker.ScanInterval.Std())
+	assert.Equal(t, 50*time.Millisecond, cfg.WALWorker.BackoffInitial.Std())
+	assert.Equal(t, 1*time.Minute, cfg.WALWorker.BackoffMax.Std())
+	assert.Equal(t, "localhost:9090", cfg.Metrics.Addr)
+}
+
+func TestLoad_StorageRedesignErrors(t *testing.T) {
+	t.Run("invalid duration", func(t *testing.T) {
+		_, err := Load(writeConfig(t, minimalServerStorage+`filelock:
+  max_lease_duration: "not-a-duration"
+`))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid duration")
+	})
+
+	t.Run("min_workers exceeds max_workers", func(t *testing.T) {
+		_, err := Load(writeConfig(t, minimalServerStorage+`wal_worker:
+  min_workers: 9
+  max_workers: 4
+`))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must not exceed max_workers")
 	})
 }

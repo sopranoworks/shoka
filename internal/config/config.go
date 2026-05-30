@@ -4,9 +4,35 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// Duration is a time.Duration that unmarshals from a YAML scalar written in
+// Go's duration syntax ("5m", "100ms", "30s") or as a bare 0. An empty/absent
+// value decodes to 0; callers treat 0 as "use the baked-in default" except for
+// fields where 0 is itself meaningful (e.g. storage.drift_scan.interval, where
+// 0 disables periodic re-scan).
+type Duration time.Duration
+
+// UnmarshalYAML parses the node's scalar value with time.ParseDuration.
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	raw := value.Value
+	if raw == "" || raw == "0" {
+		*d = 0
+		return nil
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", raw, err)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+// Std returns the value as a time.Duration.
+func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 type TLSConfig struct {
 	Enabled  bool   `yaml:"enabled"`
@@ -46,6 +72,49 @@ type WebhookConfig struct {
 	Secret string   `yaml:"secret"`
 }
 
+// DriftScanConfig controls the per-project working-tree-vs-git drift detection
+// added by the storage redesign. OnStartup runs a scan once at startup; a
+// non-zero Interval enables periodic re-scans (0 = disabled). OnStartup is a
+// pointer so an absent block defaults to true while an explicit false is kept.
+type DriftScanConfig struct {
+	OnStartup *bool    `yaml:"on_startup"`
+	Interval  Duration `yaml:"interval"`
+}
+
+// OnStartupEnabled reports the effective on_startup value (default true).
+func (d DriftScanConfig) OnStartupEnabled() bool {
+	return d.OnStartup == nil || *d.OnStartup
+}
+
+// FileLockConfig configures the per-file lock manager (internal/storage/filelock).
+type FileLockConfig struct {
+	MaxLeaseDuration Duration `yaml:"max_lease_duration"` // default 5m
+	ReaperInterval   Duration `yaml:"reaper_interval"`    // default 1s
+}
+
+// WALConfig configures the write-ahead log (internal/storage/wal).
+type WALConfig struct {
+	MaxEntries int `yaml:"max_entries"` // write-disabled threshold; default 1000
+}
+
+// WALWorkerConfig configures the background git-commit worker pool
+// (internal/storage/walworker).
+type WALWorkerConfig struct {
+	MinWorkers     int      `yaml:"min_workers"`     // default 1
+	MaxWorkers     int      `yaml:"max_workers"`     // default 8
+	IdleTimeout    Duration `yaml:"idle_timeout"`    // default 30s
+	ScanInterval   Duration `yaml:"scan_interval"`   // default 100ms
+	BackoffInitial Duration `yaml:"backoff_initial"` // default 100ms
+	BackoffMax     Duration `yaml:"backoff_max"`     // default 30s
+}
+
+// MetricsConfig configures the optional Prometheus metrics endpoint. An empty
+// Addr (the default) leaves the endpoint unregistered. A non-empty Addr is
+// forced to a loopback host, mirroring the pprof endpoint's defaults.
+type MetricsConfig struct {
+	Addr string `yaml:"addr"`
+}
+
 type Config struct {
 	Server struct {
 		HTTP ServerSettings `yaml:"http"`
@@ -54,14 +123,54 @@ type Config struct {
 		Log  LogConfig      `yaml:"log"`
 	} `yaml:"server"`
 	Storage struct {
-		BaseDir string `yaml:"base_dir"`
+		BaseDir   string          `yaml:"base_dir"`
+		DriftScan DriftScanConfig `yaml:"drift_scan"`
 	} `yaml:"storage"`
 	Services struct {
 		GoogleCloud struct {
 			ProjectID string `yaml:"project_id"`
 		} `yaml:"google_cloud"`
 	} `yaml:"services"`
-	Webhooks []WebhookConfig `yaml:"webhooks"`
+	FileLock  FileLockConfig  `yaml:"filelock"`
+	WAL       WALConfig       `yaml:"wal"`
+	WALWorker WALWorkerConfig `yaml:"wal_worker"`
+	Metrics   MetricsConfig   `yaml:"metrics"`
+	Webhooks  []WebhookConfig `yaml:"webhooks"`
+}
+
+// applyDefaults fills zero-valued storage-redesign tunables with the defaults
+// from the directive (§12). These defaults also live in the component packages
+// (so a zero value remains safe there); resolving them here keeps the wired
+// configuration explicit and inspectable. Fields where 0 is a meaningful value
+// (drift_scan.interval, metrics.addr) are left untouched.
+func (c *Config) applyDefaults() {
+	if c.FileLock.MaxLeaseDuration == 0 {
+		c.FileLock.MaxLeaseDuration = Duration(5 * time.Minute)
+	}
+	if c.FileLock.ReaperInterval == 0 {
+		c.FileLock.ReaperInterval = Duration(1 * time.Second)
+	}
+	if c.WAL.MaxEntries == 0 {
+		c.WAL.MaxEntries = 1000
+	}
+	if c.WALWorker.MinWorkers == 0 {
+		c.WALWorker.MinWorkers = 1
+	}
+	if c.WALWorker.MaxWorkers == 0 {
+		c.WALWorker.MaxWorkers = 8
+	}
+	if c.WALWorker.IdleTimeout == 0 {
+		c.WALWorker.IdleTimeout = Duration(30 * time.Second)
+	}
+	if c.WALWorker.ScanInterval == 0 {
+		c.WALWorker.ScanInterval = Duration(100 * time.Millisecond)
+	}
+	if c.WALWorker.BackoffInitial == 0 {
+		c.WALWorker.BackoffInitial = Duration(100 * time.Millisecond)
+	}
+	if c.WALWorker.BackoffMax == 0 {
+		c.WALWorker.BackoffMax = Duration(30 * time.Second)
+	}
 }
 
 func (c *Config) Validate() error {
@@ -84,6 +193,15 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("server.log.format must be one of text|json, got %q", c.Server.Log.Format)
 	}
+	if c.WALWorker.MinWorkers < 0 || c.WALWorker.MaxWorkers < 0 {
+		return errors.New("wal_worker.min_workers and wal_worker.max_workers must be non-negative")
+	}
+	if c.WALWorker.MaxWorkers > 0 && c.WALWorker.MinWorkers > c.WALWorker.MaxWorkers {
+		return fmt.Errorf("wal_worker.min_workers (%d) must not exceed max_workers (%d)", c.WALWorker.MinWorkers, c.WALWorker.MaxWorkers)
+	}
+	if c.WAL.MaxEntries < 0 {
+		return errors.New("wal.max_entries must be non-negative")
+	}
 	return nil
 }
 
@@ -96,6 +214,8 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
 	}
+
+	cfg.applyDefaults()
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
