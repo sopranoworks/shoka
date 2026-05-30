@@ -22,9 +22,18 @@ directive disagreed, **the code wins**; such cases are flagged inline.
 
 ## 1. Versioning and stability
 
+> **Contract status: pre-1.0, may change without notice.** Shoka is in
+> dogfooding; backward-compatibility constraints have **not** yet been adopted.
+> The file is labelled "v1" for continuity, but the protocol is not yet frozen
+> and breaking changes may land between directives. The 2026-05-30 storage
+> redesign, for example, renamed `version`→`etag` and `expected_version`→`if_match`
+> outright (no alias). Treat the "Stable" list below as the *intent* once 1.0 is
+> declared, not a current guarantee.
+
 - This document describes **Shoka MCP v1**, derived from the codebase reachable
-  from `master` as of 2026-05-28 (after the remediation, verification, and
-  schema-fixes directives).
+  from `master`, updated for the 2026-05-30 storage redesign (file system as
+  ground truth, git as a background audit log; `etag`/`if_match` replace
+  `version`/`expected_version`).
 - **Stable** (changing them is a breaking change requiring a v2 contract):
   - tool names,
   - argument field names and their required/optional status,
@@ -160,15 +169,23 @@ Apply to every tool unless noted:
 - **`namespace` / `project_name` validation** — must match `^[A-Za-z0-9_-]+$`
   (alphanumeric, hyphen, underscore). Invalid names return a tool error. (Source:
   `internal/utils`/`IsValidName`; e.g. `internal/tools/file.go:40-45`.)
-- **`expected_version`** (write/delete only) — optional; when omitted or `""`,
-  the optimistic-locking check is skipped. See § 5. (Source:
-  `internal/storage/fs_git.go:150-158`, `:284-292`.)
+- **`if_match`** (write/delete only) — optional; when omitted, the
+  optimistic-concurrency check is skipped. When present, the file's current
+  `etag` must equal it or the call is rejected with a conflict. See § 5.
 - **`path`** — project-relative. Absolute paths and `..` traversal are rejected.
-  (Source: `internal/storage/fs_git.go:142-145` and parallel checks.)
+  (Source: `internal/storage/fs_git.go` `relWithin` and parallel checks.)
 - **Errors** surface as a **tool-level result with `isError: true`** and a
   human-readable `content[0].text`; they are not JSON-RPC protocol errors. The
-  one structured error is the version conflict (§ 5). (Source: handlers in
-  `internal/tools/*.go`; verification report § 2.2.)
+  structured errors are the etag conflict (§ 5) and the project-state refusals
+  (`reason: "corrupted" | "dangerous" | "write_disabled"`; see § 7). (Source:
+  handlers in `internal/tools/*.go`.)
+
+> **ETag values are opaque to clients.** Use an `etag` only as `if_match` on the
+> immediately-following `write_file`/`delete_file`. It is the SHA-256 of the
+> file's content in the current implementation, but the protocol does not promise
+> that and clients must not assume it. It is **not** a git commit hash and is
+> **not** valid input to `read_file_at_version` (which takes a `commit_hash` from
+> `get_history`).
 - **Side effects:** read-only tools produce no commit and no webhook. Mutating
   tools commit and emit a webhook (§ 6). Listed per tool below.
 
@@ -176,7 +193,12 @@ Apply to every tool unless noted:
 - **Purpose:** report the server's configured public URLs and storage location.
 - **Input:** none. (Source: `internal/tools/info.go:10-11`.)
 - **Output:** `external_url`, `http_listen`, `mcp_listen`, `storage_base_dir`
-  (all strings). (Source: `internal/tools/info.go:13-18`.)
+  (all strings), plus the write-ahead-log status: `wal_pending` (int — entries
+  awaiting a background git commit), `wal_write_disabled` (bool — true when the
+  WAL has backed up past its threshold and writes are refused), and
+  `wal_oldest_entry_age_seconds` (number). These mirror the metrics endpoint
+  (§ 7) so operators without Prometheus can observe write-path health over MCP.
+  (Source: `internal/tools/info.go`.)
 - **Errors:** none expected. **Side effects:** none.
 
 ### 4.2 `list_projects`
@@ -199,63 +221,69 @@ Apply to every tool unless noted:
 
 ### 4.4 `list_files`
 - **Purpose:** list files (non-recursive) in a project path, optionally with
-  versions and/or summaries.
+  summaries.
 - **Input:** `namespace` (opt), `project_name` (**required**), `path` (opt,
-  default project root), `include_versions` (bool, opt, default `false`),
-  `include_summaries` (bool, opt, default `false`).
-- **Output:** `files` (array; directories carry a trailing `/`); `versions`
-  (object: file → current commit hash) present only when `include_versions`;
-  `summaries` (object: file → `{frontmatter, heading}`) present only when
-  `include_summaries`. `.git` and `.drafts` are never listed. **No status
-  filtering** — every file is returned regardless of frontmatter `status` (the
-  retired-layer hiding in `docs/conventions/document-lifecycle.md` is a
-  client-side convention). (Source: `internal/tools/project.go:88-175`;
-  `internal/storage/fs_git.go:337-374`.)
+  default project root), `include_summaries` (bool, opt, default `false`).
+- **Output:** `files` (array; directories carry a trailing `/`); `summaries`
+  (object: file → `{frontmatter, heading, etag}`) present only when
+  `include_summaries`. `.git`, `.drafts`, and `.shoka` are never listed. **No
+  status filtering** — every file is returned regardless of frontmatter `status`.
+  (Source: `internal/tools/project.go`.)
+  > Removed in the storage redesign: the `include_versions` argument and the
+  > `versions` output map. Callers that want an etag pass `include_summaries`
+  > (each summary carries `etag`) or call `read_file`.
 - **Side effects:** none.
 
 ### 4.5 `read_file`
-- **Purpose:** read a file's full content plus its current version.
+- **Purpose:** read a file's full content plus its current etag.
 - **Input:** `namespace` (opt), `project_name` (**required**), `path`
   (**required**).
-- **Output:** `content` (string), `version` (string — current commit hash;
-  `""` if the file has no commit history). (Source: `internal/tools/file.go:15-62`;
-  `internal/storage/fs_git.go:473-516`.)
-- **Errors:** missing file → `isError: true`. **Side effects:** none.
+- **Output:** `content` (string), `etag` (string — opaque; SHA-256 of the
+  content). Pass `etag` as `if_match` on a later write/delete. (Source:
+  `internal/tools/file.go`; `internal/storage/fs_git.go` `ReadFileWithETag`.)
+- **Errors:** missing file, or project in `dangerous` state → `isError: true`.
+  **Side effects:** none.
 
 ### 4.6 `read_file_at_version`
 - **Purpose:** read a file's content as of a specific commit (e.g. to recover a
-  deleted or superseded version).
+  deleted or superseded version). This is the "past access" API and is git-backed.
 - **Input:** `namespace` (opt), `project_name` (**required**), `path`
-  (**required**), `commit_hash` (string, **required**).
+  (**required**), `commit_hash` (string, **required** — a **git commit hash** from
+  `get_history`; *not* an `etag`).
 - **Output:** `content` (string).
 - **Errors:** unknown hash or path-not-in-that-commit → `isError: true`.
-  **Side effects:** none. (Source: `internal/tools/file.go:255-295`;
-  `internal/storage/fs_git.go:430-471`.)
+  **Side effects:** none. (Source: `internal/tools/file.go`;
+  `internal/storage/fs_git.go` `ReadFileAtVersion`.)
 
 ### 4.7 `write_file`
-- **Purpose:** create or overwrite a file; commit atomically.
+- **Purpose:** create or overwrite a file. The file system is updated
+  synchronously; the git commit is performed in the background (§ 7).
 - **Input:** `namespace` (opt), `project_name` (**required**), `path`
-  (**required**), `content` (string, **required**), `expected_version` (string,
-  optional — omit/`""` to skip locking; see § 5).
-- **Output (success):** `message` (string), `version` (string — new commit hash).
+  (**required**), `content` (string, **required**), `if_match` (string, optional
+  — the etag the file is expected to be at; omit to skip the check; see § 5).
+- **Output (success):** `message` (string), `etag` (string — the new content
+  etag).
 - **Output (conflict):** `isError: true`; structured `conflict: true`,
-  `current_version: <hash>` (see § 5).
-- **Side effects:** atomic Git commit (`Update <path>`); emits a **`file_written`**
-  webhook with `commit_hash`. (Source: `internal/tools/file.go:64-118`;
-  `internal/storage/fs_git.go:120-204`.)
+  `current_etag: <etag>` (see § 5).
+- **Output (project-state refusal):** `isError: true`; structured
+  `reason: "corrupted" | "dangerous" | "write_disabled"` (no etag; see § 7).
+- **Side effects:** synchronous atomic file write + WAL append; a background
+  git commit (`Update <path>`) and a **`file_written`** webhook with `commit_hash`
+  follow asynchronously. (Source: `internal/tools/file.go`;
+  `internal/storage/fs_git.go` write path + `commit.go`.)
 
 ### 4.8 `delete_file`
-- **Purpose:** remove a file from the current tree (`git rm`); commit atomically.
-  History is preserved — content remains recoverable (§ 7, storage model).
+- **Purpose:** remove a file from the current tree; the deletion is committed in
+  the background. History is preserved — content remains recoverable (§ 7).
 - **Input:** `namespace` (opt), `project_name` (**required**), `path`
-  (**required**), `expected_version` (string, optional — omit/`""` to skip
-  locking).
-- **Output (success):** `message`, `version` (delete commit hash).
-- **Output (conflict):** `isError: true`; `conflict: true`, `current_version`
+  (**required**), `if_match` (string, optional — omit to skip the check).
+- **Output (success):** `message` (no etag — the file is gone).
+- **Output (conflict):** `isError: true`; `conflict: true`, `current_etag`
   (see § 5).
-- **Side effects:** `git rm` + atomic commit (`Delete <path>`); emits a
-  **`file_deleted`** webhook with `commit_hash`. (Source:
-  `internal/tools/file.go:120-170`; `internal/storage/fs_git.go:256-335`.)
+- **Output (project-state refusal):** `isError: true`; `reason` (see § 7).
+- **Side effects:** synchronous file removal + WAL append; a background commit
+  (`Delete <path>`) and a **`file_deleted`** webhook with `commit_hash` follow.
+  (Source: `internal/tools/file.go`; `internal/storage/fs_git.go`.)
 
 ### 4.9 `get_history`
 - **Purpose:** commit history for a project or a single file.
@@ -275,9 +303,9 @@ Apply to every tool unless noted:
   (**required**).
 - **Output:** `frontmatter` (object; empty if absent/malformed), `heading`
   (first heading), `excerpt` (first paragraph, capped at **200 runes**), `size`
-  (int, bytes), `version` (last commit hash, omitted if none), `modified_at`
-  (RFC3339, omitted if none). (Source: `internal/tools/summary.go:14-72`;
-  `docs/conventions/frontmatter.md`.)
+  (int, bytes), `etag` (opaque content SHA-256), `modified_at` (RFC3339 of the
+  last commit, omitted until the background commit lands). (Source:
+  `internal/tools/summary.go`; `docs/conventions/frontmatter.md`.)
 - **Side effects:** none.
 
 ### 4.11 `list_files_since`
@@ -315,39 +343,37 @@ Apply to every tool unless noted:
 
 ---
 
-## 5. Optimistic locking
+## 5. Optimistic concurrency (ETag / if_match)
 
-(Source: `internal/storage/fs_git.go:53-62,126-158,262-292`; verification report
-§ 2.2; `meta/reports/2026-05-28-shoka-schema-fixes-complete.md`.)
+(Source: `internal/storage/fs_git.go` write/delete paths and `VersionConflictError`;
+`internal/tools/file.go`.)
 
-- A file's **version** is the hash of the most recent commit that touched it
-  (`""` if it has no history). (Source: `internal/storage/fs_git.go:473-516`.)
-- **To enforce locking:** pass `expected_version` (obtained from `read_file` or a
-  prior write) to `write_file`/`delete_file`. If it does not equal the file's
-  current version, the call is rejected with a conflict and **no change is made**.
-- **To skip locking:** omit `expected_version` or pass `""` (a blind write).
-- **Conflict response shape** (copy verbatim — verification report § 2.2):
+- A file's **etag** is an opaque token (the SHA-256 of its content; `""`-equivalent
+  for an absent file is the empty-content hash). It is returned by `read_file`
+  (and in `read_summary`/`list_files` summaries), and is **not** a git commit hash.
+- **To enforce a check:** pass `if_match` (an etag from `read_file` or a prior
+  write) to `write_file`/`delete_file`. If it does not equal the file's current
+  etag, the call is rejected with a conflict and **no change is made**.
+- **To skip the check:** omit `if_match` (a blind write).
+- **Conflict response shape:**
 
   ```json
   {
     "content": [
-      { "type": "text", "text": "version conflict: file is now at <current_hash> (you expected <your_hash>); re-read the file and retry with the current version" }
+      { "type": "text", "text": "etag conflict: file is now at <current_etag> (you sent if_match <your_etag>); re-read the file and retry with the current etag" }
     ],
     "structuredContent": {
       "conflict": true,
-      "current_version": "<current_hash>",
-      "message": ""
+      "current_etag": "<current_etag>"
     },
     "isError": true
   }
   ```
 
   - It is a **tool-level error** (`isError: true`), **not** a JSON-RPC error.
-  - `current_version` is **omitted** when the file does not currently exist
-    (current version is empty).
 - **Recovery procedure:** on conflict, call `read_file` to get the current
-  `version`, reconcile your change against the current content, then retry the
-  write with the new `expected_version`.
+  `etag`, reconcile your change against the current content, then retry the write
+  with the new `if_match`.
 
 ---
 
@@ -391,17 +417,37 @@ triggers them. (Source: `internal/storage/fs_git.go:27-51,110-116,194-201,325-33
 
 ## 7. Storage model
 
-(Source: `internal/storage/fs_git.go`.)
+(Source: `internal/storage/`; design log `meta/design/2026-05-30-storage-redesign.md`.)
 
-- Files live at **`<base_dir>/<namespace>/<project>/<path>`**. (`fs_git.go:78-89`.)
-- **Each project is its own Git repository** (`git.PlainInit`). (`fs_git.go:91-118`.)
-- **Every `write_file` is an atomic commit** (`Update <path>`); **every
-  `delete_file` is an atomic commit** with `git rm` semantics (`Delete <path>`).
-  Commit author is `MCP Server <mcp-server@shoka.io>`. (`fs_git.go:120-204,256-335`.)
+**The file system is the ground truth; git is a background audit log** (2026-05-30
+storage redesign).
+
+- Files live at **`<base_dir>/<namespace>/<project>/<path>`**. Each project is its
+  own Git repository (`git.PlainInit`).
+- **Reads** (`read_file`, `list_files`, `read_summary`, `search_files`) are served
+  straight from the working tree — no lock, no git on the path.
+- **Writes/deletes** update the working tree atomically and append to a
+  **write-ahead log** at `<base_dir>/.shoka/wal/`, then return. A background worker
+  pool commits each WAL entry to git asynchronously (`Update <path>` /
+  `Delete <path>`, author `MCP Server <mcp-server@shoka.io>`), one commit per WAL
+  entry. So `get_history`/`read_file_at_version`/`list_files_since` reflect a write
+  only after its commit lands (typically within milliseconds; observable via
+  `get_server_info`'s `wal_pending`).
+- **Write-disabled mode:** if the WAL backs up past its configured threshold,
+  `write_file`/`delete_file` are refused with `reason: "write_disabled"` until it
+  drains. Reads are unaffected.
+- **Per-project state:** a project is `healthy`, `corrupted` (working tree drifted
+  from git HEAD outside the write path), or `dangerous` (`.git` unreadable).
+  `corrupted`/`dangerous` projects refuse writes (`reason: "corrupted" |
+  "dangerous"`); `dangerous` also refuses reads. Recovery is an operator action
+  (Web UI or the `shoka project recover` CLI), not an MCP tool.
 - **History is preserved indefinitely.** Past content of deleted or overwritten
   files is retrievable with `read_file_at_version` against a commit from
-  `get_history`. (`fs_git.go:430-471`; see `docs/conventions/document-lifecycle.md`
-  § Recovering a deleted file.)
+  `get_history`.
+- **Metrics:** an optional Prometheus endpoint (off by default, loopback-only;
+  config `metrics.addr`) exposes WAL depth, write-disabled state, commit
+  counts, file-lock leases, and per-project state. The pprof endpoint
+  (`--profile-addr`) follows the same defaults.
 
 ---
 
