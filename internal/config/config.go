@@ -97,6 +97,12 @@ type WALConfig struct {
 	MaxEntries int `yaml:"max_entries"` // write-disabled threshold; default 1000
 }
 
+// NotifyConfig configures the in-process notification center
+// (internal/notify): the ring-buffer size of recent storage-activity events.
+type NotifyConfig struct {
+	MaxEntries int `yaml:"max_entries"` // ring buffer size; default 1000
+}
+
 // WALWorkerConfig configures the background git-commit worker pool
 // (internal/storage/walworker).
 type WALWorkerConfig struct {
@@ -134,6 +140,7 @@ type Config struct {
 	FileLock  FileLockConfig  `yaml:"filelock"`
 	WAL       WALConfig       `yaml:"wal"`
 	WALWorker WALWorkerConfig `yaml:"wal_worker"`
+	Notify    NotifyConfig    `yaml:"notify"`
 	Metrics   MetricsConfig   `yaml:"metrics"`
 	Webhooks  []WebhookConfig `yaml:"webhooks"`
 }
@@ -152,6 +159,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.WAL.MaxEntries == 0 {
 		c.WAL.MaxEntries = 1000
+	}
+	if c.Notify.MaxEntries == 0 {
+		c.Notify.MaxEntries = 1000
 	}
 	if c.WALWorker.MinWorkers == 0 {
 		c.WALWorker.MinWorkers = 1

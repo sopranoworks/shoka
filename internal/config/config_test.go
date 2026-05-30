@@ -283,6 +283,9 @@ func TestLoad_StorageRedesignDefaults(t *testing.T) {
 
 	// metrics endpoint is off by default.
 	assert.Equal(t, "", cfg.Metrics.Addr)
+
+	// notification center ring buffer defaults to 1000.
+	assert.Equal(t, 1000, cfg.Notify.MaxEntries)
 }
 
 func TestLoad_StorageRedesignOverrides(t *testing.T) {
@@ -301,6 +304,8 @@ wal_worker:
   scan_interval: 250ms
   backoff_initial: 50ms
   backoff_max: 1m
+notify:
+  max_entries: 25
 metrics:
   addr: "localhost:9090"
 `
@@ -319,6 +324,7 @@ metrics:
 	assert.Equal(t, 250*time.Millisecond, cfg.WALWorker.ScanInterval.Std())
 	assert.Equal(t, 50*time.Millisecond, cfg.WALWorker.BackoffInitial.Std())
 	assert.Equal(t, 1*time.Minute, cfg.WALWorker.BackoffMax.Std())
+	assert.Equal(t, 25, cfg.Notify.MaxEntries)
 	assert.Equal(t, "localhost:9090", cfg.Metrics.Addr)
 }
 

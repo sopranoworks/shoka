@@ -26,6 +26,7 @@ import (
 	"github.com/shoka/mcp-server/internal/httplog"
 	"github.com/shoka/mcp-server/internal/logging"
 	"github.com/shoka/mcp-server/internal/metrics"
+	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
 	"github.com/shoka/mcp-server/internal/storage/walworker"
@@ -77,6 +78,13 @@ func main() {
 		startProfileServer(ctx, *profileAddr, logger)
 	}
 
+	// In-process notification center: records recent storage activity for
+	// future consumers (Web UI auto-refresh, drift-rescan triggers). Storage
+	// publishes to it on successful writes/deletes/project-creates. It is always
+	// constructed; no transport or subscriber API exists yet. The center is
+	// reachable for future code via the storage that holds it (s).
+	notifyCenter := notify.NewCenter(cfg.Notify.MaxEntries)
+
 	storageOpts := storage.Options{
 		FileLock: filelock.Config{
 			MaxLeaseDuration: cfg.FileLock.MaxLeaseDuration.Std(),
@@ -91,6 +99,7 @@ func main() {
 			BackoffInitial: cfg.WALWorker.BackoffInitial.Std(),
 			BackoffMax:     cfg.WALWorker.BackoffMax.Std(),
 		},
+		NotifyCenter: notifyCenter,
 	}
 	s, err := storage.NewFSGitStorageWithOptions(cfg.Storage.BaseDir, storageOpts)
 	if err != nil {

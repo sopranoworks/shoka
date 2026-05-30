@@ -78,6 +78,14 @@ wal_worker:
   backoff_initial: 100ms
   backoff_max: 30s
 
+# In-process notification center. Records recent storage activity
+# (file.write / file.delete / project.create) in a bounded in-memory ring
+# buffer for future consumers (Web UI auto-refresh, drift-rescan triggers).
+# It is always constructed; setting max_entries: 1 effectively keeps only the
+# latest event. No transport or subscriber API exists yet. Default shown.
+notify:
+  max_entries: 1000   # ring buffer size for the notification center
+
 # Optional Prometheus metrics endpoint. Like the pprof endpoint (--profile-addr),
 # it is off by default and forced to a loopback host when set.
 metrics:
