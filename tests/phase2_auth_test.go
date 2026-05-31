@@ -69,7 +69,7 @@ func TestAuth_UIEndpoint_RequiresTokenAndOrigin(t *testing.T) {
 	defer s.Close()
 	dm, err := drafts.NewManager(tempDir)
 	require.NoError(t, err)
-	uim := ui.NewManager(s, dm)
+	uim := ui.NewManager(s, dm, nil)
 
 	a := auth.New(auth.Config{
 		Enabled:        true,

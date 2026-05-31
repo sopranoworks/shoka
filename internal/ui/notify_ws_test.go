@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -43,6 +44,68 @@ func dialWS(t *testing.T, serverURL string) *websocket.Conn {
 		t.Fatalf("dial: %v", err)
 	}
 	return conn
+}
+
+// TestNotifyWS_EndToEndStorageWrite exercises the full chain a browser sees: a
+// real storage.Write publishes file.write to the shared notification center, the
+// /ws/ui subscriber forwards it, and the client receives a NOTIFY whose payload
+// names the written file. Storage and the UI share one center (as main() wires
+// them).
+func TestNotifyWS_EndToEndStorageWrite(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "shoka-ui-e2e-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	center := notify.NewCenter(100)
+	s, err := storage.NewFSGitStorageWithOptions(tmpDir, storage.Options{NotifyCenter: center})
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.CreateProject("ns", "proj"); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	dm, err := drafts.NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("drafts: %v", err)
+	}
+
+	srv := httptest.NewServer(NewManager(s, dm, center))
+	defer srv.Close()
+	conn := dialWS(t, srv.URL)
+	defer conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	// A real write through the storage layer (as the MCP write_file tool does).
+	if _, err := s.Write(context.Background(), "", "ns", "proj", "backlog.md", "hello", nil); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// The project.create from CreateProject may also be buffered; read until we
+	// see the file.write for backlog.md (bounded).
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var sawWrite bool
+	for i := 0; i < 5 && !sawWrite; i++ {
+		var msg WSMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			break
+		}
+		if msg.Type != MsgNotify {
+			continue
+		}
+		var ev notify.Event
+		if err := json.Unmarshal(msg.Payload, &ev); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if ev.Kind == "file.write" && ev.Target == "ns/proj" && ev.Path == "backlog.md" {
+			sawWrite = true
+		}
+	}
+	if !sawWrite {
+		t.Errorf("did not receive a NOTIFY file.write for the written file")
+	}
 }
 
 func TestNotifyWS_DeliversEventToClient(t *testing.T) {
