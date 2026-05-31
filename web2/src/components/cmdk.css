@@ -1,0 +1,28 @@
+/* cmdk backdrop (Command.Dialog renders a Radix-style overlay). */
+[cmdk-overlay] {
+  position: fixed;
+  inset: 0;
+  background: #00000066;
+  backdrop-filter: blur(2px);
+  z-index: 99;
+}
+
+/* Selected item highlight, driven by cmdk's aria-selected. */
+[cmdk-item][aria-selected='true'] {
+  background: var(--c-accent-soft);
+}
+[cmdk-item][aria-selected='true'] * {
+  color: var(--c-accent-text) !important;
+}
+[cmdk-item][aria-disabled='true'] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+[cmdk-group-heading] {
+  padding: 6px 10px 4px;
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-text-faint);
+}

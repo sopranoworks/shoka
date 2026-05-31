@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Build output goes to ../server/dist (embedded by the Go server), not here.
+dist/
+
+# Test / tooling artifacts
+coverage/
+playwright-report/
+test-results/
+.vite/
+*.local
+
+# Editor / OS
+.DS_Store

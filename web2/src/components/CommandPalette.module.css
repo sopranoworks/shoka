@@ -1,0 +1,114 @@
+.dialog {
+  position: fixed;
+  top: 14vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(620px, calc(100vw - 24px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-bg-elev);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+  z-index: var(--z-overlay);
+}
+
+.inputRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--c-border);
+}
+.crumb {
+  flex: none;
+  font-size: var(--fs-sm);
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+.input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--c-text);
+  font-size: var(--fs-lg);
+  font-family: inherit;
+}
+.input::placeholder {
+  color: var(--c-text-faint);
+}
+
+.list {
+  overflow: auto;
+  padding: var(--sp-2);
+  flex: 1;
+}
+
+.group {
+  margin-bottom: var(--sp-2);
+}
+
+.empty {
+  padding: var(--sp-5) var(--sp-4);
+  text-align: center;
+  color: var(--c-text-faint);
+  font-size: var(--fs-sm);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--c-text-dim);
+  font-size: var(--fs-md);
+}
+.glyph {
+  flex: none;
+  color: var(--c-text-faint);
+}
+.itemLabel {
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.itemHint {
+  color: var(--c-text-faint);
+  font-size: var(--fs-sm);
+}
+.itemPath {
+  margin-left: auto;
+  color: var(--c-text-faint);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+.kbdGroup {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 3px;
+  flex: none;
+}
+
+.footer {
+  display: flex;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--c-border);
+  font-size: var(--fs-xs);
+  color: var(--c-text-faint);
+}
+.footer kbd {
+  margin-right: 4px;
+}

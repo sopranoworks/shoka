@@ -1,0 +1,58 @@
+.wrap {
+  height: 100%;
+  width: 100%;
+}
+
+/* react-arborist sets row width/height inline; we style the inner content. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding-right: var(--sp-2);
+  font-size: var(--fs-md);
+  color: var(--c-text-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.row:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+.row[data-active='true'] {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+}
+
+/* react-arborist focus highlight on the row container */
+.wrap :global(.row-selected) .row,
+.wrap :global([aria-selected='true']) .row {
+  background: var(--c-selection);
+  color: var(--c-text);
+}
+
+.chevron {
+  flex: none;
+  width: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--c-text-faint);
+}
+
+.icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--c-text-faint);
+}
+.row[data-active='true'] .icon {
+  color: var(--c-accent-text);
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

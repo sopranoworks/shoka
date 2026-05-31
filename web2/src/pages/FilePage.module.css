@@ -1,0 +1,96 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  height: 38px;
+  padding: 0 var(--sp-4);
+  background: var(--c-bg-elev);
+  border-bottom: 1px solid var(--c-border);
+}
+.filePath {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--c-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolbarRight {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+}
+.modeActive {
+  font-size: var(--fs-sm);
+  color: var(--c-text);
+}
+.editLink,
+.previewLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--c-text-dim);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+}
+.editLink:hover,
+.previewLink:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+  text-decoration: none;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-5) var(--sp-5) var(--sp-6);
+}
+
+.editorBody {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.error {
+  color: var(--c-bad);
+}
+.loading {
+  color: var(--c-text-faint);
+}
+
+.saveBtn {
+  background: var(--c-accent);
+  color: #fff;
+  border: 1px solid var(--c-accent);
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.saveBtn:hover {
+  filter: brightness(1.08);
+}
+.dirty {
+  color: var(--c-warn);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 640px) {
+  .body {
+    padding: var(--sp-4) var(--sp-3);
+  }
+}
