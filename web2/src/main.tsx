@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { router } from './router'
 import { ThemeProvider } from './lib/theme'
 import { PaletteProvider } from './lib/palette'
-import { startWsClient } from './lib/ws'
+import { wsClient } from './lib/wsClient'
 import './styles/global.css'
 
 const queryClient = new QueryClient({
@@ -14,13 +14,9 @@ const queryClient = new QueryClient({
   },
 })
 
-// Feasibility check §2.3.4: start the long-lived WS client OUTSIDE the React
-// tree, handing it the QueryClient so push events drive invalidateQueries.
-// Points at a dead port on purpose; it backoff-reconnects forever, harmlessly.
-startWsClient({
-  url: 'ws://localhost:9999/mock',
-  queryClient,
-})
+// Open the /ws/ui connection eagerly so the first query has a warm socket.
+// Session 1 uses it for request/response only; NOTIFY auto-refresh is session 2.
+wsClient().connect()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

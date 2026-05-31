@@ -1,15 +1,16 @@
 import { Link } from '@tanstack/react-router'
 import { indexRoute } from '../router'
-import { mockData } from '../lib/data'
 import { useProjectsQuery } from '../lib/queries'
+import { namespacesOf } from '../lib/tree'
 import styles from './RepoListPage.module.css'
 
 export function RepoListPage() {
   // Typed search param ?ns= from the route's validateSearch.
   const { ns } = indexRoute.useSearch()
   const navigate = indexRoute.useNavigate()
-  const { data: projects = [] } = useProjectsQuery()
+  const { data: projects = [], isPending, isError, error } = useProjectsQuery()
 
+  const namespaces = namespacesOf(projects)
   const filtered = ns ? projects.filter((p) => p.namespace === ns) : projects
 
   return (
@@ -17,9 +18,22 @@ export function RepoListPage() {
       <header className={styles.head}>
         <h1 className={styles.title}>Repositories</h1>
         <p className={styles.sub}>
-          {projects.length} projects across {mockData.namespaces.length} namespaces
+          {isPending
+            ? 'Loading…'
+            : `${projects.length} project${
+                projects.length === 1 ? '' : 's'
+              } across ${namespaces.length} namespace${
+                namespaces.length === 1 ? '' : 's'
+              }`}
         </p>
       </header>
+
+      {isError && (
+        <div className={styles.noResults}>
+          Could not load projects:{' '}
+          {error instanceof Error ? error.message : 'unknown error'}
+        </div>
+      )}
 
       <div className={styles.filters}>
         <span className={styles.filterLabel}>Namespace</span>
@@ -30,7 +44,7 @@ export function RepoListPage() {
         >
           All
         </button>
-        {mockData.namespaces.map((n) => (
+        {namespaces.map((n) => (
           <button
             key={n}
             className={styles.chip}
@@ -65,15 +79,18 @@ export function RepoListPage() {
               </div>
               <div className={styles.cardNs}>{p.namespace}</div>
               <div className={styles.cardMeta}>
-                {p.files.length} file{p.files.length === 1 ? '' : 's'}
+                <span className={styles.stateDot} data-state={p.state} />
+                {p.state}
               </div>
             </Link>
           </li>
         ))}
       </ul>
 
-      {filtered.length === 0 && (
-        <div className={styles.noResults}>No projects in “{ns}”.</div>
+      {!isPending && !isError && filtered.length === 0 && (
+        <div className={styles.noResults}>
+          {ns ? `No projects in “${ns}”.` : 'No projects yet.'}
+        </div>
       )}
     </div>
   )

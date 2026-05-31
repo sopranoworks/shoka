@@ -1,12 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import { projectRoute } from '../router'
-import { useProjectQuery } from '../lib/queries'
+import { useTreeQuery } from '../lib/queries'
+import { flattenFilePaths } from '../lib/tree'
 import { usePalette } from '../lib/palette'
 import styles from './ProjectPage.module.css'
 
 export function ProjectPage() {
   const { namespace, project } = projectRoute.useParams()
-  const { data, isError } = useProjectQuery(namespace, project)
+  const { data: tree = [], isError } = useTreeQuery(namespace, project)
   const { openPalette } = usePalette()
 
   if (isError) {
@@ -17,7 +18,7 @@ export function ProjectPage() {
           <code>
             {namespace}/{project}
           </code>{' '}
-          does not exist in the mock data.
+          could not be loaded.
         </p>
         <Link to="/">← Back to repositories</Link>
       </div>
@@ -25,8 +26,8 @@ export function ProjectPage() {
   }
 
   // Suggest a few top-level docs to open.
-  const suggestions = (data?.files ?? [])
-    .filter((f) => !f.path.includes('/'))
+  const suggestions = flattenFilePaths(tree)
+    .filter((p) => !p.includes('/'))
     .slice(0, 5)
 
   return (
@@ -51,14 +52,14 @@ export function ProjectPage() {
           <div className={styles.suggest}>
             <div className={styles.suggestHead}>Top-level docs</div>
             <ul className={styles.suggestList}>
-              {suggestions.map((f) => (
-                <li key={f.path}>
+              {suggestions.map((path) => (
+                <li key={path}>
                   <Link
                     to="/p/$namespace/$project/blob/$"
-                    params={{ namespace, project, _splat: f.path }}
+                    params={{ namespace, project, _splat: path }}
                     className={styles.suggestLink}
                   >
-                    {f.path}
+                    {path}
                   </Link>
                 </li>
               ))}

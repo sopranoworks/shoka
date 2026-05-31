@@ -2,9 +2,9 @@ import { useMemo } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
 import type { RailView } from './ActivityRail'
 import { FileTree } from './FileTree'
-import { mockData } from '../lib/data'
-import { useProjectQuery } from '../lib/queries'
+import { useProjectsQuery, useTreeQuery } from '../lib/queries'
 import { usePalette } from '../lib/palette'
+import type { ProjectInfo } from '../lib/types'
 import styles from './Sidebar.module.css'
 
 // Pull the active namespace/project (if any) from the URL.
@@ -17,7 +17,7 @@ function useActiveProjectRef(): { ns: string; proj: string } | null {
 
 function useActiveFilePath(): string | null {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const m = pathname.match(/^\/p\/[^/]+\/[^/]+\/(?:blob|edit)\/(.*)$/)
+  const m = pathname.match(/^\/p\/[^/]+\/[^/]+\/blob\/(.*)$/)
   return m ? m[1] : null
 }
 
@@ -63,7 +63,7 @@ function ExplorerForProject({
   proj: string
   activePath: string | null
 }) {
-  const { data: project } = useProjectQuery(ns, proj)
+  const { data: tree, isError } = useTreeQuery(ns, proj)
   return (
     <div className={styles.pane}>
       <SectionHeader>
@@ -73,15 +73,19 @@ function ExplorerForProject({
         </span>
       </SectionHeader>
       <div className={styles.treeWrap}>
-        {project ? (
+        {isError ? (
+          <div className={styles.empty}>Could not load files.</div>
+        ) : !tree ? (
+          <div className={styles.empty}>Loading…</div>
+        ) : tree.length === 0 ? (
+          <div className={styles.empty}>No files.</div>
+        ) : (
           <FileTree
             namespace={ns}
             project={proj}
-            files={project.files}
+            nodes={tree}
             activePath={activePath}
           />
-        ) : (
-          <div className={styles.empty}>Loading…</div>
         )}
       </div>
     </div>
@@ -89,27 +93,27 @@ function ExplorerForProject({
 }
 
 function NamespacesView() {
+  const { data: projects = [] } = useProjectsQuery()
   const grouped = useMemo(() => {
-    const map = new Map<string, { namespace: string; name: string }[]>()
-    for (const ns of mockData.namespaces) map.set(ns, [])
-    for (const p of mockData.projects) {
+    const map = new Map<string, ProjectInfo[]>()
+    for (const p of projects) {
       if (!map.has(p.namespace)) map.set(p.namespace, [])
-      map.get(p.namespace)!.push({ namespace: p.namespace, name: p.name })
+      map.get(p.namespace)!.push(p)
     }
-    return [...map.entries()]
-  }, [])
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [projects])
 
   return (
     <div className={styles.pane}>
       <SectionHeader>Namespaces</SectionHeader>
       <div className={styles.list}>
-        {grouped.map(([ns, projects]) => (
+        {grouped.map(([ns, nsProjects]) => (
           <div key={ns} className={styles.nsGroup}>
             <Link to="/" search={{ ns }} className={styles.nsLink}>
               {ns}
-              <span className={styles.count}>{projects.length}</span>
+              <span className={styles.count}>{nsProjects.length}</span>
             </Link>
-            {projects.map((p) => (
+            {nsProjects.map((p) => (
               <Link
                 key={p.name}
                 to="/p/$namespace/$project"
@@ -132,7 +136,7 @@ function SearchView({ hasProject }: { hasProject: boolean }) {
     <div className={styles.pane}>
       <SectionHeader>Search</SectionHeader>
       <div className={styles.empty}>
-        Full-text search is out of scope for this prototype.
+        Full-text search lands in session 4.
         {hasProject && (
           <>
             <br />
@@ -150,9 +154,7 @@ function HistoryView() {
   return (
     <div className={styles.pane}>
       <SectionHeader>History</SectionHeader>
-      <div className={styles.empty}>
-        Commit history / blame omitted (deliberately) from this prototype.
-      </div>
+      <div className={styles.empty}>Commit history lands in a later session.</div>
     </div>
   )
 }

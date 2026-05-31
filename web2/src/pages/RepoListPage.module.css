@@ -94,9 +94,29 @@
   font-family: var(--font-mono);
 }
 .cardMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: var(--sp-3);
   color: var(--c-text-faint);
   font-size: var(--fs-xs);
+  text-transform: capitalize;
+}
+.stateDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--c-text-faint);
+  flex: none;
+}
+.stateDot[data-state='healthy'] {
+  background: #3fb950;
+}
+.stateDot[data-state='corrupted'] {
+  background: #d29922;
+}
+.stateDot[data-state='dangerous'] {
+  background: #f85149;
 }
 
 .noResults {

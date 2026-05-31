@@ -1,31 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Command } from 'cmdk'
-import { useNavigate, useRouterState } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { usePalette } from '../lib/palette'
 import { useTheme } from '../lib/theme'
-import { mockData, getProject, projectKey } from '../lib/data'
+import { useProjectsQuery, useAllProjectFiles } from '../lib/queries'
+import { namespacesOf } from '../lib/tree'
 import { fuzzyFilter } from '../lib/fuzzy'
 import styles from './CommandPalette.module.css'
 import './cmdk.css'
 
-// Parse the active project + file from the current path.
-function useContextRefs() {
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const pm = pathname.match(/^\/p\/([^/]+)\/([^/]+)/)
-  return {
-    pathname,
-    ns: pm ? decodeURIComponent(pm[1]) : null,
-    proj: pm ? decodeURIComponent(pm[2]) : null,
-  }
-}
-
-type Page = 'root' | 'files' | 'projects'
+type Page = 'root' | 'files' | 'projects' | 'namespaces'
 
 export function CommandPalette() {
   const { open, mode, setOpen, closePalette } = usePalette()
   const navigate = useNavigate()
   const { theme, toggle } = useTheme()
-  const ctx = useContextRefs()
 
   const [page, setPage] = useState<Page>('root')
   const [search, setSearch] = useState('')
@@ -38,7 +27,11 @@ export function CommandPalette() {
     }
   }, [open, mode])
 
-  const project = ctx.ns && ctx.proj ? getProject(ctx.ns, ctx.proj) : undefined
+  const { data: projects = [] } = useProjectsQuery()
+  const namespaces = useMemo(() => namespacesOf(projects), [projects])
+  // Global quick-open: load every project's files, but only while that page is
+  // open (lazy — the N GET_TREE calls share the sidebar's ['tree'] cache).
+  const allFiles = useAllProjectFiles(open && page === 'files')
 
   // Global shortcuts shown inline in the palette, wired for real.
   useEffect(() => {
@@ -61,21 +54,29 @@ export function CommandPalette() {
     return () => window.removeEventListener('keydown', onKey)
   }, [toggle])
 
-  const fileResults = useMemo(() => {
-    if (!project) return []
-    return fuzzyFilter(search, project.files, (f) => f.path).slice(0, 50)
-  }, [project, search])
+  const fileResults = useMemo(
+    () => fuzzyFilter(search, allFiles, (f) => f.path).slice(0, 50),
+    [allFiles, search],
+  )
 
   const run = (fn: () => void) => {
     closePalette()
-    // Defer so the dialog unmounts before navigation/alerts.
+    // Defer so the dialog unmounts before navigation.
     setTimeout(fn, 0)
   }
 
   const copyDeepLink = () => {
-    const url = window.location.href
-    void navigator.clipboard?.writeText(url).catch(() => {})
+    void navigator.clipboard?.writeText(window.location.href).catch(() => {})
   }
+
+  const crumbLabel =
+    page === 'files'
+      ? 'Go to File'
+      : page === 'projects'
+        ? 'Switch Project'
+        : page === 'namespaces'
+          ? 'Switch Namespace'
+          : ''
 
   return (
     <Command.Dialog
@@ -83,28 +84,22 @@ export function CommandPalette() {
       onOpenChange={setOpen}
       label="Command palette"
       className={styles.dialog}
-      shouldFilter={page === 'root' || page === 'projects'}
+      shouldFilter={page !== 'files'}
       onKeyDown={(e) => {
-        // Backspace on empty search returns to root from a sub-page.
+        // Backspace on empty search, or Escape, returns to root from a sub-page.
         if (e.key === 'Backspace' && search === '' && page !== 'root') {
           e.preventDefault()
           setPage('root')
         }
-        if (e.key === 'Escape') {
-          if (page !== 'root') {
-            e.preventDefault()
-            setPage('root')
-            setSearch('')
-          }
+        if (e.key === 'Escape' && page !== 'root') {
+          e.preventDefault()
+          setPage('root')
+          setSearch('')
         }
       }}
     >
       <div className={styles.inputRow}>
-        {page !== 'root' && (
-          <span className={styles.crumb}>
-            {page === 'files' ? 'Go to File' : 'Switch Project'}
-          </span>
-        )}
+        {page !== 'root' && <span className={styles.crumb}>{crumbLabel}</span>}
         <Command.Input
           autoFocus
           value={search}
@@ -114,7 +109,9 @@ export function CommandPalette() {
               ? 'Type a file name…'
               : page === 'projects'
                 ? 'Type a project…'
-                : 'Type a command or search…'
+                : page === 'namespaces'
+                  ? 'Type a namespace…'
+                  : 'Type a command or search…'
           }
           className={styles.input}
         />
@@ -130,7 +127,6 @@ export function CommandPalette() {
                 label="Go to File…"
                 hint="Quick-open by name"
                 kbd="⌘P"
-                disabled={!project}
                 onSelect={() => {
                   setSearch('')
                   setPage('files')
@@ -148,7 +144,14 @@ export function CommandPalette() {
                 }}
               />
               <CmdItem
-                label="Go to Repositories"
+                label="Switch Namespace…"
+                onSelect={() => {
+                  setSearch('')
+                  setPage('namespaces')
+                }}
+              />
+              <CmdItem
+                label="Go Home"
                 onSelect={() => run(() => navigate({ to: '/' }))}
               />
             </Command.Group>
@@ -169,41 +172,39 @@ export function CommandPalette() {
         )}
 
         {page === 'files' &&
-          (project ? (
-            fileResults.map(({ item }) => (
-              <Command.Item
-                key={item.path}
-                value={item.path}
-                className={styles.item}
-                onSelect={() =>
-                  run(() =>
-                    navigate({
-                      to: '/p/$namespace/$project/blob/$',
-                      params: {
-                        namespace: ctx.ns!,
-                        project: ctx.proj!,
-                        _splat: item.path,
-                      },
-                    }),
-                  )
-                }
-              >
-                <FileGlyph />
-                <span className={styles.itemLabel}>
-                  {item.path.split('/').pop()}
-                </span>
-                <span className={styles.itemPath}>{item.path}</span>
-              </Command.Item>
-            ))
-          ) : (
-            <div className={styles.empty}>Open a project first.</div>
+          fileResults.map(({ item }) => (
+            <Command.Item
+              key={`${item.namespace}/${item.project}/${item.path}`}
+              value={`${item.namespace}/${item.project}/${item.path}`}
+              className={styles.item}
+              onSelect={() =>
+                run(() =>
+                  navigate({
+                    to: '/p/$namespace/$project/blob/$',
+                    params: {
+                      namespace: item.namespace,
+                      project: item.project,
+                      _splat: item.path,
+                    },
+                  }),
+                )
+              }
+            >
+              <FileGlyph />
+              <span className={styles.itemLabel}>
+                {item.path.split('/').pop()}
+              </span>
+              <span className={styles.itemPath}>
+                {item.namespace}/{item.project}/{item.path}
+              </span>
+            </Command.Item>
           ))}
 
         {page === 'projects' &&
-          mockData.projects.map((p) => (
+          projects.map((p) => (
             <Command.Item
-              key={projectKey(p)}
-              value={projectKey(p)}
+              key={`${p.namespace}/${p.name}`}
+              value={`${p.namespace}/${p.name}`}
               className={styles.item}
               onSelect={() =>
                 run(() =>
@@ -217,6 +218,21 @@ export function CommandPalette() {
               <RepoGlyph />
               <span className={styles.itemLabel}>{p.name}</span>
               <span className={styles.itemPath}>{p.namespace}</span>
+            </Command.Item>
+          ))}
+
+        {page === 'namespaces' &&
+          namespaces.map((n) => (
+            <Command.Item
+              key={n}
+              value={n}
+              className={styles.item}
+              onSelect={() =>
+                run(() => navigate({ to: '/', search: { ns: n } }))
+              }
+            >
+              <RepoGlyph />
+              <span className={styles.itemLabel}>{n}</span>
             </Command.Item>
           ))}
       </Command.List>
@@ -240,22 +256,15 @@ function CmdItem({
   label,
   hint,
   kbd,
-  disabled,
   onSelect,
 }: {
   label: string
   hint?: string
   kbd?: string
-  disabled?: boolean
   onSelect: () => void
 }) {
   return (
-    <Command.Item
-      value={label}
-      disabled={disabled}
-      onSelect={onSelect}
-      className={styles.item}
-    >
+    <Command.Item value={label} onSelect={onSelect} className={styles.item}>
       <span className={styles.itemLabel}>{label}</span>
       {hint && <span className={styles.itemHint}>{hint}</span>}
       {kbd && <KbdGroup combo={kbd} />}

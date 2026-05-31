@@ -1,30 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { Tree, type NodeRendererProps, type TreeApi } from 'react-arborist'
-import { buildTree } from '../lib/data'
-import type { MockFile, TreeNode } from '../lib/types'
+import { toTreeNodes, ancestorDirs } from '../lib/tree'
+import type { FileNode, TreeNode } from '../lib/types'
 import styles from './FileTree.module.css'
 
 /**
- * react-arborist file tree.
+ * react-arborist file tree, fed the backend's GET_TREE FileNode list.
  * - arrow keys navigate, Enter / click both open a file (onActivate)
  * - directories expand/collapse on toggle
- * - the active file (from the URL) is highlighted and selected
+ * - the active file (from the URL) is highlighted, selected, scrolled into
+ *   view, and its ancestor directories are expanded (expand-to-active)
  */
 export function FileTree({
   namespace,
   project,
-  files,
+  nodes,
   activePath,
 }: {
   namespace: string
   project: string
-  files: MockFile[]
+  nodes: FileNode[]
   activePath: string | null
 }) {
   const navigate = useNavigate()
-  const data = useMemo(() => buildTree(files), [files])
+  const data = useMemo(() => toTreeNodes(nodes), [nodes])
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
+
+  // Expand ancestors of the active file on first paint.
+  const initialOpenState = useMemo(() => {
+    const open: Record<string, boolean> = {}
+    if (activePath) for (const dir of ancestorDirs(activePath)) open[dir] = true
+    return open
+  }, [activePath])
 
   // Measure the container so the virtualized tree fills the sidebar.
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -40,6 +48,16 @@ export function FileTree({
     return () => ro.disconnect()
   }, [])
 
+  // Expand-to-active and scroll into view when the active file (or tree) changes
+  // after mount — e.g. navigating to a deep file via quick-open or a deep link.
+  useEffect(() => {
+    if (!activePath) return
+    const api = treeRef.current
+    if (!api) return
+    for (const dir of ancestorDirs(activePath)) api.open(dir)
+    api.scrollTo(activePath)
+  }, [activePath, data])
+
   const openFile = (path: string) => {
     navigate({
       to: '/p/$namespace/$project/blob/$',
@@ -54,6 +72,7 @@ export function FileTree({
         data={data}
         idAccessor="id"
         childrenAccessor="children"
+        initialOpenState={initialOpenState}
         openByDefault={false}
         width={size.w}
         height={size.h}
@@ -110,7 +129,9 @@ function Row({
           </svg>
         )}
       </span>
-      <span className={styles.icon}>{node.data.isFile ? <FileIcon /> : <DirIcon open={node.isOpen} />}</span>
+      <span className={styles.icon}>
+        {node.data.isFile ? <FileIcon /> : <DirIcon open={node.isOpen} />}
+      </span>
       <span className={styles.name}>{node.data.name}</span>
     </div>
   )
@@ -134,11 +155,7 @@ function DirIcon({ open }: { open: boolean }) {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path
-        d={
-          open
-            ? 'M2 4.5h4l1.2 1.4H14V13H2z'
-            : 'M2 4.5h4l1.2 1.4H14V13H2z'
-        }
+        d="M2 4.5h4l1.2 1.4H14V13H2z"
         stroke="currentColor"
         strokeWidth="1.2"
         strokeLinejoin="round"
