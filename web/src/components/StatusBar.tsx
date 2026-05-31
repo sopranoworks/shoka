@@ -6,22 +6,18 @@ export function StatusBar() {
   const { theme, toggle } = useTheme()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
-  // Mock connection indicator. The real WS points at a dead port, so we show a
-  // static "mock" state (amber) rather than a live status — by design.
+  // No live connection indicator in session 1 — surfacing connection status
+  // (and the NOTIFY-driven live state) is session 2. The bar shows the current
+  // location and the theme toggle.
   return (
     <footer className={styles.bar}>
       <div className={styles.left}>
-        <span className={styles.conn} title="WebSocket: mock target (not connected)">
-          <span className={styles.dot} />
-          mock&nbsp;WS
-        </span>
         <span className={styles.path} title={pathname}>
           {pathname}
         </span>
       </div>
 
       <div className={styles.right}>
-        <span className={styles.branch}>main</span>
         <button
           className={styles.themeBtn}
           onClick={toggle}
