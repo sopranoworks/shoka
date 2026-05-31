@@ -18,25 +18,48 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const ws = new WebSocket(`${protocol}//${host}/ws/ui`);
+    let unmounted = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
 
-    ws.onopen = () => {
-      console.log('WebSocket connected');
-      setConnected(true);
+    // Establish (or re-establish) the connection. On an unexpected close we
+    // reconnect with exponential backoff (capped). Each reconnect installs a
+    // fresh WebSocket into state, so consumers' effects (which depend on the
+    // socket identity) re-run and re-fetch their current view from scratch —
+    // no missed-event replay is needed (directive §6.5).
+    const connect = () => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const ws = new WebSocket(`${protocol}//${host}/ws/ui`);
+
+      ws.onopen = () => {
+        attempt = 0;
+        setConnected(true);
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        if (unmounted) return;
+        const delay = Math.min(30000, 1000 * 2 ** attempt);
+        attempt += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        // Let onclose drive the reconnect; closing here ensures it fires.
+        ws.close();
+      };
+
+      setSocket(ws);
+      socketRef.current = ws;
     };
 
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      setConnected(false);
-    };
-
-    setSocket(ws);
-    socketRef.current = ws;
+    connect();
 
     return () => {
-      ws.close();
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      socketRef.current?.close();
     };
   }, []);
 

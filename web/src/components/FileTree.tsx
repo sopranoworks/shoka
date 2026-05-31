@@ -74,19 +74,30 @@ const FileTree: React.FC<FileTreeProps> = ({ namespace, projectName, onSelectFil
 
   useEffect(() => {
     if (connected && socket) {
+      const requestTree = () => socket.send(JSON.stringify({
+        type: 'GET_TREE',
+        payload: { namespace, projectName }
+      }));
+
       const handleMessage = (event: MessageEvent) => {
         const msg = JSON.parse(event.data);
         if (msg.type === 'GET_TREE') {
           setTree(msg.payload);
+        } else if (msg.type === 'NOTIFY') {
+          // A file changed on the server. If it belongs to this project, the
+          // listing is stale — re-fetch it (directive §6.2 Case A). Unknown
+          // kinds are ignored (forward-compatible).
+          const ev = msg.payload;
+          if (ev && (ev.kind === 'file.write' || ev.kind === 'file.delete') &&
+              ev.target === `${namespace}/${projectName}`) {
+            requestTree();
+          }
         }
       };
 
       socket.addEventListener('message', handleMessage);
-      
-      socket.send(JSON.stringify({
-        type: 'GET_TREE',
-        payload: { namespace, projectName }
-      }));
+
+      requestTree();
 
       return () => {
         socket.removeEventListener('message', handleMessage);

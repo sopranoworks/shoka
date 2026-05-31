@@ -85,10 +85,11 @@ function AppContent() {
             {/* Content Area */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff' }}>
               {selectedFile && selectedProject ? (
-                <Editor 
+                <Editor
                   namespace={selectedProject.namespace}
                   projectName={selectedProject.name}
                   filePath={selectedFile}
+                  onClose={() => setSelectedFile(undefined)}
                 />
               ) : (
                 <div style={{ 

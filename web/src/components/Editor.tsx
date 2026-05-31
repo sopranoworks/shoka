@@ -8,21 +8,33 @@ interface EditorProps {
   namespace: string;
   projectName: string;
   filePath: string;
+  onClose?: () => void;
 }
 
-const Editor: React.FC<EditorProps> = ({ namespace, projectName, filePath }) => {
+// externalChange tracks an out-of-band change to the open file, surfaced as a
+// non-blocking banner. The displayed content is never overwritten without the
+// user's consent (directive §6.2 Case B / §6.4).
+type ExternalChange = null | 'updated' | 'deleted';
+
+const Editor: React.FC<EditorProps> = ({ namespace, projectName, filePath, onClose }) => {
   const [content, setContent] = useState('');
   const [isPreviewVisible, setIsPreviewVisible] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [externalChange, setExternalChange] = useState<ExternalChange>(null);
   const { socket, connected } = useWebSocket();
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Reset the banner whenever the open file changes (a fresh load is authoritative).
+  useEffect(() => {
+    setExternalChange(null);
+  }, [namespace, projectName, filePath]);
 
   useEffect(() => {
     if (connected && socket && filePath) {
       const handleMessage = (event: MessageEvent) => {
         try {
           const msg = JSON.parse(event.data);
-          
+
           if (msg.type === 'READ_FILE' && msg.payload?.path === filePath) {
             setContent(msg.payload.content || '');
           } else if (msg.type === 'SAVE_ACK' && msg.payload?.path === filePath) {
@@ -30,6 +42,19 @@ const Editor: React.FC<EditorProps> = ({ namespace, projectName, filePath }) => 
           } else if (msg.type === 'ERROR') {
             console.error('Server error:', msg.payload?.message);
             setIsSaving(false);
+          } else if (msg.type === 'NOTIFY') {
+            // The open file changed under us. Inform the user with a banner but
+            // never silently overwrite their content (directive §6.2 Case B).
+            // Multiple events collapse into one banner; Reload always fetches the
+            // latest state regardless of how many arrived.
+            const ev = msg.payload;
+            if (ev && ev.target === `${namespace}/${projectName}` && ev.path === filePath) {
+              if (ev.kind === 'file.write') {
+                setExternalChange('updated');
+              } else if (ev.kind === 'file.delete') {
+                setExternalChange('deleted');
+              }
+            }
           }
         } catch (err) {
           console.error('Failed to parse WebSocket message:', err);
@@ -48,6 +73,16 @@ const Editor: React.FC<EditorProps> = ({ namespace, projectName, filePath }) => 
       };
     }
   }, [connected, socket, namespace, projectName, filePath]);
+
+  const reloadFromServer = () => {
+    setExternalChange(null);
+    if (socket && connected) {
+      socket.send(JSON.stringify({
+        type: 'READ_FILE',
+        payload: { namespace, projectName, path: filePath }
+      }));
+    }
+  };
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
@@ -79,6 +114,40 @@ const Editor: React.FC<EditorProps> = ({ namespace, projectName, filePath }) => 
 
   return (
     <div className="editor-container">
+      {externalChange && (
+        <div
+          role="status"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '8px 16px',
+            background: externalChange === 'deleted' ? '#ffebe9' : '#fff8c5',
+            borderBottom: '1px solid #d0d7de',
+            fontSize: '13px',
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            {externalChange === 'deleted'
+              ? 'This file was deleted by another client.'
+              : 'This file was updated by another client.'}
+          </span>
+          {externalChange === 'deleted' ? (
+            <button onClick={() => { setExternalChange(null); onClose?.(); }}>Close</button>
+          ) : (
+            <>
+              <button onClick={reloadFromServer} style={{ fontWeight: 600 }}>Reload</button>
+              <button
+                onClick={() => setExternalChange(null)}
+                title="Dismiss"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }}
+              >
+                ×
+              </button>
+            </>
+          )}
+        </div>
+      )}
       <div className="editor-toolbar">
         <div className="file-info">
           <span className="file-path">{filePath}</span>

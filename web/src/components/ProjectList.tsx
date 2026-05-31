@@ -70,6 +70,10 @@ const ProjectList: React.FC<ProjectListProps> = ({ onSelectProject }) => {
           const infos = (msg.payload as ProjectInfo[]) || [];
           setProjects(infos.map(p => ({ namespace: p.namespace, name: p.name, state: p.state || 'healthy' })));
           setLoading(false);
+        } else if (msg.type === 'NOTIFY' && msg.payload?.kind === 'project.create') {
+          // A new project appeared on the server — refresh the Repositories list
+          // (directive §6.2). Other kinds do not affect this view.
+          refresh();
         }
       };
       socket.addEventListener('message', handleMessage);
