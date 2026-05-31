@@ -144,7 +144,7 @@ func main() {
 		log.Fatalf("failed to initialize draft manager: %v", err)
 	}
 
-	uim := ui.NewManager(s, dm)
+	uim := ui.NewManager(s, dm, notifyCenter)
 
 	authenticator := auth.New(auth.Config{
 		Enabled:        cfg.Server.Auth.Enabled,

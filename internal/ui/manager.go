@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/shoka/mcp-server/internal/drafts"
+	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage"
 )
 
@@ -23,7 +26,12 @@ const (
 	SaveFile         MessageType = "SAVE_FILE"
 	SaveAck          MessageType = "SAVE_ACK"
 	MsgCreateProject MessageType = "CREATE_PROJECT"
-	Error            MessageType = "ERROR"
+	// MsgNotify carries one notify.Event pushed from the server to the browser
+	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
+	// {type,payload} envelope as every other message, so existing consumers that
+	// switch on type are unaffected.
+	MsgNotify MessageType = "NOTIFY"
+	Error     MessageType = "ERROR"
 )
 
 type WSMessage struct {
@@ -68,17 +76,62 @@ type FileNode struct {
 	Children []FileNode `json:"children,omitempty"`
 }
 
+// wsClient wraps one WebSocket connection with a write mutex. gorilla/websocket
+// permits only one concurrent writer per connection; the read-loop's responses
+// and the notify-drain goroutine both write, so every write goes through here.
+type wsClient struct {
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+}
+
+func (c *wsClient) writeMessage(msgType MessageType, payload interface{}) error {
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	msg := WSMessage{Type: msgType, Payload: json.RawMessage(payloadData)}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func (c *wsClient) sendError(errMsg string) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	msg := WSMessage{
+		Type:    Error,
+		Payload: json.RawMessage(fmt.Sprintf(`{"message": %q}`, errMsg)),
+	}
+	data, _ := json.Marshal(msg)
+	_ = c.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func (c *wsClient) sendResponse(msgType MessageType, payload interface{}) {
+	if err := c.writeMessage(msgType, payload); err != nil {
+		c.sendError("Failed to marshal response")
+	}
+}
+
 type Manager struct {
 	storage       storage.StorageService
 	drafts        *drafts.Manager
+	notify        *notify.Center
 	originChecker func(*http.Request) bool
 	upgrader      websocket.Upgrader
+	notifyDrops   atomic.Int64
 }
 
-func NewManager(s storage.StorageService, d *drafts.Manager) *Manager {
+// NewManager builds the /ws/ui manager. notifyCenter may be nil (e.g. in tests);
+// when nil, no NOTIFY events are pushed but every other message works unchanged.
+func NewManager(s storage.StorageService, d *drafts.Manager, notifyCenter *notify.Center) *Manager {
 	m := &Manager{
 		storage: s,
 		drafts:  d,
+		notify:  notifyCenter,
 	}
 	m.upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -97,6 +150,10 @@ func (m *Manager) SetOriginChecker(fn func(*http.Request) bool) {
 	m.originChecker = fn
 }
 
+// NotifyDrops reports how many notify events were dropped because a client's
+// send buffer was full (observability; used by tests).
+func (m *Manager) NotifyDrops() int64 { return m.notifyDrops.Load() }
+
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn, err := m.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -104,7 +161,34 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	client := &wsClient{conn: conn}
 
+	// Subscribe to the notification center and forward events to this browser as
+	// NOTIFY messages. The callback is non-blocking: it pushes onto a bounded
+	// buffer and drops on full so a slow client cannot stall the publisher
+	// (directive §4.2 / §5.3). A nil center yields a no-op subscription.
+	events := make(chan notify.Event, 64)
+	unsubscribe := m.notify.Subscribe(func(e notify.Event) {
+		select {
+		case events <- e:
+		default:
+			m.notifyDrops.Add(1)
+			log.Printf("notify subscriber buffer full, dropping event kind=%s target=%s path=%s",
+				e.Kind, e.Target, e.Path)
+		}
+	})
+
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for e := range events {
+			if err := client.writeMessage(MsgNotify, e); err != nil {
+				return // write failure: the connection is going away
+			}
+		}
+	}()
+
+	// Read loop: request/response, unchanged in behaviour.
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -113,54 +197,34 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		var wsMsg WSMessage
 		if err := json.Unmarshal(message, &wsMsg); err != nil {
-			m.sendError(conn, "Invalid message format")
+			client.sendError("Invalid message format")
 			continue
 		}
 
 		switch wsMsg.Type {
 		case GetProjects:
-			m.handleGetProjects(conn, wsMsg.Payload)
+			m.handleGetProjects(client, wsMsg.Payload)
 		case GetTree:
-			m.handleGetTree(conn, wsMsg.Payload)
+			m.handleGetTree(client, wsMsg.Payload)
 		case ReadFile:
-			m.handleReadFile(conn, wsMsg.Payload)
+			m.handleReadFile(client, wsMsg.Payload)
 		case WriteDraft:
-			m.handleWriteDraft(conn, wsMsg.Payload)
+			m.handleWriteDraft(client, wsMsg.Payload)
 		case SaveFile:
-			m.handleSaveFile(conn, wsMsg.Payload)
+			m.handleSaveFile(client, wsMsg.Payload)
 		case MsgCreateProject:
-			m.handleCreateProject(conn, wsMsg.Payload)
+			m.handleCreateProject(client, wsMsg.Payload)
 		default:
-			m.sendError(conn, "Unknown message type")
+			client.sendError("Unknown message type")
 		}
 	}
-}
 
-func (m *Manager) sendError(conn *websocket.Conn, errMsg string) {
-	msg := WSMessage{
-		Type:    Error,
-		Payload: json.RawMessage(fmt.Sprintf(`{"message": %q}`, errMsg)),
-	}
-	data, _ := json.Marshal(msg)
-	conn.WriteMessage(websocket.TextMessage, data)
-}
-
-func (m *Manager) sendResponse(conn *websocket.Conn, msgType MessageType, payload interface{}) {
-	payloadData, err := json.Marshal(payload)
-	if err != nil {
-		m.sendError(conn, "Failed to marshal response")
-		return
-	}
-	msg := WSMessage{
-		Type:    msgType,
-		Payload: json.RawMessage(payloadData),
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		m.sendError(conn, "Failed to marshal message")
-		return
-	}
-	conn.WriteMessage(websocket.TextMessage, data)
+	// Connection is closing. Unsubscribe first so no further callback runs (the
+	// unsubscribe returns only after any in-flight fan-out completes), then close
+	// the channel so the drain goroutine exits. Ordering avoids send-on-closed.
+	unsubscribe()
+	close(events)
+	<-drainDone
 }
 
 // ProjectInfo is one project entry in the GET_PROJECTS response: its namespace,
@@ -183,10 +247,10 @@ type projectStateReader interface {
 // is ignored: the Web UI receives the full set and filters client-side (B-13 /
 // B-22). The state badge and recovery dialog (storage redesign) read the same
 // state field, unchanged.
-func (m *Manager) handleGetProjects(conn *websocket.Conn, payload json.RawMessage) {
+func (m *Manager) handleGetProjects(client *wsClient, payload json.RawMessage) {
 	namespaces, err := m.storage.ListNamespaces()
 	if err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to list namespaces: %v", err))
+		client.sendError(fmt.Sprintf("Failed to list namespaces: %v", err))
 		return
 	}
 
@@ -195,7 +259,7 @@ func (m *Manager) handleGetProjects(conn *websocket.Conn, payload json.RawMessag
 	for _, ns := range namespaces {
 		projects, err := m.storage.ListProjects(ns)
 		if err != nil {
-			m.sendError(conn, fmt.Sprintf("Failed to list projects: %v", err))
+			client.sendError(fmt.Sprintf("Failed to list projects: %v", err))
 			return
 		}
 		for _, name := range projects {
@@ -206,40 +270,40 @@ func (m *Manager) handleGetProjects(conn *websocket.Conn, payload json.RawMessag
 			infos = append(infos, ProjectInfo{Namespace: ns, Name: name, State: state})
 		}
 	}
-	m.sendResponse(conn, GetProjects, infos)
+	client.sendResponse(GetProjects, infos)
 }
 
-func (m *Manager) handleCreateProject(conn *websocket.Conn, payload json.RawMessage) {
+func (m *Manager) handleCreateProject(client *wsClient, payload json.RawMessage) {
 	var p CreateProjectPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		m.sendError(conn, "Invalid payload for CREATE_PROJECT")
+		client.sendError("Invalid payload for CREATE_PROJECT")
 		return
 	}
 
 	if err := m.storage.CreateProject(p.Namespace, p.ProjectName); err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to create project: %v", err))
+		client.sendError(fmt.Sprintf("Failed to create project: %v", err))
 		return
 	}
 
-	m.sendResponse(conn, MsgCreateProject, map[string]string{
+	client.sendResponse(MsgCreateProject, map[string]string{
 		"status": "ok",
 	})
 }
 
-func (m *Manager) handleGetTree(conn *websocket.Conn, payload json.RawMessage) {
+func (m *Manager) handleGetTree(client *wsClient, payload json.RawMessage) {
 	var p GetTreePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		m.sendError(conn, "Invalid payload for GET_TREE")
+		client.sendError("Invalid payload for GET_TREE")
 		return
 	}
 
 	tree, err := m.getTree(p.Namespace, p.ProjectName, "")
 	if err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to get tree: %v", err))
+		client.sendError(fmt.Sprintf("Failed to get tree: %v", err))
 		return
 	}
 
-	m.sendResponse(conn, GetTree, tree)
+	client.sendResponse(GetTree, tree)
 }
 
 func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, error) {
@@ -274,61 +338,61 @@ func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, erro
 	return nodes, nil
 }
 
-func (m *Manager) handleReadFile(conn *websocket.Conn, payload json.RawMessage) {
+func (m *Manager) handleReadFile(client *wsClient, payload json.RawMessage) {
 	var p ReadFilePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		m.sendError(conn, "Invalid payload for READ_FILE")
+		client.sendError("Invalid payload for READ_FILE")
 		return
 	}
 
 	content, err := m.storage.ReadFile(p.Namespace, p.ProjectName, p.Path)
 	if err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to read file: %v", err))
+		client.sendError(fmt.Sprintf("Failed to read file: %v", err))
 		return
 	}
 
-	m.sendResponse(conn, ReadFile, map[string]string{
+	client.sendResponse(ReadFile, map[string]string{
 		"path":    p.Path,
 		"content": content,
 	})
 }
 
-func (m *Manager) handleWriteDraft(conn *websocket.Conn, payload json.RawMessage) {
+func (m *Manager) handleWriteDraft(client *wsClient, payload json.RawMessage) {
 	var p WriteDraftPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		m.sendError(conn, "Invalid payload for WRITE_DRAFT")
+		client.sendError("Invalid payload for WRITE_DRAFT")
 		return
 	}
 
 	draftPath, err := m.drafts.GetDraftPath(p.Namespace, p.ProjectName, p.Path)
 	if err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to get draft path: %v", err))
+		client.sendError(fmt.Sprintf("Failed to get draft path: %v", err))
 		return
 	}
 
 	if err := m.drafts.SaveDraft(draftPath, []byte(p.Content)); err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to save draft: %v", err))
+		client.sendError(fmt.Sprintf("Failed to save draft: %v", err))
 		return
 	}
 
-	m.sendResponse(conn, WriteDraft, map[string]string{
+	client.sendResponse(WriteDraft, map[string]string{
 		"status": "ok",
 	})
 }
 
-func (m *Manager) handleSaveFile(conn *websocket.Conn, payload json.RawMessage) {
+func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	var p SaveFilePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		m.sendError(conn, "Invalid payload for SAVE_FILE")
+		client.sendError("Invalid payload for SAVE_FILE")
 		return
 	}
 
 	if err := m.storage.WriteFile(p.Namespace, p.ProjectName, p.Path, p.Content); err != nil {
-		m.sendError(conn, fmt.Sprintf("Failed to save file: %v", err))
+		client.sendError(fmt.Sprintf("Failed to save file: %v", err))
 		return
 	}
 
-	m.sendResponse(conn, SaveAck, map[string]string{
+	client.sendResponse(SaveAck, map[string]string{
 		"path":   p.Path,
 		"status": "ok",
 	})

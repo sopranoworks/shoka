@@ -29,7 +29,7 @@ func TestManager_ServeHTTP(t *testing.T) {
 		t.Fatalf("failed to create draft manager: %v", err)
 	}
 
-	m := NewManager(s, dm)
+	m := NewManager(s, dm, nil)
 	server := httptest.NewServer(m)
 	defer server.Close()
 
