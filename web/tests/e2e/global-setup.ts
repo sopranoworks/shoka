@@ -76,6 +76,14 @@ async function seed(wsUrl: string): Promise<void> {
     path: 'guides/intro.md',
     content: '# Intro\n\nA nested document for expand-to-active.\n',
   })
+  // A non-markdown file: must render as plain text, not markdown. The "#" line
+  // would become an <h1> if it were (wrongly) rendered as markdown.
+  await rpc(ws, 'SAVE_FILE', {
+    namespace: 'demo',
+    projectName: 'docs',
+    path: 'config.yaml',
+    content: 'name: docs\nversion: 1\n# not a heading\n',
+  })
   // team/handbook — a second namespace, for switch-namespace / switch-project.
   await rpc(ws, 'CREATE_PROJECT', { namespace: 'team', projectName: 'handbook' })
   await rpc(ws, 'SAVE_FILE', {
