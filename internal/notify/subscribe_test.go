@@ -159,7 +159,7 @@ func TestSubscribe_NilReceiverReturnsNoopUnsubscribe(t *testing.T) {
 	if unsub == nil {
 		t.Fatal("Subscribe on nil receiver must return a non-nil no-op unsubscribe")
 	}
-	unsub() // must not panic
+	unsub()                                   // must not panic
 	c.Notify("file.write", "ns/proj", "a.md") // nil receiver, still a no-op
 }
 
