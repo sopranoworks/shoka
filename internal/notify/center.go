@@ -3,11 +3,12 @@
 // as they occur during storage operations.
 //
 // The center is deliberately minimal (the 2026-05-30 notification-center MVP
-// directive): a bounded in-memory ring buffer plus three methods. There is no
-// subscriber API, no transport binding, no persistence, and no coupling to the
-// WAL — it is a lossy, side-channel observation point that future consumers
-// (Web UI auto-refresh, drift-rescan triggers) read from via Snapshot/Since.
-// Publishing never affects storage correctness.
+// directive): a bounded in-memory ring buffer plus the Snapshot/Since readers.
+// The 2026-05-31 Web UI auto-refresh directive added a push API, Subscribe, so
+// the /ws/ui WebSocket can forward events to browsers live. There is still no
+// transport binding inside the center, no persistence, and no coupling to the
+// WAL — it is a lossy, side-channel observation point. Publishing never affects
+// storage correctness and never blocks on a subscriber.
 //
 // Event kinds published by storage:
 //   - "file.write"                  — a write_file succeeded (target=ns/project, path=rel)
@@ -48,6 +49,13 @@ type Center struct {
 	next    uint64  // Seq to assign to the next event (monotonic, starts at 1)
 	writeIx int     // index in buf for the next write
 	count   int     // number of slots filled (<= len(buf)); caps at len(buf)
+
+	// Subscribers receive every event published from now on (the 2026-05-31
+	// push API). Guarded by subMu, independent of mu so the ring-buffer write
+	// and the fan-out do not contend. Callbacks must be non-blocking.
+	subMu     sync.RWMutex
+	subs      map[uint64]func(Event)
+	nextSubID uint64
 }
 
 // NewCenter creates a Center with a ring buffer of the given maximum size.
@@ -72,19 +80,65 @@ func (c *Center) Notify(kind, target, path string) {
 		return
 	}
 	c.mu.Lock()
-	c.buf[c.writeIx] = Event{
+	ev := Event{
 		Seq:       c.next,
 		Timestamp: time.Now(),
 		Kind:      kind,
 		Target:    target,
 		Path:      path,
 	}
+	c.buf[c.writeIx] = ev
 	c.next++
 	c.writeIx = (c.writeIx + 1) % len(c.buf)
 	if c.count < len(c.buf) {
 		c.count++
 	}
 	c.mu.Unlock()
+
+	// Fan out to subscribers (push API). Held under the read lock only across the
+	// iteration; callbacks are contractually non-blocking (they push to their own
+	// buffered channel and drop on full), so a slow subscriber cannot stall this
+	// publisher. mu is already released, so the two locks never nest.
+	c.subMu.RLock()
+	for _, cb := range c.subs {
+		cb(ev)
+	}
+	c.subMu.RUnlock()
+}
+
+// Subscribe registers a callback to receive every event published from now on.
+// The returned function unsubscribes; it must be called when the subscriber goes
+// away (e.g. the WebSocket disconnects).
+//
+// The callback runs on the publisher's goroutine, under the center's subscriber
+// read lock. It MUST be fast and non-blocking: the expected pattern is to push
+// the event onto a buffered channel that the subscriber drains separately, and
+// to drop the event if that channel is full. A callback that blocks will stall
+// the publisher; a callback that drops loses only its own subscriber's event.
+// The callback must not call its own unsubscribe synchronously (that would
+// deadlock on the subscriber lock); unsubscribe from a different goroutine.
+//
+// Within one subscriber, events arrive in publish order. There is no ordering
+// guarantee across subscribers. Subscribe is safe to call from any goroutine and
+// concurrently with Notify. On a nil receiver it returns a no-op unsubscribe.
+func (c *Center) Subscribe(callback func(Event)) (unsubscribe func()) {
+	if c == nil || callback == nil {
+		return func() {}
+	}
+	c.subMu.Lock()
+	if c.subs == nil {
+		c.subs = make(map[uint64]func(Event))
+	}
+	c.nextSubID++
+	id := c.nextSubID
+	c.subs[id] = callback
+	c.subMu.Unlock()
+
+	return func() {
+		c.subMu.Lock()
+		delete(c.subs, id)
+		c.subMu.Unlock()
+	}
 }
 
 // Snapshot returns up to the most recent maxEntries events in seq order
