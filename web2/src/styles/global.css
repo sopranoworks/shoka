@@ -134,19 +134,6 @@ button {
   background-clip: content-box;
 }
 
-/* CodeMirror should fill its flex container in the edit view. */
-.cm-theme,
-.cm-theme-light,
-.cm-theme-dark {
-  height: 100%;
-}
-.cm-editor {
-  height: 100%;
-}
-.cm-editor .cm-scroller {
-  font-family: var(--font-mono);
-}
-
 kbd {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);

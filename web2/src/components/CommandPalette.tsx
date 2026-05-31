@@ -12,13 +12,10 @@ import './cmdk.css'
 function useContextRefs() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const pm = pathname.match(/^\/p\/([^/]+)\/([^/]+)/)
-  const fm = pathname.match(/^\/p\/[^/]+\/[^/]+\/(?:blob|edit)\/(.*)$/)
   return {
     pathname,
     ns: pm ? decodeURIComponent(pm[1]) : null,
     proj: pm ? decodeURIComponent(pm[2]) : null,
-    filePath: fm ? fm[1] : null,
-    inEdit: /\/edit\//.test(pathname),
   }
 }
 
@@ -59,25 +56,10 @@ export function CommandPalette() {
         void navigator.clipboard?.writeText(window.location.href).catch(() => {})
         return
       }
-      // Open current file in editor: Cmd/Ctrl+E
-      if (meta && !e.shiftKey && (e.key === 'e' || e.key === 'E')) {
-        if (ctx.filePath && ctx.ns && ctx.proj && !ctx.inEdit) {
-          e.preventDefault()
-          navigate({
-            to: '/p/$namespace/$project/edit/$',
-            params: {
-              namespace: ctx.ns,
-              project: ctx.proj,
-              _splat: ctx.filePath,
-            },
-          })
-        }
-        return
-      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggle, navigate, ctx.filePath, ctx.ns, ctx.proj, ctx.inEdit])
+  }, [toggle])
 
   const fileResults = useMemo(() => {
     if (!project) return []
@@ -154,24 +136,6 @@ export function CommandPalette() {
                   setPage('files')
                 }}
               />
-              {ctx.filePath && !ctx.inEdit && (
-                <CmdItem
-                  label="Open Current File in Editor"
-                  kbd="⌘E"
-                  onSelect={() =>
-                    run(() =>
-                      navigate({
-                        to: '/p/$namespace/$project/edit/$',
-                        params: {
-                          namespace: ctx.ns!,
-                          project: ctx.proj!,
-                          _splat: ctx.filePath!,
-                        },
-                      }),
-                    )
-                  }
-                />
-              )}
             </Command.Group>
 
             <Command.Group heading="Navigation" className={styles.group}>

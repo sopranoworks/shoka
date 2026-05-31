@@ -1,4 +1,3 @@
-import { Link } from '@tanstack/react-router'
 import { blobRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
 import { Markdown } from '../components/Markdown'
@@ -15,16 +14,6 @@ export function BlobPage() {
         <span className={styles.filePath} title={path}>
           {path}
         </span>
-        <div className={styles.toolbarRight}>
-          <span className={styles.modeActive}>Preview</span>
-          <Link
-            to="/p/$namespace/$project/edit/$"
-            params={{ namespace, project, _splat: path }}
-            className={styles.editLink}
-          >
-            Edit <kbd>⌘E</kbd>
-          </Link>
-        </div>
       </div>
 
       <div className={styles.body}>

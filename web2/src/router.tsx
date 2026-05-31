@@ -8,7 +8,6 @@ import { Shell } from './components/Shell'
 import { RepoListPage } from './pages/RepoListPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { BlobPage } from './pages/BlobPage'
-import { EditPage } from './pages/EditPage'
 
 // Root renders the persistent docked shell. The shell never unmounts; only
 // the <Outlet/> inside its content region swaps on navigation.
@@ -43,25 +42,15 @@ const projectRoute = createRoute({
 })
 
 // "/p/$namespace/$project/blob/$" file view (splat captures the rest as path).
+// Viewing is the primary surface this session. The edit route (/edit/$) lands
+// in session 3; until then editing happens via MCP write_file.
 const blobRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/p/$namespace/$project/blob/$',
   component: BlobPage,
 })
 
-// "/p/$namespace/$project/edit/$" edit view (splat path).
-const editRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/p/$namespace/$project/edit/$',
-  component: EditPage,
-})
-
-const routeTree = rootRoute.addChildren([
-  indexRoute,
-  projectRoute,
-  blobRoute,
-  editRoute,
-])
+const routeTree = rootRoute.addChildren([indexRoute, projectRoute, blobRoute])
 
 export const router = createRouter({
   routeTree,
@@ -74,11 +63,4 @@ declare module '@tanstack/react-router' {
   }
 }
 
-export {
-  rootRoute,
-  indexRoute,
-  projectRoute,
-  blobRoute,
-  editRoute,
-  type IndexSearch,
-}
+export { rootRoute, indexRoute, projectRoute, blobRoute, type IndexSearch }
