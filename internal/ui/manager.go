@@ -34,6 +34,14 @@ const (
 	// carries the current etag) without parsing a free-form error string.
 	MsgConflict      MessageType = "CONFLICT"
 	MsgCreateProject MessageType = "CREATE_PROJECT"
+	// MsgSearchFiles requests a project-scoped full-text/filename search and
+	// MsgSearchResult carries the matches back. Search is read-only and
+	// project-scoped: it wires the existing storage.SearchFiles capability (the
+	// same one the MCP search_files tool uses) to the /ws/ui request/response
+	// dispatch, mirroring READ_FILE. There is deliberately no cross-project
+	// variant — the storage layer searches one project at a time.
+	MsgSearchFiles  MessageType = "SEARCH_FILES"
+	MsgSearchResult MessageType = "SEARCH_RESULT"
 	// MsgNotify carries one notify.Event pushed from the server to the browser
 	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
 	// {type,payload} envelope as every other message, so existing consumers that
@@ -89,6 +97,23 @@ type ConflictPayload struct {
 	Path        string `json:"path"`
 	CurrentETag string `json:"current_etag"`
 	Message     string `json:"message"`
+}
+
+// SearchFilesPayload is the SEARCH_FILES request body. SearchIn is optional and
+// defaults to "both" (filename + content) in the storage layer; it mirrors the
+// MCP search_files tool's input minus the tool-only validation.
+type SearchFilesPayload struct {
+	Namespace   string `json:"namespace"`
+	ProjectName string `json:"projectName"`
+	Query       string `json:"query"`
+	SearchIn    string `json:"search_in,omitempty"`
+}
+
+// SearchResultPayload is the SEARCH_RESULT frame's body: the matches, each a
+// {path, snippet}. The slice is always non-nil so the client receives [] rather
+// than null on a no-match query.
+type SearchResultPayload struct {
+	Matches []storage.SearchMatch `json:"matches"`
 }
 
 type FileNode struct {
@@ -251,6 +276,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleSaveFile(client, wsMsg.Payload)
 		case MsgCreateProject:
 			m.handleCreateProject(client, wsMsg.Payload)
+		case MsgSearchFiles:
+			m.handleSearchFiles(client, wsMsg.Payload)
 		default:
 			client.sendError("Unknown message type")
 		}
@@ -398,6 +425,30 @@ func (m *Manager) handleReadFile(client *wsClient, payload json.RawMessage) {
 		"content": content,
 		"etag":    etag,
 	})
+}
+
+// handleSearchFiles runs a project-scoped search via the shared
+// storage.SearchFiles capability and returns the matches. It is read-only — no
+// commit, no NOTIFY — so, like handleReadFile, it carries no identity or sender
+// context. A nil result is normalised to an empty slice so the wire shape is
+// always {"matches": [...]}.
+func (m *Manager) handleSearchFiles(client *wsClient, payload json.RawMessage) {
+	var p SearchFilesPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for SEARCH_FILES")
+		return
+	}
+
+	matches, err := m.storage.SearchFiles(p.Namespace, p.ProjectName, p.Query, p.SearchIn)
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to search files: %v", err))
+		return
+	}
+	if matches == nil {
+		matches = []storage.SearchMatch{}
+	}
+
+	client.sendResponse(MsgSearchResult, SearchResultPayload{Matches: matches})
 }
 
 func (m *Manager) handleWriteDraft(client *wsClient, payload json.RawMessage) {
