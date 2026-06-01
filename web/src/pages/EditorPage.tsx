@@ -7,6 +7,7 @@ import { editRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
 import { useEditSignal } from '../lib/editSignal'
 import { useEditorBuffer } from '../lib/useEditorBuffer'
+import { languageForPath } from '../lib/cmLanguages'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { useTheme } from '../lib/theme'
@@ -241,11 +242,17 @@ export function EditorPage() {
     })
   }, [navigate, namespace, project, path])
 
+  // Language extension by file extension (session 4): markdown gets
+  // @codemirror/lang-markdown back; code files get their language. The packages
+  // travel in the lazy editor chunk, not the initial bundle.
+  const langExtensions = useMemo(() => languageForPath(path), [path])
+
   const cm = (
     <CodeMirror
       value={content}
       onChange={setContent}
       theme={theme === 'dark' ? 'dark' : 'light'}
+      extensions={langExtensions}
       height="100%"
       className={styles.editor}
     />

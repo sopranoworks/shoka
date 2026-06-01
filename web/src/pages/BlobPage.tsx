@@ -1,9 +1,15 @@
+import { lazy, Suspense } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { blobRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
-import { classifyFile } from '../lib/fileKind'
+import { classifyFile, isHighlightableCode } from '../lib/fileKind'
 import { Markdown } from '../components/Markdown'
 import styles from './FilePage.module.css'
+
+// CodeView pulls in CodeMirror; lazy-load it so the (markdown-dominant) viewer's
+// initial bundle stays free of the editor chunk. It only mounts for non-markdown
+// code files, which are rare in the corpus.
+const CodeView = lazy(() => import('../components/CodeView'))
 
 export function BlobPage() {
   const { namespace, project, _splat } = blobRoute.useParams()
@@ -11,8 +17,9 @@ export function BlobPage() {
   const navigate = useNavigate()
   const { data, isError } = useFileQuery(namespace, project, path)
 
-  // Rendering policy (§1.4.1): .md -> rendered markdown; other text -> plain
-  // <pre>; binary -> placeholder. Syntax highlighting is session 4.
+  // Rendering policy: .md -> rendered markdown (fences highlighted); recognised
+  // source files -> read-only highlighted CodeView; other text -> plain <pre>;
+  // binary -> placeholder.
   const kind = data ? classifyFile(path, data.content) : null
 
   return (
@@ -51,6 +58,10 @@ export function BlobPage() {
           <div className={styles.placeholder}>
             Binary file — cannot preview.
           </div>
+        ) : isHighlightableCode(path) ? (
+          <Suspense fallback={<pre className={styles.plain}>{data.content}</pre>}>
+            <CodeView path={path} content={data.content} />
+          </Suspense>
         ) : (
           <pre className={styles.plain}>{data.content}</pre>
         )}
