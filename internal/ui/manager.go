@@ -101,9 +101,16 @@ type FileNode struct {
 // wsClient wraps one WebSocket connection with a write mutex. gorilla/websocket
 // permits only one concurrent writer per connection; the read-loop's responses
 // and the notify-drain goroutine both write, so every write goes through here.
+//
+// id is this connection's sender identity (the 2026-06-01 sender-exclusion
+// directive): the connection subscribes to the notify center under it, and its
+// own writes carry it (via notify.WithSender on the write context) so the center
+// does not echo the write back to this connection. It is unique per connection
+// for the life of the process ("ws-<seq>").
 type wsClient struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
+	id      string
 }
 
 func (c *wsClient) writeMessage(msgType MessageType, payload interface{}) error {
@@ -145,6 +152,9 @@ type Manager struct {
 	originChecker func(*http.Request) bool
 	upgrader      websocket.Upgrader
 	notifyDrops   atomic.Int64
+	// connSeq assigns each connection a unique sender id ("ws-<seq>"). Atomic so
+	// concurrent upgrades never collide on an id.
+	connSeq atomic.Uint64
 }
 
 // NewManager builds the /ws/ui manager. notifyCenter may be nil (e.g. in tests);
@@ -183,14 +193,19 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-	client := &wsClient{conn: conn}
+	client := &wsClient{conn: conn, id: fmt.Sprintf("ws-%d", m.connSeq.Add(1))}
 
 	// Subscribe to the notification center and forward events to this browser as
 	// NOTIFY messages. The callback is non-blocking: it pushes onto a bounded
 	// buffer and drops on full so a slow client cannot stall the publisher
 	// (directive §4.2 / §5.3). A nil center yields a no-op subscription.
+	//
+	// SubscribeAs ties the subscription to this connection's sender id so the
+	// center excludes this connection from events it originated (2026-06-01
+	// sender-exclusion directive): a write made on this connection is not echoed
+	// back to it as if a second actor had made it.
 	events := make(chan notify.Event, 64)
-	unsubscribe := m.notify.Subscribe(func(e notify.Event) {
+	unsubscribe := m.notify.SubscribeAs(client.id, func(e notify.Event) {
 		select {
 		case events <- e:
 		default:
@@ -302,7 +317,10 @@ func (m *Manager) handleCreateProject(client *wsClient, payload json.RawMessage)
 		return
 	}
 
-	if err := m.storage.CreateProject(p.Namespace, p.ProjectName); err != nil {
+	// Sender identity: this connection originated the create, so the resulting
+	// project.create NOTIFY must not be echoed back to it (2026-06-01 directive).
+	ctx := notify.WithSender(context.Background(), client.id)
+	if err := m.storage.CreateProjectCtx(ctx, p.Namespace, p.ProjectName); err != nil {
 		client.sendError(fmt.Sprintf("Failed to create project: %v", err))
 		return
 	}
@@ -419,6 +437,9 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	// (the old WriteFile path used context.Background() and resolved to the default
 	// agent).
 	ctx := identity.WithUser(context.Background(), identity.User{})
+	// Sender identity: this connection originated the write, so the resulting
+	// file.write NOTIFY must not be echoed back to it (2026-06-01 directive).
+	ctx = notify.WithSender(ctx, client.id)
 
 	// if_match present → optimistic concurrency; absent → unchecked write (nil),
 	// preserving the pre-versioning behaviour for callers that have not adopted it.
