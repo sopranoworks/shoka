@@ -28,13 +28,26 @@ test('markdown renders GFM (tables)', async ({ page }) => {
   await expect(page.locator('table')).toBeVisible()
 })
 
-test('non-markdown files render as plain text, not markdown', async ({
+test('plain-text files render as a plain <pre>, not markdown', async ({
+  page,
+}) => {
+  await page.goto('/p/demo/docs/blob/notes.txt')
+  // The raw content appears verbatim in a <pre>...
+  await expect(page.locator('pre')).toContainText('plain notes')
+  // ...and the "# not a heading" line is NOT promoted to a real heading.
+  await expect(
+    page.getByRole('heading', { name: 'not a heading' }),
+  ).toHaveCount(0)
+})
+
+test('recognised code files render highlighted in CodeView, not markdown', async ({
   page,
 }) => {
   await page.goto('/p/demo/docs/blob/config.yaml')
-  // The raw content appears verbatim in a <pre>...
-  await expect(page.locator('pre')).toContainText('name: docs')
-  // ...and the "# not a heading" line is NOT promoted to a real heading.
+  // A read-only CodeMirror mounts (session 4 syntax highlighting)...
+  await expect(page.locator('.cm-editor')).toBeVisible()
+  await expect(page.getByText('name: docs')).toBeVisible()
+  // ...and the yaml "# not a heading" comment is never an <h1>.
   await expect(
     page.getByRole('heading', { name: 'not a heading' }),
   ).toHaveCount(0)

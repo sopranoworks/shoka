@@ -1,5 +1,5 @@
-import { lazy, Suspense } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { lazy, Suspense, useEffect, useRef } from 'react'
+import { useNavigate, useElementScrollRestoration } from '@tanstack/react-router'
 import { blobRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
 import { classifyFile, isHighlightableCode } from '../lib/fileKind'
@@ -16,6 +16,23 @@ export function BlobPage() {
   const path = _splat ?? ''
   const navigate = useNavigate()
   const { data, isError } = useFileQuery(namespace, project, path)
+
+  // Scroll-position restoration for the file body. The router's automatic
+  // restore fires on navigation, but the file content loads async (TanStack
+  // Query over /ws/ui), so on a cold reload the scroll element is still short
+  // when the auto-restore runs and the offset clamps to 0. Re-apply the cached
+  // offset once, after the content has rendered (the element is now tall). Keyed
+  // by the same data-scroll-restoration-id below.
+  const scrollEntry = useElementScrollRestoration({ id: 'file-body' })
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    if (restoredRef.current) return
+    if (data && scrollEntry?.scrollY && bodyRef.current) {
+      bodyRef.current.scrollTop = scrollEntry.scrollY
+      restoredRef.current = true
+    }
+  }, [data, scrollEntry])
 
   // Rendering policy: .md -> rendered markdown (fences highlighted); recognised
   // source files -> read-only highlighted CodeView; other text -> plain <pre>;
@@ -45,7 +62,11 @@ export function BlobPage() {
         )}
       </div>
 
-      <div className={styles.body} data-scroll-restoration-id="file-body">
+      <div
+        ref={bodyRef}
+        className={styles.body}
+        data-scroll-restoration-id="file-body"
+      >
         {isError ? (
           <div className={styles.error}>
             File not found: <code>{path}</code>

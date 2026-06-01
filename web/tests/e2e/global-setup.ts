@@ -76,13 +76,41 @@ async function seed(wsUrl: string): Promise<void> {
     path: 'guides/intro.md',
     content: '# Intro\n\nA nested document for expand-to-active.\n',
   })
-  // A non-markdown file: must render as plain text, not markdown. The "#" line
-  // would become an <h1> if it were (wrongly) rendered as markdown.
+  // A recognised code file (yaml): session 4 renders it in a read-only
+  // CodeMirror (CodeView), highlighted — not markdown. The "#" line is a yaml
+  // comment, never an <h1>.
   await rpc(ws, 'SAVE_FILE', {
     namespace: 'demo',
     projectName: 'docs',
     path: 'config.yaml',
     content: 'name: docs\nversion: 1\n# not a heading\n',
+  })
+  // A plain-text file with no recognised language: must still render as a plain
+  // <pre>, not markdown and not CodeMirror.
+  await rpc(ws, 'SAVE_FILE', {
+    namespace: 'demo',
+    projectName: 'docs',
+    path: 'notes.txt',
+    content: 'plain notes\n# not a heading\n',
+  })
+  // Markdown with a fenced code block: session 4 highlights fences via
+  // rehype-highlight (the .hljs class is the stable hook).
+  await rpc(ws, 'SAVE_FILE', {
+    namespace: 'demo',
+    projectName: 'docs',
+    path: 'code.md',
+    content:
+      '# Code\n\n```go\nfunc main() {\n\tprintln("hi")\n}\n```\n',
+  })
+  // A long markdown file so scroll-position restoration is observable.
+  await rpc(ws, 'SAVE_FILE', {
+    namespace: 'demo',
+    projectName: 'docs',
+    path: 'long.md',
+    content:
+      '# Long\n\n' +
+      Array.from({ length: 200 }, (_, i) => `Paragraph number ${i} with some text.`).join('\n\n') +
+      '\n',
   })
   // team/handbook — a second namespace, for switch-namespace / switch-project.
   await rpc(ws, 'CREATE_PROJECT', { namespace: 'team', projectName: 'handbook' })
