@@ -1,9 +1,8 @@
-import { useMemo } from 'react'
-import { Link, useRouterState } from '@tanstack/react-router'
+import { useMemo, useState } from 'react'
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import type { RailView } from './ActivityRail'
 import { FileTree } from './FileTree'
 import { useProjectsQuery, useTreeQuery } from '../lib/queries'
-import { usePalette } from '../lib/palette'
 import type { ProjectInfo } from '../lib/types'
 import styles from './Sidebar.module.css'
 
@@ -24,7 +23,7 @@ function useActiveFilePath(): string | null {
 export function Sidebar({ view }: { view: RailView }) {
   const ref = useActiveProjectRef()
   if (view === 'namespaces') return <NamespacesView />
-  if (view === 'search') return <SearchView hasProject={!!ref} />
+  if (view === 'search') return <SearchView projectRef={ref} />
   if (view === 'history') return <HistoryView />
   return <ExplorerView />
 }
@@ -130,21 +129,56 @@ function NamespacesView() {
   )
 }
 
-function SearchView({ hasProject }: { hasProject: boolean }) {
-  const { openPalette } = usePalette()
+// Project-scoped full-text search. The form navigates to the search route,
+// where the URL's ?q= is the source of truth; this sidebar input is just an
+// entry point. Search needs a project in context (the backend searches one
+// project at a time).
+function SearchView({ projectRef }: { projectRef: { ns: string; proj: string } | null }) {
+  const navigate = useNavigate()
+  const [term, setTerm] = useState('')
+
+  if (!projectRef) {
+    return (
+      <div className={styles.pane}>
+        <SectionHeader>Search</SectionHeader>
+        <div className={styles.empty}>
+          Open a project to search its files.
+          <br />
+          <Link to="/" className={styles.emptyLink}>
+            Choose a repository →
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={styles.pane}>
       <SectionHeader>Search</SectionHeader>
+      <form
+        className={styles.searchForm}
+        onSubmit={(e) => {
+          e.preventDefault()
+          void navigate({
+            to: '/p/$namespace/$project/search',
+            params: { namespace: projectRef.ns, project: projectRef.proj },
+            search: term.trim() ? { q: term.trim() } : {},
+          })
+        }}
+      >
+        <input
+          className={styles.searchInput}
+          type="search"
+          value={term}
+          onChange={(e) => setTerm(e.target.value)}
+          placeholder={`Search ${projectRef.proj}…`}
+          aria-label="Search files"
+        />
+      </form>
       <div className={styles.empty}>
-        Full-text search lands in session 4.
-        {hasProject && (
-          <>
-            <br />
-            <button className={styles.emptyBtn} onClick={() => openPalette('files')}>
-              Quick-open a file (⌘P)
-            </button>
-          </>
-        )}
+        Searches file names and contents in{' '}
+        <code>{projectRef.ns}/{projectRef.proj}</code>. Press <kbd>⌘⇧F</kbd> from
+        anywhere.
       </div>
     </div>
   )

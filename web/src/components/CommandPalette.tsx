@@ -13,7 +13,7 @@ import './cmdk.css'
 type Page = 'root' | 'files' | 'projects' | 'namespaces'
 
 export function CommandPalette() {
-  const { open, mode, setOpen, closePalette } = usePalette()
+  const { open, mode, setOpen, closePalette, openPalette } = usePalette()
   const navigate = useNavigate()
   const { theme, toggle } = useTheme()
 
@@ -33,6 +33,7 @@ export function CommandPalette() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const view = useMemo(() => deriveViewContext(pathname), [pathname])
   const onBlob = view.route === 'blob' && !!view.namespace && !!view.project
+  const onProject = !!view.namespace && !!view.project
 
   const editCurrentFile = useCallback(() => {
     if (view.route !== 'blob' || !view.namespace || !view.project) return
@@ -47,6 +48,22 @@ export function CommandPalette() {
   }, [view, navigate])
   const editCurrentRef = useRef(editCurrentFile)
   editCurrentRef.current = editCurrentFile
+
+  // Search the project in context (the backend searches one project at a time).
+  // When there is no project in context, fall back to opening the palette so the
+  // user can switch to one first.
+  const searchProject = useCallback(() => {
+    if (!view.namespace || !view.project) {
+      openPalette('commands')
+      return
+    }
+    void navigate({
+      to: '/p/$namespace/$project/search',
+      params: { namespace: view.namespace, project: view.project },
+    })
+  }, [view, navigate, openPalette])
+  const searchProjectRef = useRef(searchProject)
+  searchProjectRef.current = searchProject
 
   const { data: projects = [] } = useProjectsQuery()
   const namespaces = useMemo(() => namespacesOf(projects), [projects])
@@ -74,6 +91,12 @@ export function CommandPalette() {
       if (meta && !e.shiftKey && (e.key === 'e' || e.key === 'E')) {
         e.preventDefault()
         editCurrentRef.current()
+        return
+      }
+      // Search files: Cmd/Ctrl+Shift+F.
+      if (meta && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        searchProjectRef.current()
         return
       }
     }
@@ -164,6 +187,14 @@ export function CommandPalette() {
                   label="Edit current file"
                   kbd="⌘E"
                   onSelect={() => run(editCurrentFile)}
+                />
+              )}
+              {onProject && (
+                <CmdItem
+                  label="Search files"
+                  hint="In this project"
+                  kbd="⌘⇧F"
+                  onSelect={() => run(searchProject)}
                 />
               )}
             </Command.Group>

@@ -56,6 +56,24 @@
   font-size: var(--fs-sm);
 }
 
+.searchForm {
+  flex: none;
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+}
+.searchInput {
+  width: 100%;
+  background: var(--c-bg-inset);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  padding: 5px 9px;
+}
+.searchInput:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
 .list {
   overflow: auto;
   padding: var(--sp-2);

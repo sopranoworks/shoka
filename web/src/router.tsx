@@ -9,6 +9,7 @@ import { RepoListPage } from './pages/RepoListPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { BlobPage } from './pages/BlobPage'
 import { EditorPage } from './pages/EditorPage'
+import { SearchPage } from './pages/SearchPage'
 
 // Root renders the persistent docked shell. The shell never unmounts; only
 // the <Outlet/> inside its content region swaps on navigation.
@@ -58,11 +59,31 @@ const editRoute = createRoute({
   component: EditorPage,
 })
 
+// "/p/$namespace/$project/search" project-scoped full-text/filename search
+// (session 4). The query lives in the URL (?q=) so results are deep-linkable,
+// reload-safe, and Back/Forward navigable. Search is scoped to one project,
+// matching the backend SEARCH_FILES capability and design v3 §6.5's reserved
+// per-project search route.
+interface SearchSearch {
+  q?: string
+}
+
+const searchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/p/$namespace/$project/search',
+  validateSearch: (search: Record<string, unknown>): SearchSearch => {
+    const q = typeof search.q === 'string' ? search.q : undefined
+    return q ? { q } : {}
+  },
+  component: SearchPage,
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   projectRoute,
   blobRoute,
   editRoute,
+  searchRoute,
 ])
 
 export const router = createRouter({
@@ -82,5 +103,7 @@ export {
   projectRoute,
   blobRoute,
   editRoute,
+  searchRoute,
   type IndexSearch,
+  type SearchSearch,
 }

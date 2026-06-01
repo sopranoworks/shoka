@@ -43,6 +43,15 @@ export interface ConflictPayload {
   message: string
 }
 
+// One SEARCH_RESULT match (mirrors Go's storage.SearchMatch). The snippet is a
+// short context window around the match, not a line; the backend does not carry
+// a line number, so the result UI shows path + snippet and navigates to the
+// blob view (no scroll-to-line). Search is project-scoped.
+export interface SearchMatch {
+  path: string
+  snippet?: string
+}
+
 // react-arborist node, derived from FileNode via lib/tree.
 export interface TreeNode {
   id: string // unique within a project; for files this is the file path
