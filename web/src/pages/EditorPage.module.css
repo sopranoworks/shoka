@@ -1,0 +1,55 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  height: 38px;
+  padding: 0 var(--sp-4);
+  background: var(--c-bg-elev);
+  border-bottom: 1px solid var(--c-border);
+}
+.filePath {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--c-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* The editor (single-pane or the left pane of the split) fills its column. */
+.editor {
+  height: 100%;
+  font-size: var(--fs-sm);
+  overflow: auto;
+}
+.editor :global(.cm-editor) {
+  height: 100%;
+}
+.editor :global(.cm-scroller) {
+  font-family: var(--font-mono);
+}
+
+.error {
+  color: var(--c-bad);
+  padding: var(--sp-5);
+}
+.loading {
+  color: var(--c-text-faint);
+  padding: var(--sp-5);
+}

@@ -20,10 +20,27 @@ export interface FileNode {
   children?: FileNode[]
 }
 
-// The READ_FILE response payload.
+// The READ_FILE response payload. `etag` is the sha256 of the content
+// (added by the ws-ui-versioning precursor); the editor uses it as the
+// optimistic-concurrency `if_match` on the next SAVE_FILE.
 export interface FileContent {
   path: string
   content: string
+  etag: string
+}
+
+// The SAVE_ACK response payload: the new etag becomes the buffer's next
+// if_match. The CONFLICT payload carries the server's current etag so a
+// "Force overwrite" can save against it.
+export interface SaveAck {
+  path: string
+  status: string
+  etag: string
+}
+export interface ConflictPayload {
+  path: string
+  current_etag: string
+  message: string
 }
 
 // react-arborist node, derived from FileNode via lib/tree.
