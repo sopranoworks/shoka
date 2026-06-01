@@ -1,0 +1,42 @@
+.toaster {
+  position: fixed;
+  right: var(--sp-4);
+  bottom: 44px; /* clear the status bar */
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-width: min(380px, calc(100vw - 2 * var(--sp-4)));
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: 10px var(--sp-3);
+  background: var(--c-bg-elev);
+  border: 1px solid var(--c-border-strong);
+  border-left: 3px solid var(--c-warn);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+}
+.toast[data-level='warn'] {
+  border-left-color: var(--c-warn);
+}
+.text {
+  flex: 1;
+  min-width: 0;
+}
+.close {
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--c-text-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.close:hover {
+  color: var(--c-text);
+}

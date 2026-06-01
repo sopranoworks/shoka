@@ -1,0 +1,29 @@
+import type { ViewContext } from './notifyRouter'
+
+// Derive the NOTIFY ViewContext (which view's core is displayed) from the URL
+// pathname. Namespace/project are decoded; the file path (splat) is kept raw so
+// it matches the storage-relative path carried by NOTIFY events.
+export function deriveViewContext(pathname: string): ViewContext {
+  if (pathname === '/') return { route: 'home' }
+
+  const blob = pathname.match(/^\/p\/([^/]+)\/([^/]+)\/blob\/(.*)$/)
+  if (blob) {
+    return {
+      route: 'blob',
+      namespace: decodeURIComponent(blob[1]),
+      project: decodeURIComponent(blob[2]),
+      path: blob[3],
+    }
+  }
+
+  const project = pathname.match(/^\/p\/([^/]+)\/([^/]+)\/?$/)
+  if (project) {
+    return {
+      route: 'project',
+      namespace: decodeURIComponent(project[1]),
+      project: decodeURIComponent(project[2]),
+    }
+  }
+
+  return { route: 'other' }
+}

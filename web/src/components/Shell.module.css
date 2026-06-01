@@ -29,10 +29,13 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .content {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   background: var(--c-bg);
 }

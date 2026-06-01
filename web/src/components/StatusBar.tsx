@@ -1,17 +1,17 @@
 import { useRouterState } from '@tanstack/react-router'
 import { useTheme } from '../lib/theme'
+import { ConnectionStatus } from './ConnectionStatus'
 import styles from './StatusBar.module.css'
 
 export function StatusBar() {
   const { theme, toggle } = useTheme()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
-  // No live connection indicator in session 1 — surfacing connection status
-  // (and the NOTIFY-driven live state) is session 2. The bar shows the current
-  // location and the theme toggle.
   return (
     <footer className={styles.bar}>
       <div className={styles.left}>
+        <ConnectionStatus />
+        <span className={styles.sep} />
         <span className={styles.path} title={pathname}>
           {pathname}
         </span>

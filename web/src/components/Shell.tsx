@@ -5,6 +5,9 @@ import { ActivityRail, type RailView } from './ActivityRail'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
 import { CommandPalette } from './CommandPalette'
+import { Banner } from './Banner'
+import { Toaster } from './Toaster'
+import { NotifyBridge } from './NotifyBridge'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import styles from './Shell.module.css'
 
@@ -60,6 +63,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </>
             )}
             <Panel id="content" order={2} className={styles.contentPanel}>
+              <Banner />
               <main className={styles.content}>{children}</main>
             </Panel>
           </PanelGroup>
@@ -68,6 +72,8 @@ export function Shell({ children }: { children: ReactNode }) {
 
       <StatusBar />
       <CommandPalette />
+      <Toaster />
+      <NotifyBridge />
     </div>
   )
 }

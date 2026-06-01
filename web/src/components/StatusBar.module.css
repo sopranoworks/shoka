@@ -19,6 +19,13 @@
   min-width: 0;
 }
 
+.sep {
+  width: 1px;
+  height: 12px;
+  background: var(--c-border-strong);
+  flex: none;
+}
+
 .conn {
   display: inline-flex;
   align-items: center;
