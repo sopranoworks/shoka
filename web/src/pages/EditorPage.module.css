@@ -24,6 +24,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
+.ghostBtn {
+  background: transparent;
+  color: var(--c-text-dim);
+  border: 1px solid var(--c-border-strong);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.ghostBtn:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
 
 .body {
   flex: 1;
@@ -32,8 +51,28 @@
   overflow: hidden;
 }
 
+.split {
+  flex: 1;
+  min-height: 0;
+}
+.sourcePanel,
+.previewPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.singlePane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
 /* The editor (single-pane or the left pane of the split) fills its column. */
 .editor {
+  flex: 1;
   height: 100%;
   font-size: var(--fs-sm);
   overflow: auto;
@@ -43,6 +82,60 @@
 }
 .editor :global(.cm-scroller) {
   font-family: var(--font-mono);
+}
+
+.previewHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 var(--sp-3);
+  background: var(--c-bg-elev);
+  border-bottom: 1px solid var(--c-border);
+  border-left: 1px solid var(--c-border);
+  font-size: var(--fs-xs);
+  color: var(--c-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.closePreview {
+  background: transparent;
+  border: none;
+  color: var(--c-text-faint);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  padding: 0 var(--sp-1);
+  cursor: pointer;
+}
+.closePreview:hover {
+  color: var(--c-text);
+}
+.previewBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-5);
+  border-left: 1px solid var(--c-border);
+}
+
+.resizeHandle {
+  width: 1px;
+  background: var(--c-border);
+  outline: none;
+}
+.resizeHandle:hover,
+.resizeHandle[data-resize-handle-active] {
+  background: var(--c-accent);
+}
+.resizeHandleV {
+  height: 1px;
+  background: var(--c-border);
+  outline: none;
+}
+.resizeHandleV:hover,
+.resizeHandleV[data-resize-handle-active] {
+  background: var(--c-accent);
 }
 
 .error {
