@@ -29,6 +29,23 @@
   line-height: 1.5;
   word-break: break-word;
 }
+.input {
+  display: block;
+  width: 100%;
+  margin-top: var(--sp-2);
+  padding: 6px 10px;
+  background: var(--c-bg-inset);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--c-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+.input:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;

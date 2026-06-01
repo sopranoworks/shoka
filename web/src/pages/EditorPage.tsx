@@ -10,15 +10,20 @@ import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { useTheme } from '../lib/theme'
 import { classifyFile } from '../lib/fileKind'
-import { saveFile, readFileFresh } from '../lib/fileOps'
+import { saveFile, readFileFresh, fileExists } from '../lib/fileOps'
 import { Markdown } from '../components/Markdown'
 import { ConflictBanner } from '../components/ConflictBanner'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { PromptDialog } from '../components/PromptDialog'
+import { DiffView } from '../components/DiffView'
 import styles from './EditorPage.module.css'
 
 const PREVIEW_DEBOUNCE_MS = 200
 
 interface ConflictState {
+  // The path the conflict pertains to — usually the route path, but the saved-
+  // as target after a "Save as" into an existing, concurrently-modified file.
+  target: string
   currentEtag: string
   message: string
 }
@@ -41,6 +46,12 @@ export function EditorPage() {
 
   const [conflict, setConflict] = useState<ConflictState | null>(null)
   const [busy, setBusy] = useState(false)
+  // Save-as path prompt; pending overwrite-confirm target; diff view content.
+  const [saveAsOpen, setSaveAsOpen] = useState(false)
+  const [overwrite, setOverwrite] = useState<{ path: string; etag: string } | null>(
+    null,
+  )
+  const [diffServer, setDiffServer] = useState<string | null>(null)
 
   // Set while a deliberate post-save navigation is in flight, so the unsaved-
   // changes guard does not prompt on the editor's own redirect to the viewer.
@@ -92,51 +103,95 @@ export function EditorPage() {
     [queryClient, namespace, project, markSaved, navigate],
   )
 
-  const handleSave = useCallback(async () => {
-    if (busy) return
+  const withBusy = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true)
     try {
-      const res = await saveFile({ namespace, project, path, content, ifMatch: etag })
-      if (res.ok) applySaved(content, res.etag, path)
-      else setConflict({ currentEtag: res.currentEtag, message: res.message })
+      await fn()
     } finally {
       setBusy(false)
     }
-  }, [busy, namespace, project, path, content, etag, applySaved])
+  }, [])
 
-  // Discard mine, load latest: re-read the server content and replace the
-  // buffer (the user's choice — explicit, not silent).
-  const discardYours = useCallback(async () => {
-    setBusy(true)
-    try {
-      const fresh = await readFileFresh(namespace, project, path)
-      load(fresh.content, fresh.etag)
-      setConflict(null)
-    } finally {
-      setBusy(false)
-    }
-  }, [namespace, project, path, load])
-
-  // Force overwrite: save against the server's current etag (from the CONFLICT
-  // frame), overwriting whatever the other writer did. The banner gates this
-  // behind an explicit confirm.
-  const forceOverwrite = useCallback(async () => {
-    if (!conflict) return
-    setBusy(true)
-    try {
+  // The one low-level write: save the buffer to `targetPath` with `ifMatch`
+  // (null = unchecked create). Success commits + navigates; a conflict raises
+  // the four-button banner for that target.
+  const persist = useCallback(
+    async (targetPath: string, ifMatch: string | null) => {
       const res = await saveFile({
         namespace,
         project,
-        path,
+        path: targetPath,
         content,
-        ifMatch: conflict.currentEtag,
+        ifMatch,
       })
-      if (res.ok) applySaved(content, res.etag, path)
-      else setConflict({ currentEtag: res.currentEtag, message: res.message })
-    } finally {
-      setBusy(false)
-    }
-  }, [conflict, namespace, project, path, content, applySaved])
+      if (res.ok) applySaved(content, res.etag, targetPath)
+      else
+        setConflict({
+          target: targetPath,
+          currentEtag: res.currentEtag,
+          message: res.message,
+        })
+    },
+    [namespace, project, content, applySaved],
+  )
+
+  // Save: optimistic write to the route path with the buffer's etag.
+  const handleSave = useCallback(
+    () => void withBusy(() => persist(path, etag)),
+    [withBusy, persist, path, etag],
+  )
+
+  // Force overwrite: save against the server's current etag (from the CONFLICT
+  // frame), overwriting whatever the other writer did. Gated by the banner's
+  // explicit confirm.
+  const forceOverwrite = useCallback(() => {
+    if (conflict) void withBusy(() => persist(conflict.target, conflict.currentEtag))
+  }, [conflict, withBusy, persist])
+
+  // Discard mine, load latest: re-read the route file's server content and
+  // replace the buffer (the user's choice — explicit, not silent).
+  const discardYours = useCallback(
+    () =>
+      void withBusy(async () => {
+        const fresh = await readFileFresh(namespace, project, path)
+        load(fresh.content, fresh.etag)
+        setConflict(null)
+      }),
+    [withBusy, namespace, project, path, load],
+  )
+
+  // Save as: write the buffer to a user-chosen path. A new path is created
+  // unchecked; an existing path goes through an overwrite confirm, which then
+  // saves against that path's current etag (a fresh conflict there reopens the
+  // banner for the new target — recursive but structurally bounded).
+  const saveAsConfirm = useCallback(
+    (newPath: string) => {
+      setSaveAsOpen(false)
+      void withBusy(async () => {
+        const ex = await fileExists(namespace, project, newPath)
+        if (!ex.exists) await persist(newPath, null)
+        else setOverwrite({ path: newPath, etag: ex.etag ?? '' })
+      })
+    },
+    [withBusy, namespace, project, persist],
+  )
+
+  const overwriteConfirm = useCallback(() => {
+    if (!overwrite) return
+    const target = overwrite
+    setOverwrite(null)
+    void withBusy(() => persist(target.path, target.etag))
+  }, [overwrite, withBusy, persist])
+
+  // Show diff: fetch the conflict target's server-latest content and open the
+  // diff view (server vs buffer).
+  const showDiff = useCallback(() => {
+    const target = conflict?.target ?? path
+    void withBusy(async () => {
+      const fresh = await readFileFresh(namespace, project, target)
+      setDiffServer(fresh.content)
+    })
+  }, [conflict, path, withBusy, namespace, project])
 
   // Cancel returns to the file view. When the buffer is dirty the navigation is
   // intercepted by the guard above (which raises the confirm dialog); when clean
@@ -198,6 +253,8 @@ export function EditorPage() {
           busy={busy}
           onDiscardYours={discardYours}
           onForceOverwrite={forceOverwrite}
+          onSaveAs={() => setSaveAsOpen(true)}
+          onShowDiff={showDiff}
         />
       )}
 
@@ -257,6 +314,34 @@ export function EditorPage() {
         danger
         onConfirm={() => blocker.proceed?.()}
         onCancel={() => blocker.reset?.()}
+      />
+
+      <PromptDialog
+        open={saveAsOpen}
+        title="Save as"
+        label="Save to path"
+        defaultValue={conflict?.target ?? path}
+        confirmLabel="Save"
+        onConfirm={saveAsConfirm}
+        onCancel={() => setSaveAsOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={overwrite !== null}
+        title="Overwrite existing file?"
+        message={`File ${overwrite?.path ?? ''} already exists. Overwrite it with your content?`}
+        confirmLabel="Overwrite"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={overwriteConfirm}
+        onCancel={() => setOverwrite(null)}
+      />
+
+      <DiffView
+        open={diffServer !== null}
+        serverContent={diffServer ?? ''}
+        bufferContent={content}
+        onClose={() => setDiffServer(null)}
       />
     </div>
   )
