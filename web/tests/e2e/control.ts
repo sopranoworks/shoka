@@ -1,0 +1,53 @@
+// Test-side control of the real backend: open a direct /ws/ui connection (not
+// the page's, so it is unaffected by any client-side WebSocket interception) and
+// issue writes, which make the server broadcast NOTIFY to the browser.
+
+const PORT = Number(process.env.SHOKA_E2E_PORT ?? 8099)
+
+function rpc(ws: WebSocket, type: string, payload: unknown): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const onMsg = (ev: MessageEvent) => {
+      const m = JSON.parse(String(ev.data)) as { type: string; payload?: unknown }
+      if (m.type === 'NOTIFY') return
+      ws.removeEventListener('message', onMsg)
+      if (m.type === 'ERROR')
+        reject(new Error((m.payload as { message?: string })?.message ?? 'error'))
+      else resolve(m.payload)
+    }
+    ws.addEventListener('message', onMsg)
+    ws.send(JSON.stringify({ type, payload }))
+  })
+}
+
+async function withWs<T>(fn: (ws: WebSocket) => Promise<T>): Promise<T> {
+  const ws = new WebSocket(`ws://localhost:${PORT}/ws/ui`)
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => resolve())
+    ws.addEventListener('error', () => reject(new Error('control ws failed')))
+  })
+  try {
+    return await fn(ws)
+  } finally {
+    ws.close()
+  }
+}
+
+export function backendWrite(
+  namespace: string,
+  project: string,
+  path: string,
+  content: string,
+): Promise<void> {
+  return withWs(async (ws) => {
+    await rpc(ws, 'SAVE_FILE', { namespace, projectName: project, path, content })
+  })
+}
+
+export function backendCreateProject(
+  namespace: string,
+  project: string,
+): Promise<void> {
+  return withWs(async (ws) => {
+    await rpc(ws, 'CREATE_PROJECT', { namespace, projectName: project })
+  })
+}
