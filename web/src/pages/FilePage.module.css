@@ -24,6 +24,22 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.editBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--c-text-dim);
+  border: 1px solid var(--c-border-strong);
+  padding: 3px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.editBtn:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
 
 .body {
   flex: 1;

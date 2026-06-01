@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Command } from 'cmdk'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { usePalette } from '../lib/palette'
 import { useTheme } from '../lib/theme'
 import { useProjectsQuery, useAllProjectFiles } from '../lib/queries'
 import { namespacesOf } from '../lib/tree'
+import { deriveViewContext } from '../lib/viewContext'
 import { fuzzyFilter } from '../lib/fuzzy'
 import styles from './CommandPalette.module.css'
 import './cmdk.css'
@@ -27,6 +28,26 @@ export function CommandPalette() {
     }
   }, [open, mode])
 
+  // Current view: the "Edit current file" command + ⌘E are only meaningful on a
+  // file view (blob route).
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const view = useMemo(() => deriveViewContext(pathname), [pathname])
+  const onBlob = view.route === 'blob' && !!view.namespace && !!view.project
+
+  const editCurrentFile = useCallback(() => {
+    if (view.route !== 'blob' || !view.namespace || !view.project) return
+    void navigate({
+      to: '/p/$namespace/$project/edit/$',
+      params: {
+        namespace: view.namespace,
+        project: view.project,
+        _splat: view.path ?? '',
+      },
+    })
+  }, [view, navigate])
+  const editCurrentRef = useRef(editCurrentFile)
+  editCurrentRef.current = editCurrentFile
+
   const { data: projects = [] } = useProjectsQuery()
   const namespaces = useMemo(() => namespacesOf(projects), [projects])
   // Global quick-open: load every project's files, but only while that page is
@@ -47,6 +68,12 @@ export function CommandPalette() {
       if (meta && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
         e.preventDefault()
         void navigator.clipboard?.writeText(window.location.href).catch(() => {})
+        return
+      }
+      // Edit current file: Cmd/Ctrl+E (only acts on a file view).
+      if (meta && !e.shiftKey && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault()
+        editCurrentRef.current()
         return
       }
     }
@@ -132,6 +159,13 @@ export function CommandPalette() {
                   setPage('files')
                 }}
               />
+              {onBlob && (
+                <CmdItem
+                  label="Edit current file"
+                  kbd="⌘E"
+                  onSelect={() => run(editCurrentFile)}
+                />
+              )}
             </Command.Group>
 
             <Command.Group heading="Navigation" className={styles.group}>

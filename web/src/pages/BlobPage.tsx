@@ -1,3 +1,4 @@
+import { useNavigate } from '@tanstack/react-router'
 import { blobRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
 import { classifyFile } from '../lib/fileKind'
@@ -7,6 +8,7 @@ import styles from './FilePage.module.css'
 export function BlobPage() {
   const { namespace, project, _splat } = blobRoute.useParams()
   const path = _splat ?? ''
+  const navigate = useNavigate()
   const { data, isError } = useFileQuery(namespace, project, path)
 
   // Rendering policy (§1.4.1): .md -> rendered markdown; other text -> plain
@@ -19,6 +21,21 @@ export function BlobPage() {
         <span className={styles.filePath} title={path}>
           {path}
         </span>
+        {!isError && (
+          <button
+            className={styles.editBtn}
+            title="Edit this file (⌘E)"
+            onClick={() =>
+              void navigate({
+                to: '/p/$namespace/$project/edit/$',
+                params: { namespace, project, _splat: path },
+              })
+            }
+          >
+            <EditGlyph />
+            Edit
+          </button>
+        )}
       </div>
 
       <div className={styles.body}>
@@ -39,5 +56,24 @@ export function BlobPage() {
         )}
       </div>
     </div>
+  )
+}
+
+function EditGlyph() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </svg>
   )
 }
