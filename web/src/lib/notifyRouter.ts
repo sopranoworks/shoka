@@ -27,6 +27,11 @@ export interface ViewContext {
 export interface BannerIntent {
   text: string
   reload: () => void
+  // Optional authorship slot (feasibility §1.2.1). NOTIFY events carry no author
+  // today, so nothing populates this yet; the seam exists so a future
+  // author-bearing event flows through routeNotify → BannerIntent.by → the
+  // banner with a one-line change, not a rewrite.
+  by?: string
 }
 export interface ToastIntent {
   level: 'warn'

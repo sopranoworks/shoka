@@ -15,6 +15,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.by {
+  color: var(--c-text-dim);
+}
 .actions {
   display: flex;
   align-items: center;

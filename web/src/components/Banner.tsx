@@ -9,7 +9,12 @@ export function Banner() {
   if (!banner) return null
   return (
     <div className={styles.banner} role="status">
-      <span className={styles.text}>{banner.text}</span>
+      <span className={styles.text}>
+        {banner.text}
+        {/* Authorship slot (feasibility §1.2.1) — rendered only if populated;
+            no NOTIFY carries an author yet. */}
+        {banner.by ? <span className={styles.by}> · by {banner.by}</span> : null}
+      </span>
       <div className={styles.actions}>
         <button
           className={styles.reload}
