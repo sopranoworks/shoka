@@ -112,6 +112,13 @@ const routeTree = rootRoute.addChildren([
 export const router = createRouter({
   routeTree,
   defaultPreload: 'intent',
+  // Scroll-position restoration (session 4, closing session 1's open finding).
+  // The cache persists in sessionStorage and is keyed by the location href, so a
+  // reload, Back/Forward, or deep-link returns to the same scroll offset. Page
+  // scroll containers opt in via data-scroll-restoration-id (the app scrolls
+  // inner panels, not the window).
+  scrollRestoration: true,
+  getScrollRestorationKey: (location) => location.href,
 })
 
 declare module '@tanstack/react-router' {

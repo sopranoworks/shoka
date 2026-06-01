@@ -76,7 +76,7 @@ export function SearchPage() {
         </form>
       </div>
 
-      <div className={styles.body}>
+      <div className={styles.body} data-scroll-restoration-id="search-body">
         {!hasQuery ? (
           <div className={styles.hint}>
             Type to search file names and contents in{' '}

@@ -45,7 +45,7 @@ export function BlobPage() {
         )}
       </div>
 
-      <div className={styles.body}>
+      <div className={styles.body} data-scroll-restoration-id="file-body">
         {isError ? (
           <div className={styles.error}>
             File not found: <code>{path}</code>
