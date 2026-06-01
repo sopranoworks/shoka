@@ -1,4 +1,4 @@
-// Request/response client for the Shoka /ws/ui WebSocket.
+// Request/response + reactive client for the Shoka /ws/ui WebSocket.
 //
 // Shoka serves all read data (projects, file tree, file content) over /ws/ui as
 // request/response messages — there is no REST read API. The protocol has no
@@ -6,12 +6,16 @@
 // writes exactly one response per request in order (internal/ui/manager.go), so
 // a single FIFO queue of pending requests correlates responses correctly.
 //
-// Session 1 scope: request/response only. Inbound NOTIFY frames (server push)
-// are ignored here; the auto-refresh subscription, reconnect/backoff, and the
-// connection-status banner are session 2. On an unexpected close we fail
-// in-flight requests (so queries surface an error) rather than reconnecting.
+// NOTIFY frames (server push, {type:"NOTIFY", payload:Event}) are distinguished
+// by their type and dispatched to a handler *before* the FIFO match step, so a
+// NOTIFY never consumes a pending request slot (session-2 constraint §2).
+//
+// Reconnect (session 2): on an unexpected close, in-flight requests reject and
+// the client reconnects with exponential backoff + jitter (cap 30s, infinite
+// retries). Connection state is observable for the status-bar indicator.
 
 const WS_OPEN = 1
+const BACKOFF_CAP_MS = 30_000
 
 interface Pending {
   resolve: (value: unknown) => void
@@ -31,26 +35,122 @@ export interface WsLike {
 
 export type WsFactory = (url: string) => WsLike
 
+export type ConnStatus =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected'
+
+export interface ConnState {
+  status: ConnStatus
+  attempt: number // failed reconnect attempts since last connected
+  connectedSince: number | null // ms epoch, while connected
+  lastConnectedAt: number | null // ms epoch of the most recent open ("last update")
+  retryAt: number | null // ms epoch of the next scheduled reconnect attempt
+}
+
+export interface WsClientOptions {
+  factory?: WsFactory
+  now?: () => number
+  random?: () => number
+  // Schedule fn after ms; returns a canceller. Injectable for time-mocked tests.
+  schedule?: (fn: () => void, ms: number) => () => void
+}
+
+// Backoff base (pre-jitter) for the Nth reconnect attempt: 0, 1s, 2s, 4s, 8s,
+// 16s, then capped at 30s. attempt is 0-based (0 = first retry, fires ~immediately).
+export function backoffBaseMs(attempt: number): number {
+  if (attempt <= 0) return 0
+  return Math.min(BACKOFF_CAP_MS, 1000 * 2 ** (attempt - 1))
+}
+
 export class WsRequestClient {
   private ws: WsLike | null = null
   private connecting = false
+  private closedByUser = false
+  private reconnectCancel: (() => void) | null = null
   private readonly outbox: string[] = []
   private readonly pending: Pending[] = []
+  private notifyHandler: ((payload: unknown) => void) | null = null
+
+  private readonly factory: WsFactory
+  private readonly now: () => number
+  private readonly random: () => number
+  private readonly schedule: (fn: () => void, ms: number) => () => void
+
+  private readonly stateListeners = new Set<(s: ConnState) => void>()
+  private state: ConnState = {
+    status: 'connecting',
+    attempt: 0,
+    connectedSince: null,
+    lastConnectedAt: null,
+    retryAt: null,
+  }
 
   constructor(
     private readonly url: string,
-    private readonly factory: WsFactory = (u) =>
-      new WebSocket(u) as unknown as WsLike,
-  ) {}
+    opts: WsClientOptions = {},
+  ) {
+    this.factory =
+      opts.factory ?? ((u) => new WebSocket(u) as unknown as WsLike)
+    this.now = opts.now ?? (() => Date.now())
+    this.random = opts.random ?? Math.random
+    this.schedule =
+      opts.schedule ??
+      ((fn, ms) => {
+        const t = setTimeout(fn, ms)
+        return () => clearTimeout(t)
+      })
+  }
 
-  /** Open the connection eagerly (idempotent). Safe to call before any request. */
+  // --- connection state observation ---------------------------------------
+
+  getState(): ConnState {
+    return this.state
+  }
+
+  subscribeState(listener: (s: ConnState) => void): () => void {
+    this.stateListeners.add(listener)
+    return () => this.stateListeners.delete(listener)
+  }
+
+  private setState(patch: Partial<ConnState>): void {
+    this.state = { ...this.state, ...patch }
+    for (const l of this.stateListeners) l(this.state)
+  }
+
+  // --- NOTIFY dispatch -----------------------------------------------------
+
+  /** Route inbound NOTIFY payloads to this handler (set by the app layer). */
+  setNotifyHandler(fn: (payload: unknown) => void): void {
+    this.notifyHandler = fn
+  }
+
+  // --- lifecycle -----------------------------------------------------------
+
+  /** Open the connection eagerly (idempotent). Cancels any pending reconnect. */
   connect(): void {
+    if (this.reconnectCancel) {
+      this.reconnectCancel()
+      this.reconnectCancel = null
+    }
     if (this.connecting || (this.ws && this.ws.readyState === WS_OPEN)) return
     this.connecting = true
+    this.closedByUser = false
+    this.setState({ status: 'connecting', retryAt: null })
+
     const ws = this.factory(this.url)
     this.ws = ws
     ws.onopen = () => {
       this.connecting = false
+      const t = this.now()
+      this.setState({
+        status: 'connected',
+        attempt: 0,
+        connectedSince: t,
+        lastConnectedAt: t,
+        retryAt: null,
+      })
       const queued = this.outbox.splice(0)
       for (const frame of queued) ws.send(frame)
     }
@@ -58,12 +158,56 @@ export class WsRequestClient {
     ws.onclose = () => {
       this.connecting = false
       this.ws = null
+      this.setState({ connectedSince: null })
       this.failAll(new Error('WebSocket connection closed'))
+      if (this.closedByUser) {
+        this.setState({ status: 'disconnected', retryAt: null })
+        return
+      }
+      this.scheduleReconnect()
     }
     ws.onerror = () => {
-      // 'close' follows and drives failAll; nothing to do here.
+      // 'close' follows and drives reconnect; nothing to do here.
     }
   }
+
+  /** Reset backoff and reconnect immediately (the "Reconnect now" action). */
+  reconnectNow(): void {
+    this.setState({ attempt: 0 })
+    this.connect()
+  }
+
+  /** Permanently close (teardown / tests). Stops reconnecting. */
+  close(): void {
+    this.closedByUser = true
+    if (this.reconnectCancel) {
+      this.reconnectCancel()
+      this.reconnectCancel = null
+    }
+    this.ws?.close()
+    this.ws = null
+    this.setState({ status: 'disconnected', connectedSince: null, retryAt: null })
+  }
+
+  private scheduleReconnect(): void {
+    const attempt = this.state.attempt
+    const base = backoffBaseMs(attempt)
+    const delay = base === 0 ? 0 : Math.round(base * (0.75 + this.random() * 0.5))
+    const retryAt = this.now() + delay
+    // At the backoff cap we are in the persistent-failure regime: surface
+    // "disconnected" (with a manual Reconnect now); below the cap, "reconnecting".
+    this.setState({
+      status: base >= BACKOFF_CAP_MS ? 'disconnected' : 'reconnecting',
+      attempt: attempt + 1,
+      retryAt,
+    })
+    this.reconnectCancel = this.schedule(() => {
+      this.reconnectCancel = null
+      this.connect()
+    }, delay)
+  }
+
+  // --- request/response ----------------------------------------------------
 
   /** Send a typed request and resolve with its response payload. */
   request<T>(type: string, payload: unknown): Promise<T> {
@@ -77,9 +221,18 @@ export class WsRequestClient {
         this.ws.send(frame)
       } else {
         this.outbox.push(frame)
-        this.connect()
+        this.ensureConnecting()
       }
     })
+  }
+
+  // Open a socket only if none is open/opening and no reconnect is already
+  // scheduled — so a request during backoff waits for the scheduled retry
+  // (preserving backoff) rather than forcing an immediate connect.
+  private ensureConnecting(): void {
+    if (this.ws && this.ws.readyState === WS_OPEN) return
+    if (this.connecting || this.reconnectCancel) return
+    this.connect()
   }
 
   private handleMessage(raw: unknown): void {
@@ -92,8 +245,12 @@ export class WsRequestClient {
     }
     const type = msg.type
     if (!type) return
-    // Session 1 ignores server-pushed NOTIFY frames (auto-refresh is session 2).
-    if (type === 'NOTIFY') return
+    // NOTIFY frames are dispatched and consumed here, BEFORE the FIFO match, so
+    // they never dequeue a pending request (session-2 §2 invariant).
+    if (type === 'NOTIFY') {
+      this.notifyHandler?.(msg.payload)
+      return
+    }
 
     const entry = this.pending.shift()
     if (!entry) return // stray response with no pending request
