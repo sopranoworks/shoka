@@ -45,6 +45,12 @@ const PROJECT: ViewContext = {
   project: 'docs',
 }
 const HOME: ViewContext = { route: 'home' }
+const EDIT: ViewContext = {
+  route: 'edit',
+  namespace: 'demo',
+  project: 'docs',
+  path: 'README.md',
+}
 
 describe('splitTarget / parseNotifyEvent', () => {
   it('splits a joined target on the first slash', () => {
@@ -96,6 +102,46 @@ describe('routeNotify file.write', () => {
       BLOB,
     )
     expect(has(invalidate, ['tree', 'other', 'proj'])?.refetchType).toBeUndefined()
+    expect(r.banner).toBeUndefined()
+  })
+})
+
+describe('routeNotify edit route (buffer-safe, §3.6)', () => {
+  it('write to the file being edited: file query stale WITHOUT refetch, no generic banner, editSignal emitted', () => {
+    const { qc, invalidate } = makeQc()
+    const r = routeNotify(
+      { kind: 'file.write', target: 'demo/docs', path: 'README.md' },
+      qc,
+      EDIT,
+    )
+    // The file query is marked stale but never auto-refetched (no buffer clobber).
+    expect(has(invalidate, ['file', 'demo', 'docs', 'README.md'])?.refetchType).toBe(
+      'none',
+    )
+    // The generic banner (whose Reload refetches) must NOT be used here.
+    expect(r.banner).toBeUndefined()
+    expect(r.editSignal).toEqual({ kind: 'write', path: 'README.md' })
+  })
+
+  it('delete of the file being edited: editSignal kind delete', () => {
+    const { qc } = makeQc()
+    const r = routeNotify(
+      { kind: 'file.delete', target: 'demo/docs', path: 'README.md' },
+      qc,
+      EDIT,
+    )
+    expect(r.editSignal).toEqual({ kind: 'delete', path: 'README.md' })
+    expect(r.banner).toBeUndefined()
+  })
+
+  it('write to a different file while editing: silent invalidate, no editSignal, no banner', () => {
+    const { qc } = makeQc()
+    const r = routeNotify(
+      { kind: 'file.write', target: 'demo/docs', path: 'other.md' },
+      qc,
+      EDIT,
+    )
+    expect(r.editSignal).toBeUndefined()
     expect(r.banner).toBeUndefined()
   })
 })

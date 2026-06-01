@@ -5,6 +5,7 @@ import { useNavigate, useBlocker } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { editRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
+import { useEditSignal } from '../lib/editSignal'
 import { useEditorBuffer } from '../lib/useEditorBuffer'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { useMediaQuery } from '../lib/useMediaQuery'
@@ -16,6 +17,7 @@ import { ConflictBanner } from '../components/ConflictBanner'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PromptDialog } from '../components/PromptDialog'
 import { DiffView } from '../components/DiffView'
+import { ExternalChangeBanner } from '../components/ExternalChangeBanner'
 import styles from './EditorPage.module.css'
 
 const PREVIEW_DEBOUNCE_MS = 200
@@ -43,6 +45,7 @@ export function EditorPage() {
   const isNarrow = useMediaQuery('(max-width: 640px)')
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { signal: extSignal, clear: clearExtSignal } = useEditSignal()
 
   const [conflict, setConflict] = useState<ConflictState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -193,6 +196,39 @@ export function EditorPage() {
     })
   }, [conflict, path, withBusy, namespace, project])
 
+  // External-change banner actions (edit route, from the editSignal). None
+  // touch the buffer except the user's explicit choice.
+  //  - write "Resolve now": fetch the server's current etag and open the same
+  //    four-button conflict UX a save conflict would.
+  const resolveExternal = useCallback(() => {
+    clearExtSignal()
+    void withBusy(async () => {
+      const fresh = await readFileFresh(namespace, project, path)
+      setConflict({
+        target: path,
+        currentEtag: fresh.etag,
+        message: 'This file was modified by someone else.',
+      })
+    })
+  }, [clearExtSignal, withBusy, namespace, project, path])
+
+  //  - delete "Save mine as new file": the Save-as dialog (defaulting to the
+  //    deleted path, which a no-if_match write recreates — precursor §7).
+  const saveMineAsNew = useCallback(() => {
+    clearExtSignal()
+    setSaveAsOpen(true)
+  }, [clearExtSignal])
+
+  //  - delete "Discard mine, go to tree": abandon the buffer, go to the project.
+  const discardToTree = useCallback(() => {
+    clearExtSignal()
+    bypassGuard.current = true
+    void navigate({
+      to: '/p/$namespace/$project',
+      params: { namespace, project },
+    })
+  }, [clearExtSignal, navigate, namespace, project])
+
   // Cancel returns to the file view. When the buffer is dirty the navigation is
   // intercepted by the guard above (which raises the confirm dialog); when clean
   // it navigates straight through.
@@ -247,7 +283,7 @@ export function EditorPage() {
         </div>
       </div>
 
-      {conflict && (
+      {conflict ? (
         <ConflictBanner
           message={conflict.message}
           busy={busy}
@@ -256,7 +292,16 @@ export function EditorPage() {
           onSaveAs={() => setSaveAsOpen(true)}
           onShowDiff={showDiff}
         />
-      )}
+      ) : extSignal && extSignal.path === path ? (
+        <ExternalChangeBanner
+          kind={extSignal.kind}
+          busy={busy}
+          onResolve={resolveExternal}
+          onSaveAsNew={saveMineAsNew}
+          onDiscardToTree={discardToTree}
+          onDismiss={clearExtSignal}
+        />
+      ) : null}
 
       <div className={styles.body}>
         {isError ? (

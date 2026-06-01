@@ -11,6 +11,7 @@ import {
 import { deriveViewContext } from '../lib/viewContext'
 import { useBanner } from '../lib/banner'
 import { useToast } from '../lib/toast'
+import { useEditSignal } from '../lib/editSignal'
 
 // Non-visual: wires the /ws/ui NOTIFY stream and reconnect events into the
 // query cache + banner/toast UI, and clears the banner on navigation. Mounted
@@ -22,6 +23,7 @@ export function NotifyBridge() {
   // change, resetting the reconnect flag mid-reconnect.
   const { show: showBanner, clear: clearBanner } = useBanner()
   const { add: addToast } = useToast()
+  const { set: setEditSignal, clear: clearEditSignal } = useEditSignal()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
   // Latest view context, read by the NOTIFY handler without re-subscribing.
@@ -36,9 +38,10 @@ export function NotifyBridge() {
       const res = routeNotify(event, queryClient, viewRef.current)
       if (res.banner) showBanner(res.banner)
       if (res.toast) addToast(res.toast)
+      if (res.editSignal) setEditSignal(res.editSignal)
     })
     return () => wsClient().setNotifyHandler(() => {})
-  }, [queryClient, showBanner, addToast])
+  }, [queryClient, showBanner, addToast, setEditSignal])
 
   // Reconnect → stale-while-revalidate. Only after a real disconnect (not the
   // initial connect): track whether a disconnect happened since last connected.
@@ -59,9 +62,11 @@ export function NotifyBridge() {
     })
   }, [queryClient, showBanner])
 
-  // Navigation clears the banner (it is tied to the view that raised it).
+  // Navigation clears the banner and any edit-route external-change signal
+  // (both are tied to the view that raised them).
   useEffect(() => {
     clearBanner()
+    clearEditSignal()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname])
 

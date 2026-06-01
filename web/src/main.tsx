@@ -7,6 +7,7 @@ import { ThemeProvider } from './lib/theme'
 import { PaletteProvider } from './lib/palette'
 import { ToastProvider } from './lib/toast'
 import { BannerProvider } from './lib/banner'
+import { EditSignalProvider } from './lib/editSignal'
 import { wsClient } from './lib/wsClient'
 import './styles/global.css'
 
@@ -27,9 +28,11 @@ createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <ToastProvider>
           <BannerProvider>
-            <PaletteProvider>
-              <RouterProvider router={router} />
-            </PaletteProvider>
+            <EditSignalProvider>
+              <PaletteProvider>
+                <RouterProvider router={router} />
+              </PaletteProvider>
+            </EditSignalProvider>
           </BannerProvider>
         </ToastProvider>
       </ThemeProvider>

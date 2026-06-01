@@ -18,7 +18,7 @@ export interface NotifyEvent {
 }
 
 export interface ViewContext {
-  route: 'home' | 'project' | 'blob' | 'other'
+  route: 'home' | 'project' | 'blob' | 'edit' | 'other'
   namespace?: string
   project?: string
   path?: string
@@ -32,9 +32,17 @@ export interface ToastIntent {
   level: 'warn'
   text: string
 }
+// An external-change signal for the edit route. Unlike `banner` (whose Reload
+// refetches the displayed query), this never touches the editor buffer — the
+// editor renders its own banner with buffer-safe actions. See lib/editSignal.
+export interface EditSignalIntent {
+  kind: 'write' | 'delete'
+  path: string
+}
 export interface RouterResult {
   banner?: BannerIntent
   toast?: ToastIntent
+  editSignal?: EditSignalIntent
 }
 
 export function parseNotifyEvent(payload: unknown): NotifyEvent | null {
@@ -116,6 +124,24 @@ export function routeNotify(
       view.route === 'project' &&
       view.namespace === namespace &&
       view.project === project
+    const editingThisFile =
+      view.route === 'edit' &&
+      view.namespace === namespace &&
+      view.project === project &&
+      (view.path ?? '') === path
+
+    if (editingThisFile) {
+      // The edit route's "core" is the in-memory buffer, not a query. Mark the
+      // file query stale WITHOUT refetching (a refetch-and-replace would discard
+      // the user's edits — §2), refresh the sidebar tree (peripheral), and emit a
+      // buffer-safe signal the editor turns into its own banner. We deliberately
+      // do NOT return a `banner` here: the generic banner's Reload refetches.
+      queryClient.invalidateQueries({ queryKey: fileKey, refetchType: 'none' })
+      queryClient.invalidateQueries({ queryKey: treeKey })
+      return {
+        editSignal: { kind: kind === 'file.delete' ? 'delete' : 'write', path },
+      }
+    }
 
     if (onThisFile) {
       queryClient.invalidateQueries({ queryKey: fileKey, refetchType: 'none' })
