@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,8 +198,10 @@ func TestFSGitStorage_Integration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to get commit object: %v", err)
 		}
-		if commit.Message != "Update docs/README.md" {
-			t.Errorf("expected commit message %q, got %q", "Update docs/README.md", commit.Message)
+		// The message now carries identity trailers after the subject line
+		// (the 2026-06-01 identity-config directive); assert the subject.
+		if !strings.HasPrefix(commit.Message, "Update docs/README.md") {
+			t.Errorf("expected commit message to start with %q, got %q", "Update docs/README.md", commit.Message)
 		}
 	})
 

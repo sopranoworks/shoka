@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage/catalog"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
@@ -65,6 +66,12 @@ type FSGitStorage struct {
 	// MVP) must never affect a storage operation's outcome.
 	notify *notify.Center
 
+	// identityDefaults is the configured single-user identity + agent fallback
+	// used to author commits (the 2026-06-01 identity-config directive). The
+	// per-request agent declaration arrives on the write's context; this is the
+	// floor it resolves against. PROVISIONAL — see internal/identity (B-28).
+	identityDefaults identity.Defaults
+
 	changeHandler ChangeHandler
 	logger        *slog.Logger
 }
@@ -79,6 +86,12 @@ type Options struct {
 	// to on successful mutations. It may be nil; storage tolerates that (the
 	// hooks become no-ops).
 	NotifyCenter *notify.Center
+
+	// Identity is the configured single-user identity + agent fallback used to
+	// author commits. Zero-valued fields fall back to safe built-in defaults so
+	// storage constructed without identity (e.g. in tests) still produces an
+	// intentional author. PROVISIONAL — see internal/identity (B-28).
+	Identity identity.Defaults
 }
 
 // ChangeEvent describes a successful mutation, delivered to a registered handler
@@ -175,16 +188,33 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 	}
 
 	s := &FSGitStorage{
-		baseDir:       absBaseDir,
-		locks:         filelock.NewManager(opts.FileLock),
-		wal:           w,
-		maxWALEntries: maxWAL,
-		states:        make(map[string]ProjectState),
-		catalogs:      make(map[string]*catalog.Catalog),
-		notify:        opts.NotifyCenter,
+		baseDir:          absBaseDir,
+		locks:            filelock.NewManager(opts.FileLock),
+		wal:              w,
+		maxWALEntries:    maxWAL,
+		states:           make(map[string]ProjectState),
+		catalogs:         make(map[string]*catalog.Catalog),
+		notify:           opts.NotifyCenter,
+		identityDefaults: withIdentityFallback(opts.Identity),
 	}
 	s.pool = walworker.NewPool(w, s.commitEntry, opts.WALWorker)
 	return s, nil
+}
+
+// withIdentityFallback fills empty identity defaults with safe built-ins, so
+// storage built without an Identity (e.g. in tests, or an old config) still
+// produces an intentional, non-environmental commit author.
+func withIdentityFallback(d identity.Defaults) identity.Defaults {
+	if d.UserName == "" {
+		d.UserName = "Shoka Operator"
+	}
+	if d.UserEmail == "" {
+		d.UserEmail = "operator@shoka.local"
+	}
+	if d.AgentName == "" {
+		d.AgentName = "shoka-agent"
+	}
+	return d
 }
 
 // Close stops the worker pool and lock reaper. WAL files on disk are preserved.
@@ -333,12 +363,17 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 		newEtag = sha256Hex([]byte(content))
+		id := identity.Resolve(ctx, s.identityDefaults)
 		if _, err := s.wal.Append(wal.Entry{
 			Namespace: namespace,
 			Project:   projectName,
 			Path:      rel,
 			Op:        "write",
 			Content:   []byte(content),
+			UserName:  id.UserName,
+			UserEmail: id.UserEmail,
+			AgentName: id.AgentName,
+			WorkerID:  id.WorkerID,
 		}); err != nil {
 			return fmt.Errorf("failed to append to WAL: %w", err)
 		}
@@ -487,11 +522,16 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 		// Disown before destroying, so the catalog never claims a path the working
 		// tree still lacks. The catalog delete is best-effort.
 		s.catalogDelete(namespace, projectName, rel)
+		id := identity.Resolve(ctx, s.identityDefaults)
 		if _, err := s.wal.Append(wal.Entry{
 			Namespace: namespace,
 			Project:   projectName,
 			Path:      rel,
 			Op:        "delete",
+			UserName:  id.UserName,
+			UserEmail: id.UserEmail,
+			AgentName: id.AgentName,
+			WorkerID:  id.WorkerID,
 		}); err != nil {
 			return fmt.Errorf("failed to append to WAL: %w", err)
 		}

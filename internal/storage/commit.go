@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/storage/wal"
 )
 
@@ -64,14 +65,27 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 	}
 
 	now := time.Now()
-	sig := object.Signature{Name: "MCP Server", Email: "mcp-server@shoka.io", When: now}
-	msg := "Update " + e.Path
+	// Intentional commit author (the 2026-06-01 identity-config directive):
+	// agent-as-author, owning user as committer, all three layers (user/agent/
+	// worker) in canonical Shoka-* trailers. Older entries (no identity) fall back
+	// to the configured default. PROVISIONAL — see internal/identity (B-28).
+	id := identity.CommitIdentity{
+		UserName:  e.UserName,
+		UserEmail: e.UserEmail,
+		AgentName: e.AgentName,
+		WorkerID:  e.WorkerID,
+	}.WithDefaults(s.identityDefaults)
+	author := object.Signature{Name: id.AgentName, Email: identity.AgentEmail(id.AgentName), When: now}
+	committer := object.Signature{Name: id.UserName, Email: id.UserEmail, When: now}
+
+	verb := "Update "
 	event := "file_written"
 	if isDelete {
-		msg = "Delete " + e.Path
+		verb = "Delete "
 		event = "file_deleted"
 	}
-	commit := &object.Commit{Author: sig, Committer: sig, Message: msg, TreeHash: newTree, ParentHashes: parents}
+	msg := verb + e.Path + "\n\n" + id.Trailers()
+	commit := &object.Commit{Author: author, Committer: committer, Message: msg, TreeHash: newTree, ParentHashes: parents}
 	cobj := r.Storer.NewEncodedObject()
 	if err := commit.Encode(cobj); err != nil {
 		return fmt.Errorf("encode commit: %w", err)

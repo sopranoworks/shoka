@@ -6,6 +6,8 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+
+	"github.com/shoka/mcp-server/internal/identity"
 )
 
 // RecoveryMode selects how a corrupted/dangerous project is repaired (§7.5).
@@ -49,8 +51,17 @@ func (s *FSGitStorage) RecoverProject(namespace, projectName string, mode Recove
 			return fmt.Errorf("status: %w", err)
 		}
 		if !st.IsClean() {
-			if _, err := w.Commit("Recovery: working tree adopted as truth", &git.CommitOptions{
-				Author: &object.Signature{Name: "MCP Server", Email: "mcp-server@shoka.io", When: time.Now()},
+			// Recovery is an operator/system action: the owning user is the
+			// committer, a "shoka-recovery" system agent is the author, identity in
+			// trailers (intentional, not the old hardcoded literal). PROVISIONAL —
+			// internal/identity (B-28).
+			now := time.Now()
+			recID := identity.CommitIdentity{
+				AgentName: "shoka-recovery",
+			}.WithDefaults(s.identityDefaults)
+			if _, err := w.Commit("Recovery: working tree adopted as truth\n\n"+recID.Trailers(), &git.CommitOptions{
+				Author:    &object.Signature{Name: recID.AgentName, Email: identity.AgentEmail(recID.AgentName), When: now},
+				Committer: &object.Signature{Name: recID.UserName, Email: recID.UserEmail, When: now},
 			}); err != nil {
 				return fmt.Errorf("commit recovery: %w", err)
 			}

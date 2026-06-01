@@ -8,9 +8,37 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/utils"
 )
+
+// workerMetaKey is the Shoka-namespaced key under the MCP initialize _meta where
+// a client may declare its Rohrpost worker id.
+const workerMetaKey = "shoka/worker-id"
+
+// agentFromMCP extracts a connecting agent's self-declared identity from the MCP
+// session — the client name from initialize clientInfo, and an optional worker
+// id from the initialize _meta (the protocol's reserved metadata slot). Both are
+// native MCP and additive; a client that declares nothing yields a zero Agent,
+// and the configured default applies downstream (internal/identity.Resolve).
+func agentFromMCP(req *mcp.CallToolRequest) identity.Agent {
+	var a identity.Agent
+	if req == nil || req.Session == nil {
+		return a
+	}
+	ip := req.Session.InitializeParams()
+	if ip == nil {
+		return a
+	}
+	if ip.ClientInfo != nil {
+		a.Name = ip.ClientInfo.Name
+	}
+	if w, ok := ip.Meta[workerMetaKey].(string); ok {
+		a.Worker = w
+	}
+	return a
+}
 
 type ReadFileInput struct {
 	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
@@ -96,6 +124,7 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, WriteFileOutput{}, nil
 		}
 
+		ctx = identity.WithAgent(ctx, agentFromMCP(req))
 		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, input.Path, input.Content, input.IfMatch)
 		if err != nil {
 			if text, conflict, reason, ok := classifyWriteErr(err); ok {
@@ -171,6 +200,7 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 			}, DeleteFileOutput{}, nil
 		}
 
+		ctx = identity.WithAgent(ctx, agentFromMCP(req))
 		err := s.Delete(ctx, "", input.Namespace, input.ProjectName, input.Path, input.IfMatch)
 		if err != nil {
 			if text, conflict, reason, ok := classifyWriteErr(err); ok {

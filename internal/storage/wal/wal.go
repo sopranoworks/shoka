@@ -46,6 +46,16 @@ type Entry struct {
 	Version   string // sha256 hex of content
 	Size      int64
 	Content   []byte
+
+	// Commit-author identity (the 2026-06-01 identity-config directive). Carried
+	// here because the commit is produced asynchronously by the WAL worker, so
+	// the identity must survive a restart mid-drain. Empty on entries written
+	// before identity existed; the worker fills those from the configured
+	// default. PROVISIONAL — see internal/identity (backlog B-28).
+	UserName  string
+	UserEmail string
+	AgentName string
+	WorkerID  string
 }
 
 // EntryHead is an entry's metadata without its content, used by the dispatcher.
@@ -67,6 +77,12 @@ type wireEntry struct {
 	Version    string `json:"version"`
 	Size       int64  `json:"size"`
 	ContentB64 string `json:"content_b64"`
+	// Identity fields, omitempty so older entries (and the integrity invariant)
+	// are unaffected; absent fields decode to "" and the worker defaults them.
+	UserName  string `json:"user_name,omitempty"`
+	UserEmail string `json:"user_email,omitempty"`
+	AgentName string `json:"agent_name,omitempty"`
+	WorkerID  string `json:"worker_id,omitempty"`
 }
 
 // Log is an open write-ahead log. It is safe for concurrent use.
@@ -315,6 +331,10 @@ func readEntryFile(path string, wantSeq uint64) (Entry, error) {
 		Version:   w.Version,
 		Size:      w.Size,
 		Content:   content,
+		UserName:  w.UserName,
+		UserEmail: w.UserEmail,
+		AgentName: w.AgentName,
+		WorkerID:  w.WorkerID,
 	}, nil
 }
 
@@ -329,6 +349,10 @@ func toWire(e Entry) wireEntry {
 		Version:    e.Version,
 		Size:       e.Size,
 		ContentB64: base64.StdEncoding.EncodeToString(e.Content),
+		UserName:   e.UserName,
+		UserEmail:  e.UserEmail,
+		AgentName:  e.AgentName,
+		WorkerID:   e.WorkerID,
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/shoka/mcp-server/internal/config"
 	"github.com/shoka/mcp-server/internal/drafts"
 	"github.com/shoka/mcp-server/internal/httplog"
+	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/logging"
 	"github.com/shoka/mcp-server/internal/metrics"
 	"github.com/shoka/mcp-server/internal/notify"
@@ -100,6 +101,14 @@ func main() {
 			BackoffMax:     cfg.WALWorker.BackoffMax.Std(),
 		},
 		NotifyCenter: notifyCenter,
+		// Single-user-mode commit identity (the 2026-06-01 identity-config
+		// directive). PROVISIONAL — see internal/identity (backlog B-28).
+		Identity: identity.Defaults{
+			UserName:    cfg.Identity.User.Name,
+			UserEmail:   cfg.Identity.User.Email,
+			AgentName:   cfg.Identity.AgentDefault.Name,
+			AgentWorker: cfg.Identity.AgentDefault.Worker,
+		},
 	}
 	s, err := storage.NewFSGitStorageWithOptions(cfg.Storage.BaseDir, storageOpts)
 	if err != nil {

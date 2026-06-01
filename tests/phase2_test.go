@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,8 +108,8 @@ func TestPhase2Tools_Integration(t *testing.T) {
 		r, _ := git.PlainOpen(projectPath)
 		ref, _ := r.Head()
 		commit, _ := r.CommitObject(ref.Hash())
-		if commit.Message != "Delete file1.txt" {
-			t.Errorf("expected commit message 'Delete file1.txt', got %q", commit.Message)
+		if !strings.HasPrefix(commit.Message, "Delete file1.txt") {
+			t.Errorf("expected commit message to start with 'Delete file1.txt', got %q", commit.Message)
 		}
 	})
 
@@ -138,8 +139,8 @@ func TestPhase2Tools_Integration(t *testing.T) {
 		if len(output.History) != 2 {
 			t.Errorf("expected 2 history entries, got %d", len(output.History))
 		}
-		if output.History[0].Message != "Update history.txt" {
-			t.Errorf("expected latest commit message 'Update history.txt', got %q", output.History[0].Message)
+		if !strings.HasPrefix(output.History[0].Message, "Update history.txt") {
+			t.Errorf("expected latest commit message to start with 'Update history.txt', got %q", output.History[0].Message)
 		}
 	})
 
