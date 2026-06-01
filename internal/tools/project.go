@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/markdown"
+	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/utils"
 )
@@ -41,7 +42,11 @@ func CreateProjectHandler(s storage.StorageService) func(context.Context, *mcp.C
 			}, CreateProjectOutput{}, nil
 		}
 
-		err := s.CreateProject(input.Namespace, input.ProjectName)
+		// Sender identity so the center does not echo project.create back to an
+		// MCP-side subscriber that originated it (2026-06-01 directive). MCP
+		// sessions do not subscribe today, so this reaches every /ws/ui client.
+		ctx = notify.WithSender(ctx, mcpSender(req))
+		err := s.CreateProjectCtx(ctx, input.Namespace, input.ProjectName)
 		if err != nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to create project: %v", err)}},

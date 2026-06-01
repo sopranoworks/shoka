@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/identity"
+	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/utils"
 )
@@ -16,6 +17,20 @@ import (
 // workerMetaKey is the Shoka-namespaced key under the MCP initialize _meta where
 // a client may declare its Rohrpost worker id.
 const workerMetaKey = "shoka/worker-id"
+
+// mcpSender derives the notify sender identity for an MCP write (the 2026-06-01
+// sender-exclusion directive). It is the MCP session id, prefixed "mcp:" so it
+// can never collide with a /ws/ui connection id ("ws-<seq>") — guaranteeing an
+// MCP write reaches every /ws/ui subscriber (none of them is its originator). It
+// is also session-stable, so a future MCP-side subscriber would correctly be
+// excluded from its own writes. Falls back to a constant "mcp" when no session
+// is present (e.g. in tests): still non-colliding, so delivery is unaffected.
+func mcpSender(req *mcp.CallToolRequest) string {
+	if req == nil || req.Session == nil {
+		return "mcp"
+	}
+	return "mcp:" + req.Session.ID()
+}
 
 // agentFromMCP extracts a connecting agent's self-declared identity from the MCP
 // session — the client name from initialize clientInfo, and an optional worker
@@ -125,6 +140,7 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 		}
 
 		ctx = identity.WithAgent(ctx, agentFromMCP(req))
+		ctx = notify.WithSender(ctx, mcpSender(req))
 		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, input.Path, input.Content, input.IfMatch)
 		if err != nil {
 			if text, conflict, reason, ok := classifyWriteErr(err); ok {
@@ -201,6 +217,7 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 		}
 
 		ctx = identity.WithAgent(ctx, agentFromMCP(req))
+		ctx = notify.WithSender(ctx, mcpSender(req))
 		err := s.Delete(ctx, "", input.Namespace, input.ProjectName, input.Path, input.IfMatch)
 		if err != nil {
 			if text, conflict, reason, ok := classifyWriteErr(err); ok {
