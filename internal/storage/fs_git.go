@@ -271,8 +271,22 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// CreateProject initializes a new project directory and a Git repository within it.
+// CreateProject initializes a new project directory and a Git repository within
+// it. It is the legacy non-ctx entry point (used widely by tests and any caller
+// without a sender to declare); it delegates to CreateProjectCtx with a
+// background context, so the resulting project.create event dispatches to every
+// subscriber. The write-path handlers (web/MCP) use CreateProjectCtx to carry a
+// sender so the creator is not notified of its own project.create.
 func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
+	return s.CreateProjectCtx(context.Background(), namespace, projectName)
+}
+
+// CreateProjectCtx is CreateProject carrying a context so a sender identity (the
+// originating /ws/ui connection or MCP session) flows to the project.create
+// notification, excluding the originator from its own event (2026-06-01
+// sender-exclusion directive). A context with no sender (the CreateProject
+// wrapper) dispatches to all subscribers, preserving prior behaviour.
+func (s *FSGitStorage) CreateProjectCtx(ctx context.Context, namespace, projectName string) error {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return err
@@ -299,8 +313,9 @@ func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 	}
 	// Notification center: a genuine new project was created. The early
 	// ErrRepositoryAlreadyExists return above is intentionally NOT published —
-	// re-creating an existing project is not a user-visible mutation.
-	s.notify.Notify("project.create", namespace+"/"+projectName, "")
+	// re-creating an existing project is not a user-visible mutation. The
+	// ctx-borne sender excludes the creator from its own project.create.
+	s.notify.NotifyFrom(notify.SenderFrom(ctx), "project.create", namespace+"/"+projectName, "")
 	s.emit(ChangeEvent{
 		Event:     "project_created",
 		Namespace: namespace,
@@ -389,8 +404,10 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 	s.pool.Notify()
 	// Notification center: publish only on success, after the write is durable
 	// (atomic file write + WAL append committed under the lock). rel is the
-	// cleaned within-project path, matching the WAL record.
-	s.notify.Notify("file.write", namespace+"/"+projectName, rel)
+	// cleaned within-project path, matching the WAL record. The ctx-borne sender
+	// (the originating /ws/ui connection or MCP session) is passed so the center
+	// does not echo this write back to its originator (2026-06-01 directive).
+	s.notify.NotifyFrom(notify.SenderFrom(ctx), "file.write", namespace+"/"+projectName, rel)
 	return newEtag, nil
 }
 
@@ -547,8 +564,9 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 	}
 	s.pool.Notify()
 	// Notification center: publish only on success. rel is the cleaned
-	// within-project path, matching the WAL record.
-	s.notify.Notify("file.delete", namespace+"/"+projectName, rel)
+	// within-project path, matching the WAL record. The ctx-borne sender is
+	// passed so the originator is not notified of its own delete (2026-06-01).
+	s.notify.NotifyFrom(notify.SenderFrom(ctx), "file.delete", namespace+"/"+projectName, rel)
 	return "", nil
 }
 

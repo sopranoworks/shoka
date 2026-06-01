@@ -18,6 +18,12 @@ type StorageService interface {
 	// CreateProject initializes a new project directory and a Git repository within it.
 	CreateProject(namespace, projectName string) error
 
+	// CreateProjectCtx is CreateProject carrying a context so a sender identity
+	// flows to the project.create notification (the originator is excluded from
+	// its own event). The plain CreateProject delegates here with a background
+	// context (dispatch to all).
+	CreateProjectCtx(ctx context.Context, namespace, projectName string) error
+
 	// WriteFile writes content to a file in a project and performs an atomic Git commit.
 	WriteFile(namespace, projectName, path, content string) error
 
