@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/shoka/mcp-server/internal/drafts"
+	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage"
 )
@@ -19,12 +22,17 @@ import (
 type MessageType string
 
 const (
-	GetProjects      MessageType = "GET_PROJECTS"
-	GetTree          MessageType = "GET_TREE"
-	ReadFile         MessageType = "READ_FILE"
-	WriteDraft       MessageType = "WRITE_DRAFT"
-	SaveFile         MessageType = "SAVE_FILE"
-	SaveAck          MessageType = "SAVE_ACK"
+	GetProjects MessageType = "GET_PROJECTS"
+	GetTree     MessageType = "GET_TREE"
+	ReadFile    MessageType = "READ_FILE"
+	WriteDraft  MessageType = "WRITE_DRAFT"
+	SaveFile    MessageType = "SAVE_FILE"
+	SaveAck     MessageType = "SAVE_ACK"
+	// MsgConflict reports an optimistic-concurrency conflict on SAVE_FILE: the
+	// caller's if_match did not match the file's current etag. Distinct from the
+	// generic Error frame so a client can branch on "this is a conflict" (it
+	// carries the current etag) without parsing a free-form error string.
+	MsgConflict      MessageType = "CONFLICT"
 	MsgCreateProject MessageType = "CREATE_PROJECT"
 	// MsgNotify carries one notify.Event pushed from the server to the browser
 	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
@@ -67,6 +75,20 @@ type SaveFilePayload struct {
 	ProjectName string `json:"projectName"`
 	Path        string `json:"path"`
 	Content     string `json:"content"`
+	// IfMatch, when non-empty, enables optimistic concurrency: the write succeeds
+	// only if the file's current etag equals it, otherwise a CONFLICT frame is
+	// returned. Omitted by callers that have not adopted versioning — those writes
+	// take the unchecked path, preserving the pre-versioning behaviour.
+	IfMatch string `json:"if_match,omitempty"`
+}
+
+// ConflictPayload is the CONFLICT frame's body: the path that conflicted and the
+// file's current etag, so the client can re-base its edit (e.g. show the
+// four-button conflict UX) without parsing the error message.
+type ConflictPayload struct {
+	Path        string `json:"path"`
+	CurrentETag string `json:"current_etag"`
+	Message     string `json:"message"`
 }
 
 type FileNode struct {
@@ -345,15 +367,18 @@ func (m *Manager) handleReadFile(client *wsClient, payload json.RawMessage) {
 		return
 	}
 
-	content, err := m.storage.ReadFile(p.Namespace, p.ProjectName, p.Path)
+	content, etag, err := m.storage.ReadFileWithETag(p.Namespace, p.ProjectName, p.Path)
 	if err != nil {
 		client.sendError(fmt.Sprintf("Failed to read file: %v", err))
 		return
 	}
 
+	// etag travels with the content so the client can send it back as if_match on
+	// a subsequent SAVE_FILE. Clients that ignore the field are unaffected.
 	client.sendResponse(ReadFile, map[string]string{
 		"path":    p.Path,
 		"content": content,
+		"etag":    etag,
 	})
 }
 
@@ -387,13 +412,41 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 		return
 	}
 
-	if err := m.storage.WriteFile(p.Namespace, p.ProjectName, p.Path, p.Content); err != nil {
+	// A web save is the operator acting as themselves, not an agent: attribute the
+	// commit's Author to the configured operator user (identity.WithUser). The
+	// empty User keeps single-user mode; a future authenticated request substitutes
+	// the actual user at this call site. The ctx-aware Write carries the identity
+	// (the old WriteFile path used context.Background() and resolved to the default
+	// agent).
+	ctx := identity.WithUser(context.Background(), identity.User{})
+
+	// if_match present → optimistic concurrency; absent → unchecked write (nil),
+	// preserving the pre-versioning behaviour for callers that have not adopted it.
+	var ifMatch *string
+	if p.IfMatch != "" {
+		ifMatch = &p.IfMatch
+	}
+
+	etag, err := m.storage.Write(ctx, "", p.Namespace, p.ProjectName, p.Path, p.Content, ifMatch)
+	if err != nil {
+		var conflict *storage.VersionConflictError
+		if errors.As(err, &conflict) {
+			client.sendResponse(MsgConflict, ConflictPayload{
+				Path:        p.Path,
+				CurrentETag: conflict.Current,
+				Message:     "File was modified by someone else",
+			})
+			return
+		}
 		client.sendError(fmt.Sprintf("Failed to save file: %v", err))
 		return
 	}
 
+	// Return the new etag so the client can use it as if_match for its next save
+	// (the editor's read-modify-write loop).
 	client.sendResponse(SaveAck, map[string]string{
 		"path":   p.Path,
 		"status": "ok",
+		"etag":   etag,
 	})
 }
