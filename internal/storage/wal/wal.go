@@ -56,6 +56,12 @@ type Entry struct {
 	UserEmail string
 	AgentName string
 	WorkerID  string
+
+	// AuthorIsUser records that the git Author should be the owning user rather
+	// than the agent (the web /ws/ui SAVE_FILE path). Carried here so the async
+	// commit worker honours it after a restart. Defaults to false (agent-author),
+	// so entries written before this field decode to today's behaviour.
+	AuthorIsUser bool
 }
 
 // EntryHead is an entry's metadata without its content, used by the dispatcher.
@@ -79,10 +85,11 @@ type wireEntry struct {
 	ContentB64 string `json:"content_b64"`
 	// Identity fields, omitempty so older entries (and the integrity invariant)
 	// are unaffected; absent fields decode to "" and the worker defaults them.
-	UserName  string `json:"user_name,omitempty"`
-	UserEmail string `json:"user_email,omitempty"`
-	AgentName string `json:"agent_name,omitempty"`
-	WorkerID  string `json:"worker_id,omitempty"`
+	UserName     string `json:"user_name,omitempty"`
+	UserEmail    string `json:"user_email,omitempty"`
+	AgentName    string `json:"agent_name,omitempty"`
+	WorkerID     string `json:"worker_id,omitempty"`
+	AuthorIsUser bool   `json:"author_is_user,omitempty"`
 }
 
 // Log is an open write-ahead log. It is safe for concurrent use.
@@ -330,11 +337,12 @@ func readEntryFile(path string, wantSeq uint64) (Entry, error) {
 		Op:        w.Op,
 		Version:   w.Version,
 		Size:      w.Size,
-		Content:   content,
-		UserName:  w.UserName,
-		UserEmail: w.UserEmail,
-		AgentName: w.AgentName,
-		WorkerID:  w.WorkerID,
+		Content:      content,
+		UserName:     w.UserName,
+		UserEmail:    w.UserEmail,
+		AgentName:    w.AgentName,
+		WorkerID:     w.WorkerID,
+		AuthorIsUser: w.AuthorIsUser,
 	}, nil
 }
 
@@ -348,11 +356,12 @@ func toWire(e Entry) wireEntry {
 		Op:         e.Op,
 		Version:    e.Version,
 		Size:       e.Size,
-		ContentB64: base64.StdEncoding.EncodeToString(e.Content),
-		UserName:   e.UserName,
-		UserEmail:  e.UserEmail,
-		AgentName:  e.AgentName,
-		WorkerID:   e.WorkerID,
+		ContentB64:   base64.StdEncoding.EncodeToString(e.Content),
+		UserName:     e.UserName,
+		UserEmail:    e.UserEmail,
+		AgentName:    e.AgentName,
+		WorkerID:     e.WorkerID,
+		AuthorIsUser: e.AuthorIsUser,
 	}
 }
 

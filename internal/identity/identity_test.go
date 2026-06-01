@@ -49,6 +49,43 @@ func TestResolve_PartialDeclarationKeepsDefaults(t *testing.T) {
 	}
 }
 
+func TestResolve_WithUserEmptyMakesConfiguredUserAuthor(t *testing.T) {
+	// The web /ws/ui SAVE_FILE path: empty User in single-user mode. The owning
+	// user becomes the Author (AuthorIsUser), falling back to the configured user.
+	ctx := WithUser(context.Background(), User{})
+	id := Resolve(ctx, defaults)
+	if !id.AuthorIsUser {
+		t.Fatalf("AuthorIsUser should be set when WithUser present: %+v", id)
+	}
+	if id.UserName != "Osamu Takahashi" || id.UserEmail != "forte.nit@gmail.com" {
+		t.Fatalf("user not from defaults: %+v", id)
+	}
+	if id.AgentName != "shoka-agent" {
+		t.Fatalf("agent still resolves to default for the trailer: %q", id.AgentName)
+	}
+}
+
+func TestResolve_WithUserPopulatedSubstitutesActor(t *testing.T) {
+	// The future-auth seam (feasibility check 1): a populated User substitutes the
+	// authenticated actor at this single resolution site, no redesign.
+	ctx := WithUser(context.Background(), User{Name: "alice", Email: "alice@example.com"})
+	id := Resolve(ctx, defaults)
+	if !id.AuthorIsUser {
+		t.Fatalf("AuthorIsUser should be set: %+v", id)
+	}
+	if id.UserName != "alice" || id.UserEmail != "alice@example.com" {
+		t.Fatalf("populated user not substituted: %+v", id)
+	}
+}
+
+func TestResolve_NoUserKeepsAgentAuthor(t *testing.T) {
+	// The MCP / default path: no WithUser, so the agent stays the Author.
+	id := Resolve(context.Background(), defaults)
+	if id.AuthorIsUser {
+		t.Fatalf("AuthorIsUser must be false without WithUser: %+v", id)
+	}
+}
+
 func TestWithDefaults_FillsEmptyFromOlderEntry(t *testing.T) {
 	// An empty identity (an older WAL entry) gets an intentional author.
 	got := CommitIdentity{}.WithDefaults(defaults)

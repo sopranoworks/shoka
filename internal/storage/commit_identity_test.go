@@ -105,6 +105,33 @@ func TestCommitIdentity_DeclaredAgentAndWorker(t *testing.T) {
 	}
 }
 
+// A web /ws/ui SAVE_FILE (WithUser) makes the owning user the git Author, while
+// the committer stays the user and the Shoka-Agent trailer still records the
+// (default) agent layer. Contrast with TestCommitIdentity_DefaultAgent, where the
+// same write without WithUser is agent-authored.
+func TestCommitIdentity_WithUserMakesUserAuthor(t *testing.T) {
+	s := newIdentityStorage(t)
+	ctx := identity.WithUser(context.Background(), identity.User{})
+	if _, err := s.Write(ctx, "", "ns", "proj", "web.md", "# Web", nil); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, s)
+
+	c := headCommit(t, s)
+	if c.Author.Name != "Osamu Takahashi" || c.Author.Email != "forte.nit@gmail.com" {
+		t.Errorf("author = %s <%s>, want the operator user", c.Author.Name, c.Author.Email)
+	}
+	if c.Committer.Name != "Osamu Takahashi" || c.Committer.Email != "forte.nit@gmail.com" {
+		t.Errorf("committer = %s <%s>, want the operator user", c.Committer.Name, c.Committer.Email)
+	}
+	if !strings.Contains(c.Message, "Shoka-User: Osamu Takahashi <forte.nit@gmail.com>") {
+		t.Errorf("missing user trailer:\n%s", c.Message)
+	}
+	if !strings.Contains(c.Message, "Shoka-Agent: shoka-agent") {
+		t.Errorf("agent trailer should still record the agent layer:\n%s", c.Message)
+	}
+}
+
 // An entry written before identity fields existed (empty identity) still gets an
 // intentional author from the configured default — not a zero/environmental one.
 func TestCommitIdentity_OlderEntryFallsBackToDefault(t *testing.T) {

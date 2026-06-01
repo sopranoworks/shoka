@@ -22,6 +22,13 @@ type CommitIdentity struct {
 	UserEmail string
 	AgentName string // the MCP client that wrote it, or the configured default
 	WorkerID  string // Rohrpost worker id, or "" (the reserved, optional slot)
+
+	// AuthorIsUser flips the git Author from the agent to the owning user. Set by
+	// Resolve when the write carries a WithUser declaration (the web /ws/ui
+	// SAVE_FILE path: a human acting as themselves, not an agent). The committer
+	// and the Shoka-* trailers are unchanged; only which signature becomes the git
+	// Author. Carried on the WAL entry so the async commit worker honours it.
+	AuthorIsUser bool
 }
 
 // Defaults are the configured single-user identity plus the fallback agent
@@ -41,7 +48,18 @@ type Agent struct {
 	Worker string
 }
 
+// User is a per-request owning-user declaration. It marks a write as performed by
+// the human operator acting as themselves (the web /ws/ui SAVE_FILE path) rather
+// than by an agent. In single-user mode the fields are left empty and Resolve
+// falls back to the configured operator user; a future authentication layer
+// (B-28) substitutes the authenticated user here at the same call site.
+type User struct {
+	Name  string
+	Email string
+}
+
 type ctxKey struct{}
+type userCtxKey struct{}
 
 // WithAgent attaches a per-request agent declaration to ctx. The MCP tool
 // handler sets this from the connecting client's initialize info; other write
@@ -54,6 +72,19 @@ func WithAgent(ctx context.Context, a Agent) context.Context {
 func AgentFrom(ctx context.Context) (Agent, bool) {
 	a, ok := ctx.Value(ctxKey{}).(Agent)
 	return a, ok
+}
+
+// WithUser marks the write on ctx as authored by the owning user rather than an
+// agent. Pass an empty User in single-user mode (Resolve fills the configured
+// operator); pass a populated User once authentication can identify the actor.
+func WithUser(ctx context.Context, u User) context.Context {
+	return context.WithValue(ctx, userCtxKey{}, u)
+}
+
+// UserFrom returns the owning-user declaration carried on ctx, if any.
+func UserFrom(ctx context.Context) (User, bool) {
+	u, ok := ctx.Value(userCtxKey{}).(User)
+	return u, ok
 }
 
 // Resolve combines the configured defaults with any per-request agent
@@ -76,6 +107,16 @@ func Resolve(ctx context.Context, d Defaults) CommitIdentity {
 		}
 		if a.Worker != "" {
 			id.WorkerID = a.Worker
+		}
+	}
+	// A WithUser declaration makes the owning user the git Author (not the agent).
+	// An empty User keeps the configured single-user; a populated one (future auth)
+	// substitutes the authenticated actor at this single resolution site.
+	if u, ok := UserFrom(ctx); ok {
+		id.AuthorIsUser = true
+		if u.Name != "" {
+			id.UserName = u.Name
+			id.UserEmail = u.Email
 		}
 	}
 	return id

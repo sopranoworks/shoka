@@ -70,12 +70,19 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 	// worker) in canonical Shoka-* trailers. Older entries (no identity) fall back
 	// to the configured default. PROVISIONAL — see internal/identity (B-28).
 	id := identity.CommitIdentity{
-		UserName:  e.UserName,
-		UserEmail: e.UserEmail,
-		AgentName: e.AgentName,
-		WorkerID:  e.WorkerID,
+		UserName:     e.UserName,
+		UserEmail:    e.UserEmail,
+		AgentName:    e.AgentName,
+		WorkerID:     e.WorkerID,
+		AuthorIsUser: e.AuthorIsUser,
 	}.WithDefaults(s.identityDefaults)
+	// Author is normally the agent; a web /ws/ui SAVE_FILE (AuthorIsUser) makes the
+	// owning user the Author instead. Committer stays the owning user either way;
+	// the Shoka-* trailers are unchanged.
 	author := object.Signature{Name: id.AgentName, Email: identity.AgentEmail(id.AgentName), When: now}
+	if id.AuthorIsUser {
+		author = object.Signature{Name: id.UserName, Email: id.UserEmail, When: now}
+	}
 	committer := object.Signature{Name: id.UserName, Email: id.UserEmail, When: now}
 
 	verb := "Update "

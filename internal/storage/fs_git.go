@@ -365,15 +365,16 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 		newEtag = sha256Hex([]byte(content))
 		id := identity.Resolve(ctx, s.identityDefaults)
 		if _, err := s.wal.Append(wal.Entry{
-			Namespace: namespace,
-			Project:   projectName,
-			Path:      rel,
-			Op:        "write",
-			Content:   []byte(content),
-			UserName:  id.UserName,
-			UserEmail: id.UserEmail,
-			AgentName: id.AgentName,
-			WorkerID:  id.WorkerID,
+			Namespace:    namespace,
+			Project:      projectName,
+			Path:         rel,
+			Op:           "write",
+			Content:      []byte(content),
+			UserName:     id.UserName,
+			UserEmail:    id.UserEmail,
+			AgentName:    id.AgentName,
+			WorkerID:     id.WorkerID,
+			AuthorIsUser: id.AuthorIsUser,
 		}); err != nil {
 			return fmt.Errorf("failed to append to WAL: %w", err)
 		}
@@ -524,14 +525,15 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 		s.catalogDelete(namespace, projectName, rel)
 		id := identity.Resolve(ctx, s.identityDefaults)
 		if _, err := s.wal.Append(wal.Entry{
-			Namespace: namespace,
-			Project:   projectName,
-			Path:      rel,
-			Op:        "delete",
-			UserName:  id.UserName,
-			UserEmail: id.UserEmail,
-			AgentName: id.AgentName,
-			WorkerID:  id.WorkerID,
+			Namespace:    namespace,
+			Project:      projectName,
+			Path:         rel,
+			Op:           "delete",
+			UserName:     id.UserName,
+			UserEmail:    id.UserEmail,
+			AgentName:    id.AgentName,
+			WorkerID:     id.WorkerID,
+			AuthorIsUser: id.AuthorIsUser,
 		}); err != nil {
 			return fmt.Errorf("failed to append to WAL: %w", err)
 		}
