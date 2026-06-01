@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useBlocker } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { editRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
@@ -13,6 +13,7 @@ import { classifyFile } from '../lib/fileKind'
 import { saveFile, readFileFresh } from '../lib/fileOps'
 import { Markdown } from '../components/Markdown'
 import { ConflictBanner } from '../components/ConflictBanner'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import styles from './EditorPage.module.css'
 
 const PREVIEW_DEBOUNCE_MS = 200
@@ -41,6 +42,21 @@ export function EditorPage() {
   const [conflict, setConflict] = useState<ConflictState | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // Set while a deliberate post-save navigation is in flight, so the unsaved-
+  // changes guard does not prompt on the editor's own redirect to the viewer.
+  const bypassGuard = useRef(false)
+
+  // One hook covers every exit path while the buffer is dirty: shouldBlockFn
+  // intercepts in-app navigation (Cancel, palette, Back/Forward, view↔edit) and
+  // surfaces a confirm dialog; enableBeforeUnload arms the browser's native
+  // prompt for reload / tab close (§3.4, §1.4 calibre).
+  const guardActive = dirty && !bypassGuard.current
+  const blocker = useBlocker({
+    shouldBlockFn: () => guardActive,
+    enableBeforeUnload: () => guardActive,
+    withResolver: true,
+  })
+
   const isMarkdown = useMemo(
     () => classifyFile(path, buf.baseline) === 'markdown',
     [path, buf.baseline],
@@ -65,6 +81,9 @@ export function EditorPage() {
       })
       markSaved(savedContent, newEtag)
       setConflict(null)
+      // Bypass the unsaved-changes guard for this intentional redirect (the
+      // buffer is clean now, but the bypass also covers the state-flush gap).
+      bypassGuard.current = true
       void navigate({
         to: '/p/$namespace/$project/blob/$',
         params: { namespace, project, _splat: targetPath },
@@ -119,6 +138,16 @@ export function EditorPage() {
     }
   }, [conflict, namespace, project, path, content, applySaved])
 
+  // Cancel returns to the file view. When the buffer is dirty the navigation is
+  // intercepted by the guard above (which raises the confirm dialog); when clean
+  // it navigates straight through.
+  const goToView = useCallback(() => {
+    void navigate({
+      to: '/p/$namespace/$project/blob/$',
+      params: { namespace, project, _splat: path },
+    })
+  }, [navigate, namespace, project, path])
+
   const cm = (
     <CodeMirror
       value={content}
@@ -146,6 +175,13 @@ export function EditorPage() {
               {previewOpen ? 'Hide preview' : 'Show preview'}
             </button>
           )}
+          <button
+            className={styles.ghostBtn}
+            disabled={busy}
+            onClick={goToView}
+          >
+            Cancel
+          </button>
           <button
             className={styles.saveBtn}
             disabled={!dirty || busy || isError}
@@ -211,6 +247,17 @@ export function EditorPage() {
           <div className={styles.singlePane}>{cm}</div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={blocker.status === 'blocked'}
+        title="Discard unsaved changes?"
+        message="You have unsaved edits in this file. Leaving the editor will discard them."
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+        danger
+        onConfirm={() => blocker.proceed?.()}
+        onCancel={() => blocker.reset?.()}
+      />
     </div>
   )
 }
