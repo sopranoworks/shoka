@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import {
   createRootRoute,
   createRoute,
@@ -5,11 +6,33 @@ import {
   Outlet,
 } from '@tanstack/react-router'
 import { Shell } from './components/Shell'
+import { RouteFallback } from './components/RouteFallback'
 import { RepoListPage } from './pages/RepoListPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { BlobPage } from './pages/BlobPage'
-import { EditorPage } from './pages/EditorPage'
-import { SearchPage } from './pages/SearchPage'
+
+// The editor route pulls in CodeMirror and the @codemirror/lang-* packages —
+// the heaviest part of the app. Lazy-loading it (and the search route) keeps
+// them out of the initial bundle: a user who only browses and reads never
+// downloads the editor chunk. The read-only CodeView (BlobPage) shares the same
+// chunk, so opening a code file or the editor pays the cost once.
+const EditorPage = lazy(() =>
+  import('./pages/EditorPage').then((m) => ({ default: m.EditorPage })),
+)
+const SearchPage = lazy(() =>
+  import('./pages/SearchPage').then((m) => ({ default: m.SearchPage })),
+)
+
+// Wrap a lazily-loaded page in a Suspense boundary with the delayed fallback.
+function lazyRoute(Page: React.ComponentType) {
+  return function LazyRouteComponent() {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Page />
+      </Suspense>
+    )
+  }
+}
 
 // Root renders the persistent docked shell. The shell never unmounts; only
 // the <Outlet/> inside its content region swaps on navigation.
@@ -56,7 +79,7 @@ const blobRoute = createRoute({
 const editRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/p/$namespace/$project/edit/$',
-  component: EditorPage,
+  component: lazyRoute(EditorPage),
 })
 
 // "/p/$namespace/$project/search" project-scoped full-text/filename search
@@ -75,7 +98,7 @@ const searchRoute = createRoute({
     const q = typeof search.q === 'string' ? search.q : undefined
     return q ? { q } : {}
   },
-  component: SearchPage,
+  component: lazyRoute(SearchPage),
 })
 
 const routeTree = rootRoute.addChildren([

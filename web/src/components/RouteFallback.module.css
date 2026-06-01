@@ -1,0 +1,5 @@
+.fallback {
+  padding: var(--sp-5);
+  color: var(--c-text-faint);
+  font-size: var(--fs-sm);
+}

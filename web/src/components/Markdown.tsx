@@ -8,11 +8,18 @@ import './highlight.css'
 //
 // Fenced code blocks are syntax-highlighted by rehype-highlight (session 4),
 // which operates on the rehype AST and emits .hljs-* classes — no
-// dangerouslySetInnerHTML. ignoreMissing keeps an unknown fence language from
-// throwing; detect:false means only labelled fences highlight (plain text is
-// left alone). The token colors live in ./highlight.css (theme-aware); the
-// block container is styled by Markdown.module.css.
-const rehypePlugins = [[rehypeHighlight, { detect: false, ignoreMissing: true }]] as const
+// dangerouslySetInnerHTML. It statically bundles highlight.js's "common"
+// language set (~54 KB gz), which covers the corpus fences (go/yaml/json/ts/
+// sql/sh, per the data-dir survey) and more; passing a curated `languages`
+// option would only narrow runtime registration, not the bundle (the import is
+// static), so it would reduce capability without saving size. The token colors
+// live in ./highlight.css (theme-aware); the block container is styled by
+// Markdown.module.css. detect:false → only labelled fences highlight (plain
+// prose is left alone); ignoreMissing → an unknown language is left unhighlighted
+// rather than throwing.
+const rehypePlugins = [
+  [rehypeHighlight, { detect: false, ignoreMissing: true }],
+] as const
 
 export function Markdown({ content }: { content: string }) {
   return (
