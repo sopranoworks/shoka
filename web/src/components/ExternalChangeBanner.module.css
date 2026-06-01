@@ -10,6 +10,7 @@
   color: var(--c-text);
   font-size: var(--fs-sm);
   flex-wrap: wrap;
+  animation: shoka-slide-down var(--dur-med) var(--ease-out);
 }
 .text {
   min-width: 0;

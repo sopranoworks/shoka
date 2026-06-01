@@ -9,6 +9,7 @@
   border-bottom: 1px solid var(--c-border);
   color: var(--c-text);
   font-size: var(--fs-sm);
+  animation: shoka-slide-down var(--dur-med) var(--ease-out);
 }
 .text {
   overflow: hidden;

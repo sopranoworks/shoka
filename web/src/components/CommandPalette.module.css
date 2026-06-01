@@ -13,6 +13,7 @@
   box-shadow: var(--shadow-overlay);
   overflow: hidden;
   z-index: var(--z-overlay);
+  animation: shoka-pop-in var(--dur-fast) var(--ease-out);
 }
 
 .inputRow {

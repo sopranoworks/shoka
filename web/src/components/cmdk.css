@@ -5,6 +5,7 @@
   background: #00000066;
   backdrop-filter: blur(2px);
   z-index: 99;
+  animation: shoka-fade-in var(--dur-fast) ease;
 }
 
 /* Selected item highlight, driven by cmdk's aria-selected. */

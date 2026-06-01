@@ -20,6 +20,7 @@
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   color: var(--c-text);
   font-size: var(--fs-sm);
+  animation: shoka-slide-in-right var(--dur-med) var(--ease-out);
 }
 .toast[data-level='warn'] {
   border-left-color: var(--c-warn);

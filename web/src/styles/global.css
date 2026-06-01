@@ -31,6 +31,12 @@
   --z-titlebar: 30;
   --z-overlay: 100;
 
+  /* motion (session 4 polish) — restrained, and disabled under
+     prefers-reduced-motion (see the guard at the bottom of this file). */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-med: 180ms;
+
   /* layout */
   --titlebar-h: 40px;
   --statusbar-h: 26px;
@@ -112,6 +118,11 @@ button {
   font-size: inherit;
   color: inherit;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    filter var(--dur-fast) ease;
 }
 
 ::selection {
@@ -145,4 +156,45 @@ kbd {
   color: var(--c-text-dim);
   line-height: 1.4;
   white-space: nowrap;
+}
+
+/* ============================================================
+   Motion keyframes (session 4 polish). Used by banners, the
+   command palette, dialogs, and toasts. Kept small and subtle.
+   ============================================================ */
+@keyframes shoka-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Command palette: centered horizontally via translateX(-50%), so the
+   keyframe preserves that while easing in vertically. */
+@keyframes shoka-pop-in {
+  from { opacity: 0; transform: translate(-50%, 6px) scale(0.985); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+/* Flex-centered dialogs (no translateX needed). */
+@keyframes shoka-pop-in-center {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes shoka-slide-down {
+  from { opacity: 0; transform: translateY(-100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes shoka-slide-in-right {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Respect users who ask for less motion: neutralise animations and
+   transitions everywhere (accessibility, and a safety net for the polish). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
