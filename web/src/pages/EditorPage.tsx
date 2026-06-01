@@ -63,11 +63,13 @@ export function EditorPage() {
   // One hook covers every exit path while the buffer is dirty: shouldBlockFn
   // intercepts in-app navigation (Cancel, palette, Back/Forward, view↔edit) and
   // surfaces a confirm dialog; enableBeforeUnload arms the browser's native
-  // prompt for reload / tab close (§3.4, §1.4 calibre).
-  const guardActive = dirty && !bypassGuard.current
+  // prompt for reload / tab close (§3.4, §1.4 calibre). The predicate reads
+  // bypassGuard.current LIVE (not a precomputed boolean) so the bypass set just
+  // before the editor's own post-save navigate() takes effect that same tick.
+  const guardActive = useCallback(() => dirty && !bypassGuard.current, [dirty])
   const blocker = useBlocker({
-    shouldBlockFn: () => guardActive,
-    enableBeforeUnload: () => guardActive,
+    shouldBlockFn: guardActive,
+    enableBeforeUnload: guardActive,
     withResolver: true,
   })
 
