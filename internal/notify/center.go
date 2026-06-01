@@ -10,6 +10,16 @@
 // WAL — it is a lossy, side-channel observation point. Publishing never affects
 // storage correctness and never blocks on a subscriber.
 //
+// The 2026-06-01 notify-dispatch directive added sender-exclusion: a write
+// carries a sender identifier (NotifyFrom), a subscriber declares its identity
+// (SubscribeAs), and the dispatch loop does not deliver an event back to the
+// subscriber whose identity matches the sender. This stops a /ws/ui connection
+// from receiving its own write as if a second actor had made it. The exclusion
+// lives here, in the dispatch decision, so every subscriber type benefits — not
+// in any one transport's frame-emission path. An empty sender (the legacy
+// Notify/Subscribe pair) is "unidentified" and dispatches to everyone, so
+// callers that have not adopted sender identity are unchanged.
+//
 // Event kinds published by storage:
 //   - "file.write"                  — a write_file succeeded (target=ns/project, path=rel)
 //   - "file.delete"                 — a delete_file succeeded
@@ -52,10 +62,21 @@ type Center struct {
 
 	// Subscribers receive every event published from now on (the 2026-05-31
 	// push API). Guarded by subMu, independent of mu so the ring-buffer write
-	// and the fan-out do not contend. Callbacks must be non-blocking.
+	// and the fan-out do not contend. Callbacks must be non-blocking. Each
+	// subscriber carries an identity (the 2026-06-01 sender-exclusion directive)
+	// used to suppress echoing an event back to its originator; an empty identity
+	// is never excluded.
 	subMu     sync.RWMutex
-	subs      map[uint64]func(Event)
+	subs      map[uint64]subscriber
 	nextSubID uint64
+}
+
+// subscriber is one registered fan-out target: its callback and the identity
+// used for sender-exclusion. id is "" for a subscriber that declared no identity
+// (the legacy Subscribe path); such a subscriber is never excluded.
+type subscriber struct {
+	id string
+	cb func(Event)
 }
 
 // NewCenter creates a Center with a ring buffer of the given maximum size.
@@ -75,7 +96,22 @@ func NewCenter(maxEntries int) *Center {
 // no-op), and safe for concurrent callers. It never blocks on I/O and never
 // panics on its input — the center is a dumb recorder; validation is the
 // publisher's responsibility.
+//
+// Notify is the unidentified-sender form: the event is dispatched to every
+// subscriber. Callers that know the originating sender (e.g. a /ws/ui
+// connection's own write) use NotifyFrom so the originator is excluded.
 func (c *Center) Notify(kind, target, path string) {
+	c.NotifyFrom("", kind, target, path)
+}
+
+// NotifyFrom is Notify with a sender identifier (the 2026-06-01 sender-exclusion
+// directive). The event is recorded and dispatched exactly as Notify, except
+// that the subscriber whose declared identity (see SubscribeAs) equals a
+// non-empty sender does NOT receive it — a write does not echo back to its own
+// originator. An empty sender behaves identically to Notify (dispatch to all).
+// The sender is internal to dispatch: it is never written into the Event, so the
+// wire shape subscribers observe is unchanged.
+func (c *Center) NotifyFrom(sender, kind, target, path string) {
 	if c == nil {
 		return
 	}
@@ -98,10 +134,16 @@ func (c *Center) Notify(kind, target, path string) {
 	// Fan out to subscribers (push API). Held under the read lock only across the
 	// iteration; callbacks are contractually non-blocking (they push to their own
 	// buffered channel and drop on full), so a slow subscriber cannot stall this
-	// publisher. mu is already released, so the two locks never nest.
+	// publisher. mu is already released, so the two locks never nest. The
+	// originator (sender) is skipped: a non-empty sender matching a subscriber's
+	// declared identity means "this is the connection that made the write", which
+	// must not be told its own change came from elsewhere.
 	c.subMu.RLock()
-	for _, cb := range c.subs {
-		cb(ev)
+	for _, sub := range c.subs {
+		if sender != "" && sub.id == sender {
+			continue
+		}
+		sub.cb(ev)
 	}
 	c.subMu.RUnlock()
 }
@@ -121,22 +163,37 @@ func (c *Center) Notify(kind, target, path string) {
 // Within one subscriber, events arrive in publish order. There is no ordering
 // guarantee across subscribers. Subscribe is safe to call from any goroutine and
 // concurrently with Notify. On a nil receiver it returns a no-op unsubscribe.
+//
+// Subscribe registers with no identity: the subscriber receives every event,
+// including those it originated (it cannot be excluded, having declared no
+// sender identity to match). Subscribers that want self-exclusion use
+// SubscribeAs with the same identity they pass to NotifyFrom.
 func (c *Center) Subscribe(callback func(Event)) (unsubscribe func()) {
+	return c.SubscribeAs("", callback)
+}
+
+// SubscribeAs is Subscribe with a sender identity (the 2026-06-01
+// sender-exclusion directive). The subscriber will not receive an event whose
+// NotifyFrom sender equals this id (when id is non-empty) — its own writes are
+// not echoed back to it. An empty id is equivalent to Subscribe (never
+// excluded). All other Subscribe semantics (non-blocking callback contract,
+// publish-order delivery, nil-receiver/nil-callback no-op) are unchanged.
+func (c *Center) SubscribeAs(id string, callback func(Event)) (unsubscribe func()) {
 	if c == nil || callback == nil {
 		return func() {}
 	}
 	c.subMu.Lock()
 	if c.subs == nil {
-		c.subs = make(map[uint64]func(Event))
+		c.subs = make(map[uint64]subscriber)
 	}
 	c.nextSubID++
-	id := c.nextSubID
-	c.subs[id] = callback
+	sid := c.nextSubID
+	c.subs[sid] = subscriber{id: id, cb: callback}
 	c.subMu.Unlock()
 
 	return func() {
 		c.subMu.Lock()
-		delete(c.subs, id)
+		delete(c.subs, sid)
 		c.subMu.Unlock()
 	}
 }
