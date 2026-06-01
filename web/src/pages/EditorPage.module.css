@@ -44,6 +44,22 @@
   color: var(--c-text);
 }
 
+.saveBtn {
+  background: var(--c-accent);
+  color: var(--c-accent-text);
+  border: 1px solid var(--c-accent);
+  padding: 3px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.saveBtn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.saveBtn:disabled {
+  opacity: 0.45;
+}
+
 .body {
   flex: 1;
   min-height: 0;

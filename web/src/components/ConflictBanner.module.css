@@ -1,0 +1,68 @@
+.banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 8px var(--sp-4);
+  background: color-mix(in srgb, var(--c-bad) 16%, var(--c-bg-elev));
+  border-bottom: 1px solid var(--c-bad);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  flex-wrap: wrap;
+}
+.text {
+  min-width: 0;
+}
+.detail {
+  color: var(--c-text-dim);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  flex-wrap: wrap;
+}
+
+.btn {
+  background: transparent;
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.btn:hover:not(:disabled) {
+  background: var(--c-hover);
+}
+
+/* Force overwrite — visibly destructive (§1.1: red / warning-coloured). */
+.dangerOutline {
+  background: transparent;
+  color: var(--c-bad);
+  border: 1px solid var(--c-bad);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.dangerOutline:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-bad) 14%, transparent);
+}
+.danger {
+  background: var(--c-bad);
+  color: #fff;
+  border: 1px solid var(--c-bad);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn:disabled,
+.danger:disabled,
+.dangerOutline:disabled {
+  opacity: 0.5;
+}

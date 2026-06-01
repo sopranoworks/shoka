@@ -17,8 +17,16 @@
 const WS_OPEN = 1
 const BACKOFF_CAP_MS = 30_000
 
+// A response frame, type included. SAVE_FILE callers must see the type to tell a
+// SAVE_ACK from a CONFLICT (both are non-ERROR responses); `request` below hides
+// it for the common payload-only case.
+export interface WsFrame {
+  type: string
+  payload: unknown
+}
+
 interface Pending {
-  resolve: (value: unknown) => void
+  resolve: (frame: WsFrame) => void
   reject: (err: Error) => void
 }
 
@@ -209,13 +217,16 @@ export class WsRequestClient {
 
   // --- request/response ----------------------------------------------------
 
-  /** Send a typed request and resolve with its response payload. */
-  request<T>(type: string, payload: unknown): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      this.pending.push({
-        resolve: resolve as (v: unknown) => void,
-        reject,
-      })
+  /**
+   * Send a typed request and resolve with the full response frame ({type,
+   * payload}). ERROR frames reject. Use this when the caller must branch on the
+   * response type — e.g. SAVE_FILE, whose success (SAVE_ACK) and conflict
+   * (CONFLICT) are distinct non-ERROR frames that would otherwise be
+   * indistinguishable once the payload is unwrapped.
+   */
+  requestFrame(type: string, payload: unknown): Promise<WsFrame> {
+    return new Promise<WsFrame>((resolve, reject) => {
+      this.pending.push({ resolve, reject })
       const frame = JSON.stringify({ type, payload })
       if (this.ws && this.ws.readyState === WS_OPEN) {
         this.ws.send(frame)
@@ -224,6 +235,11 @@ export class WsRequestClient {
         this.ensureConnecting()
       }
     })
+  }
+
+  /** Send a typed request and resolve with its response payload (ERROR rejects). */
+  request<T>(type: string, payload: unknown): Promise<T> {
+    return this.requestFrame(type, payload).then((f) => f.payload as T)
   }
 
   // Open a socket only if none is open/opening and no reconnect is already
@@ -263,7 +279,9 @@ export class WsRequestClient {
       entry.reject(new Error(message ?? 'Shoka error'))
       return
     }
-    entry.resolve(msg.payload)
+    // Resolve with the full frame so callers can discriminate by type (a
+    // CONFLICT must not be mistaken for a SAVE_ACK). `request` re-hides it.
+    entry.resolve({ type, payload: msg.payload })
   }
 
   private failAll(err: Error): void {

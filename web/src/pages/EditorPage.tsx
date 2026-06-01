@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
+import { useNavigate } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { editRoute } from '../router'
 import { useFileQuery } from '../lib/queries'
 import { useEditorBuffer } from '../lib/useEditorBuffer'
@@ -8,49 +10,119 @@ import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { useTheme } from '../lib/theme'
 import { classifyFile } from '../lib/fileKind'
+import { saveFile, readFileFresh } from '../lib/fileOps'
 import { Markdown } from '../components/Markdown'
+import { ConflictBanner } from '../components/ConflictBanner'
 import styles from './EditorPage.module.css'
 
 const PREVIEW_DEBOUNCE_MS = 200
+
+interface ConflictState {
+  currentEtag: string
+  message: string
+}
 
 // Editor for an existing file (session 3). Loads the file over /ws/ui READ_FILE
 // (which returns {path, content, etag}), copies the content into an in-memory
 // buffer, and keeps the etag for the eventual save's if_match. The buffer is
 // decoupled from the TanStack Query cache, so a background invalidation never
 // silently replaces what the user is editing (§2).
-//
-// Markdown files get a two-pane source+preview split (preview closeable,
-// resizable, debounced); everything else gets a single full-width source pane
-// (no preview — non-markdown has nothing to render).
 export function EditorPage() {
   const { namespace, project, _splat } = editRoute.useParams()
   const path = _splat ?? ''
   const { data, isError } = useFileQuery(namespace, project, path)
   const { theme } = useTheme()
   const buf = useEditorBuffer()
-  const { initialized, load } = buf
+  const { content, etag, dirty, initialized, load, markSaved, setContent } = buf
   const isNarrow = useMediaQuery('(max-width: 640px)')
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  const [conflict, setConflict] = useState<ConflictState | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const isMarkdown = useMemo(
     () => classifyFile(path, buf.baseline) === 'markdown',
     [path, buf.baseline],
   )
   const [previewOpen, setPreviewOpen] = useState(true)
+  const previewSource = useDebouncedValue(content, PREVIEW_DEBOUNCE_MS)
 
-  // Preview re-renders 200ms after the last keystroke (below the perceptible
-  // threshold), so a burst of typing does not thrash react-markdown.
-  const previewSource = useDebouncedValue(buf.content, PREVIEW_DEBOUNCE_MS)
-
-  // Initialize the buffer once, when the file first loads. Subsequent cache
-  // changes do not touch the buffer (no silent overwrite).
+  // Initialize the buffer once, when the file first loads.
   useEffect(() => {
     if (data && !initialized) load(data.content, data.etag)
   }, [data, initialized, load])
 
+  // Commit a successful save: prime the file cache so the viewer shows the new
+  // content immediately, rebaseline the buffer (clean → no beforeunload prompt),
+  // and navigate to the file view for the saved path.
+  const applySaved = useCallback(
+    (savedContent: string, newEtag: string, targetPath: string) => {
+      queryClient.setQueryData(['file', namespace, project, targetPath], {
+        path: targetPath,
+        content: savedContent,
+        etag: newEtag,
+      })
+      markSaved(savedContent, newEtag)
+      setConflict(null)
+      void navigate({
+        to: '/p/$namespace/$project/blob/$',
+        params: { namespace, project, _splat: targetPath },
+      })
+    },
+    [queryClient, namespace, project, markSaved, navigate],
+  )
+
+  const handleSave = useCallback(async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const res = await saveFile({ namespace, project, path, content, ifMatch: etag })
+      if (res.ok) applySaved(content, res.etag, path)
+      else setConflict({ currentEtag: res.currentEtag, message: res.message })
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, namespace, project, path, content, etag, applySaved])
+
+  // Discard mine, load latest: re-read the server content and replace the
+  // buffer (the user's choice — explicit, not silent).
+  const discardYours = useCallback(async () => {
+    setBusy(true)
+    try {
+      const fresh = await readFileFresh(namespace, project, path)
+      load(fresh.content, fresh.etag)
+      setConflict(null)
+    } finally {
+      setBusy(false)
+    }
+  }, [namespace, project, path, load])
+
+  // Force overwrite: save against the server's current etag (from the CONFLICT
+  // frame), overwriting whatever the other writer did. The banner gates this
+  // behind an explicit confirm.
+  const forceOverwrite = useCallback(async () => {
+    if (!conflict) return
+    setBusy(true)
+    try {
+      const res = await saveFile({
+        namespace,
+        project,
+        path,
+        content,
+        ifMatch: conflict.currentEtag,
+      })
+      if (res.ok) applySaved(content, res.etag, path)
+      else setConflict({ currentEtag: res.currentEtag, message: res.message })
+    } finally {
+      setBusy(false)
+    }
+  }, [conflict, namespace, project, path, content, applySaved])
+
   const cm = (
     <CodeMirror
-      value={buf.content}
-      onChange={buf.setContent}
+      value={content}
+      onChange={setContent}
       theme={theme === 'dark' ? 'dark' : 'light'}
       height="100%"
       className={styles.editor}
@@ -74,8 +146,24 @@ export function EditorPage() {
               {previewOpen ? 'Hide preview' : 'Show preview'}
             </button>
           )}
+          <button
+            className={styles.saveBtn}
+            disabled={!dirty || busy || isError}
+            onClick={handleSave}
+          >
+            Save
+          </button>
         </div>
       </div>
+
+      {conflict && (
+        <ConflictBanner
+          message={conflict.message}
+          busy={busy}
+          onDiscardYours={discardYours}
+          onForceOverwrite={forceOverwrite}
+        />
+      )}
 
       <div className={styles.body}>
         {isError ? (
