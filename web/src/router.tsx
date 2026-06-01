@@ -22,6 +22,9 @@ const EditorPage = lazy(() =>
 const SearchPage = lazy(() =>
   import('./pages/SearchPage').then((m) => ({ default: m.SearchPage })),
 )
+const NewFilePage = lazy(() =>
+  import('./pages/NewFilePage').then((m) => ({ default: m.NewFilePage })),
+)
 
 // Wrap a lazily-loaded page in a Suspense boundary with the delayed fallback.
 function lazyRoute(Page: React.ComponentType) {
@@ -101,12 +104,21 @@ const searchRoute = createRoute({
   component: lazyRoute(SearchPage),
 })
 
+// "/p/$namespace/$project/new" path-less new-file editor (session 4). Additive
+// and parallel to /edit/$ — an empty editor where the path is chosen at Save.
+const newFileRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/p/$namespace/$project/new',
+  component: lazyRoute(NewFilePage),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   projectRoute,
   blobRoute,
   editRoute,
   searchRoute,
+  newFileRoute,
 ])
 
 export const router = createRouter({
@@ -134,6 +146,7 @@ export {
   blobRoute,
   editRoute,
   searchRoute,
+  newFileRoute,
   type IndexSearch,
   type SearchSearch,
 }

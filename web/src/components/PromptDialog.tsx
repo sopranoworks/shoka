@@ -10,6 +10,9 @@ export interface PromptDialogProps {
   defaultValue?: string
   confirmLabel?: string
   cancelLabel?: string
+  // Optional synchronous validator: return an error message to block submit and
+  // show it inline, or null when the value is acceptable.
+  validate?: (value: string) => string | null
   onConfirm: (value: string) => void
   onCancel: () => void
 }
@@ -21,14 +24,19 @@ export function PromptDialog({
   defaultValue = '',
   confirmLabel = 'Save',
   cancelLabel = 'Cancel',
+  validate,
   onConfirm,
   onCancel,
 }: PromptDialogProps) {
   const [value, setValue] = useState(defaultValue)
+  const [error, setError] = useState<string | null>(null)
 
   // Seed the field each time the dialog opens.
   useEffect(() => {
-    if (open) setValue(defaultValue)
+    if (open) {
+      setValue(defaultValue)
+      setError(null)
+    }
   }, [open, defaultValue])
 
   useEffect(() => {
@@ -47,7 +55,15 @@ export function PromptDialog({
 
   const submit = () => {
     const v = value.trim()
-    if (v) onConfirm(v)
+    if (!v) return
+    if (validate) {
+      const msg = validate(v)
+      if (msg) {
+        setError(msg)
+        return
+      }
+    }
+    onConfirm(v)
   }
 
   return (
@@ -66,7 +82,10 @@ export function PromptDialog({
             className={styles.input}
             value={value}
             autoFocus
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => {
+              setValue(e.target.value)
+              if (error) setError(null)
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault()
@@ -75,6 +94,7 @@ export function PromptDialog({
             }}
           />
         </label>
+        {error && <div className={styles.error}>{error}</div>}
         <div className={styles.actions}>
           <button className={styles.cancel} onClick={onCancel}>
             {cancelLabel}

@@ -43,6 +43,20 @@ export function ProjectPage() {
           <button className={styles.primaryBtn} onClick={() => openPalette('files')}>
             Go to File <kbd>⌘P</kbd>
           </button>
+          <Link
+            to="/p/$namespace/$project/new"
+            params={{ namespace, project }}
+            className={styles.ghostBtn}
+          >
+            New file
+          </Link>
+          <Link
+            to="/p/$namespace/$project/search"
+            params={{ namespace, project }}
+            className={styles.ghostBtn}
+          >
+            Search <kbd>⌘⇧F</kbd>
+          </Link>
           <button className={styles.ghostBtn} onClick={() => openPalette('commands')}>
             Command Palette <kbd>⌘K</kbd>
           </button>

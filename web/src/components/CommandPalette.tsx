@@ -65,6 +65,15 @@ export function CommandPalette() {
   const searchProjectRef = useRef(searchProject)
   searchProjectRef.current = searchProject
 
+  // New file in the project in context (path chosen at Save time).
+  const newFileInProject = useCallback(() => {
+    if (!view.namespace || !view.project) return
+    void navigate({
+      to: '/p/$namespace/$project/new',
+      params: { namespace: view.namespace, project: view.project },
+    })
+  }, [view, navigate])
+
   const { data: projects = [] } = useProjectsQuery()
   const namespaces = useMemo(() => namespacesOf(projects), [projects])
   // Global quick-open: load every project's files, but only while that page is
@@ -195,6 +204,13 @@ export function CommandPalette() {
                   hint="In this project"
                   kbd="⌘⇧F"
                   onSelect={() => run(searchProject)}
+                />
+              )}
+              {onProject && (
+                <CmdItem
+                  label="New file in this project"
+                  hint="Choose a path at save"
+                  onSelect={() => run(newFileInProject)}
                 />
               )}
             </Command.Group>

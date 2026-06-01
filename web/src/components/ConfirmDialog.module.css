@@ -45,6 +45,11 @@
   outline: none;
   border-color: var(--c-accent);
 }
+.error {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--c-bad);
+}
 
 .actions {
   display: flex;
