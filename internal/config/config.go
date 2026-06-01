@@ -127,6 +127,25 @@ type MetricsConfig struct {
 	Addr string `yaml:"addr"`
 }
 
+// IdentityConfig configures who Shoka records as the author of the git commits
+// it produces. PROVISIONAL: this is single-user mode — the floor of a larger
+// authentication design (maintenance backlog B-28), NOT that design. There is no
+// authentication here; User is the one configured operator, and a future
+// multi-user auth mechanism substitutes a per-request authenticated user without
+// changing this shape. Agents (MCP clients) declare their own name/worker at
+// connect time (clientInfo + initialize _meta); AgentDefault is the fallback for
+// clients that declare nothing.
+type IdentityConfig struct {
+	User struct {
+		Name  string `yaml:"name"`
+		Email string `yaml:"email"`
+	} `yaml:"user"`
+	AgentDefault struct {
+		Name   string `yaml:"name"`
+		Worker string `yaml:"worker"`
+	} `yaml:"agent_default"`
+}
+
 type Config struct {
 	Server struct {
 		HTTP ServerSettings `yaml:"http"`
@@ -134,7 +153,8 @@ type Config struct {
 		Auth AuthConfig     `yaml:"auth"`
 		Log  LogConfig      `yaml:"log"`
 	} `yaml:"server"`
-	Storage struct {
+	Identity IdentityConfig `yaml:"identity"`
+	Storage  struct {
 		BaseDir   string          `yaml:"base_dir"`
 		DriftScan DriftScanConfig `yaml:"drift_scan"`
 	} `yaml:"storage"`
@@ -187,6 +207,17 @@ func (c *Config) applyDefaults() {
 	}
 	if c.WALWorker.BackoffMax == 0 {
 		c.WALWorker.BackoffMax = Duration(30 * time.Second)
+	}
+	// Identity defaults (single-user mode). Absent config still yields a valid,
+	// intentional author rather than falling back to environmental git config.
+	if c.Identity.User.Name == "" {
+		c.Identity.User.Name = "Shoka Operator"
+	}
+	if c.Identity.User.Email == "" {
+		c.Identity.User.Email = "operator@shoka.local"
+	}
+	if c.Identity.AgentDefault.Name == "" {
+		c.Identity.AgentDefault.Name = "shoka-agent"
 	}
 }
 

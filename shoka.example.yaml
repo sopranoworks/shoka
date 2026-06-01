@@ -43,6 +43,25 @@ server:
     # allowed_origins:
     #   - "http://localhost:8080"
 
+# Commit-author identity. PROVISIONAL: this is "single-user mode" — the floor of
+# a larger authentication design (maintenance backlog B-28), NOT that design.
+# There is no authentication; `user` is the one operator Shoka records as the
+# owner of every commit. MCP-connected agents declare their own name (via the
+# MCP `initialize` clientInfo) and an optional worker id (via initialize `_meta`
+# under key "shoka/worker-id"); `agent_default` is the fallback for clients that
+# declare nothing. Identity is read at startup; change it and restart.
+#
+# Commit format: the agent is the git Author, `user` is the git Committer, and
+# all three layers are also recorded as `Shoka-User` / `Shoka-Agent` /
+# `Shoka-Worker` commit trailers (Shoka-Worker only when present).
+identity:
+  user:
+    name: "Shoka Operator"           # your name
+    email: "operator@shoka.local"    # your email
+  agent_default:
+    name: "shoka-agent"              # used when an MCP client declares no name
+    worker: ""                       # default Rohrpost worker id (usually empty)
+
 storage:
   # Project repositories live at <base_dir>/<namespace>/<projectName>.
   # Relative paths resolve against the server's working directory and are
