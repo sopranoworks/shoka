@@ -274,6 +274,11 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 	}, tools.LoggedTool(logger, "delete_file", tools.DeleteFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "move_file",
+		Description: "Rename or move a file within a project as a single atomic Git commit (history-preserving), rewriting inbound internal Markdown links so the project stays consistent",
+	}, tools.LoggedTool(logger, "move_file", tools.MoveFileHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_files",
 		Description: "List files in a project path; each response includes a modified_at map giving every entry's working-tree modification time (RFC3339 nanosecond UTC)",
 	}, tools.LoggedTool(logger, "list_files", tools.ListFilesHandler(s)))

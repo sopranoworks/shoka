@@ -240,6 +240,75 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 	}
 }
 
+type MoveFileInput struct {
+	Namespace   string  `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName string  `json:"project_name" jsonschema:"required, the name of the project"`
+	SourcePath  string  `json:"source_path" jsonschema:"required, the current path of the file to move"`
+	TargetPath  string  `json:"target_path" jsonschema:"required, the new path for the file (same project)"`
+	IfMatch     *string `json:"if_match,omitempty" jsonschema:"optional, an etag for optimistic concurrency: validates the target's etag when the target already exists (explicit overwrite), otherwise the source's etag; a move never silently overwrites an existing target"`
+}
+
+type MoveFileOutput struct {
+	Message string `json:"message,omitempty"`
+	// NewETag is the destination's etag (SHA-256 of the moved content) on success.
+	NewETag string `json:"new_etag,omitempty"`
+	// LinksRewritten is the number of internal markdown links updated to point at
+	// the new path, committed atomically with the rename. Zero is valid.
+	LinksRewritten int `json:"links_rewritten,omitempty"`
+	// Conflict is true when if_match did not match (or the target exists and no
+	// if_match was given); CurrentETag then holds the relevant file's current etag.
+	Conflict    bool   `json:"conflict,omitempty"`
+	CurrentETag string `json:"current_etag,omitempty"`
+	// Reason is set on a project-state refusal: "corrupted" | "dangerous" | "write_disabled".
+	Reason string `json:"reason,omitempty"`
+}
+
+func MoveFileHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, MoveFileInput) (*mcp.CallToolResult, MoveFileOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input MoveFileInput) (*mcp.CallToolResult, MoveFileOutput, error) {
+		if input.ProjectName == "" || input.SourcePath == "" || input.TargetPath == "" {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "project_name, source_path, and target_path are required"}},
+				IsError: true,
+			}, MoveFileOutput{}, nil
+		}
+		if input.Namespace == "" {
+			input.Namespace = "default"
+		}
+		if !utils.IsValidName(input.Namespace) || !utils.IsValidName(input.ProjectName) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "invalid namespace or project_name: only alphanumeric, hyphen, and underscore are allowed"}},
+				IsError: true,
+			}, MoveFileOutput{}, nil
+		}
+
+		ctx = identity.WithAgent(ctx, agentFromMCP(req))
+		ctx = notify.WithSender(ctx, mcpSender(req))
+		newEtag, links, err := s.Move(ctx, "", input.Namespace, input.ProjectName, input.SourcePath, input.TargetPath, input.IfMatch)
+		if err != nil {
+			if text, conflict, reason, ok := classifyWriteErr(err); ok {
+				return &mcp.CallToolResult{
+						Content: []mcp.Content{&mcp.TextContent{Text: text}},
+						IsError: true,
+					}, MoveFileOutput{
+						Conflict:    conflict != "",
+						CurrentETag: conflict,
+						Reason:      reason,
+					}, nil
+			}
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to move file: %v", err)}},
+				IsError: true,
+			}, MoveFileOutput{}, nil
+		}
+
+		return nil, MoveFileOutput{
+			Message:        fmt.Sprintf("File moved from %s to %s", input.SourcePath, input.TargetPath),
+			NewETag:        newEtag,
+			LinksRewritten: links,
+		}, nil
+	}
+}
+
 type GetHistoryInput struct {
 	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
 	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
