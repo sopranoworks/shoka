@@ -3,12 +3,10 @@ package tests
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
@@ -103,13 +101,18 @@ func TestPhase2Tools_Integration(t *testing.T) {
 			t.Fatal("WAL did not drain")
 		}
 
-		// Verify Git commit
-		projectPath := filepath.Join(tmpDir, namespace, projectName)
-		r, _ := git.PlainOpen(projectPath)
-		ref, _ := r.Head()
-		commit, _ := r.CommitObject(ref.Hash())
-		if !strings.HasPrefix(commit.Message, "Delete file1.txt") {
-			t.Errorf("expected commit message to start with 'Delete file1.txt', got %q", commit.Message)
+		// Verify the delete commit landed at HEAD, via the public history API
+		// (storage owns git; tests assert through its business-intent surface —
+		// 2026-06-01 gitwrap directive).
+		hist, err := s.GetHistory(namespace, projectName, "", 1)
+		if err != nil {
+			t.Fatalf("GetHistory failed: %v", err)
+		}
+		if len(hist) == 0 {
+			t.Fatalf("expected at least one commit")
+		}
+		if !strings.HasPrefix(hist[0].Message, "Delete file1.txt") {
+			t.Errorf("expected commit message to start with 'Delete file1.txt', got %q", hist[0].Message)
 		}
 	})
 

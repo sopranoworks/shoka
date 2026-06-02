@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
-	"github.com/go-git/go-git/v5"
 	"github.com/gorilla/websocket"
 	"github.com/shoka/mcp-server/internal/drafts"
 	"github.com/shoka/mcp-server/internal/identity"
@@ -173,42 +171,89 @@ func TestWSUI_SaveWithoutIfMatchBackwardCompat(t *testing.T) {
 	}
 }
 
-func TestWSUI_SaveAttributesAuthorToOperator(t *testing.T) {
-	conn, s, dir, etag := versioningFixture(t)
+// ctxCapturingStore wraps a StorageService and records the context handed to
+// Write. It lets this ui-layer test assert WHAT identity handleSaveFile attaches
+// to the write context — the ui layer's actual responsibility — without reaching
+// into storage's git state from another package (a layering violation, and an
+// Anchor-1 go-git import outside the storage submodule). The other half of the
+// guarantee — "a WithUser context produces an operator-authored commit" — is
+// storage's own responsibility, pinned inside the submodule by
+// storage.TestCommitIdentity_WithUserMakesUserAuthor.
+type ctxCapturingStore struct {
+	storage.StorageService
+	mu       sync.Mutex
+	writeCtx context.Context
+}
+
+func (c *ctxCapturingStore) Write(ctx context.Context, sessionID, ns, proj, path, content string, ifMatch *string) (string, error) {
+	c.mu.Lock()
+	c.writeCtx = ctx
+	c.mu.Unlock()
+	return c.StorageService.Write(ctx, sessionID, ns, proj, path, content, ifMatch)
+}
+
+func (c *ctxCapturingStore) lastWriteCtx() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeCtx
+}
+
+func TestWSUI_SaveAttachesOperatorIdentityToContext(t *testing.T) {
+	dir, err := os.MkdirTemp("", "shoka-ui-ctx-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	base, err := storage.NewFSGitStorageWithOptions(dir, storage.Options{
+		Identity: identity.Defaults{
+			UserName:  "Osamu Takahashi",
+			UserEmail: "forte.nit@gmail.com",
+			AgentName: "shoka-agent",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	if err := base.CreateProject("ns", "proj"); err != nil {
+		t.Fatal(err)
+	}
+	etag, err := base.Write(context.Background(), "", "ns", "proj", "f.md", "v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spy := &ctxCapturingStore{StorageService: base}
+	server := httptest.NewServer(NewManager(spy, mustDrafts(t, dir), nil))
+	t.Cleanup(server.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
 
 	if r := roundTrip(t, conn, SaveFile,
 		`{"namespace":"ns","projectName":"proj","path":"f.md","content":"v2","if_match":"`+etag+`"}`); r.Type != SaveAck {
 		t.Fatalf("save failed: %s %s", r.Type, r.Payload)
 	}
 
-	// The commit is async (WAL worker); wait for it, then inspect HEAD.
-	if !s.WaitForWAL(10 * time.Second) {
-		t.Fatalf("WAL did not drain (pending=%d)", s.WALPending())
+	// The ui layer's responsibility: a web SAVE_FILE is the operator acting as
+	// themselves, so handleSaveFile must mark the write context as user-authored
+	// (identity.WithUser) rather than leaving it agent-authored. Presence of a user
+	// on the ctx is the marker — single-user mode carries an empty User; a future
+	// authenticated request substitutes the real one at the same call site.
+	ctx := spy.lastWriteCtx()
+	if ctx == nil {
+		t.Fatal("handleSaveFile never called storage.Write")
 	}
-
-	r, err := git.PlainOpen(filepath.Join(dir, "ns", "proj"))
-	if err != nil {
-		t.Fatal(err)
+	if _, ok := identity.UserFrom(ctx); !ok {
+		t.Error("web save context carries no user; handleSaveFile must set identity.WithUser so the commit is operator-authored")
 	}
-	ref, err := r.Head()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := r.CommitObject(ref.Hash())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// A web SAVE_FILE is the operator acting as themselves: Author = operator user,
-	// not the default agent. (Contrast: an MCP write is agent-authored — pinned by
-	// internal/storage TestCommitIdentity_DefaultAgent.)
-	if c.Author.Name != "Osamu Takahashi" || c.Author.Email != "forte.nit@gmail.com" {
-		t.Errorf("author = %s <%s>, want the operator user", c.Author.Name, c.Author.Email)
-	}
-	if c.Committer.Name != "Osamu Takahashi" {
-		t.Errorf("committer = %q, want the operator user", c.Committer.Name)
-	}
-	if !strings.Contains(c.Message, "Shoka-User: Osamu Takahashi <forte.nit@gmail.com>") {
-		t.Errorf("missing user trailer:\n%s", c.Message)
+	// And it must NOT declare an agent — a web save is the operator, not an agent.
+	if a, ok := identity.AgentFrom(ctx); ok && a.Name != "" {
+		t.Errorf("web save context unexpectedly declares agent %q", a.Name)
 	}
 }

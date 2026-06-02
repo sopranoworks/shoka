@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/tools"
@@ -185,23 +184,20 @@ func TestFSGitStorage_Integration(t *testing.T) {
 			t.Fatal("WAL did not drain")
 		}
 
-		// Verify Git commit
-		r, err := git.PlainOpen(projectPath)
+		// Verify the commit landed, via the public history API (the storage
+		// submodule owns git; tests assert through its business-intent surface,
+		// not a direct go-git open — 2026-06-01 gitwrap directive).
+		hist, err := s.GetHistory(namespace, projectName, "", 1)
 		if err != nil {
-			t.Fatalf("failed to open git repo: %v", err)
+			t.Fatalf("GetHistory failed: %v", err)
 		}
-		ref, err := r.Head()
-		if err != nil {
-			t.Fatalf("failed to get HEAD: %v", err)
-		}
-		commit, err := r.CommitObject(ref.Hash())
-		if err != nil {
-			t.Fatalf("failed to get commit object: %v", err)
+		if len(hist) == 0 {
+			t.Fatalf("expected at least one commit")
 		}
 		// The message now carries identity trailers after the subject line
 		// (the 2026-06-01 identity-config directive); assert the subject.
-		if !strings.HasPrefix(commit.Message, "Update docs/README.md") {
-			t.Errorf("expected commit message to start with %q, got %q", "Update docs/README.md", commit.Message)
+		if !strings.HasPrefix(hist[0].Message, "Update docs/README.md") {
+			t.Errorf("expected commit message to start with %q, got %q", "Update docs/README.md", hist[0].Message)
 		}
 	})
 
