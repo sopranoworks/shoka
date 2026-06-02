@@ -149,14 +149,14 @@ Controlled by config `server.auth` (Source: `internal/config/config.go:23-30`;
 
 ## 4. Tool catalog
 
-v1 exposes **13 tools**. Twelve are always registered; `translate_file` is
+v1 exposes **14 tools**. Thirteen are always registered; `translate_file` is
 registered **only** when `services.google_cloud.project_id` is set. (Source:
 `cmd/server/main.go:131-208`, conditional at `:75` and `:200-205`.)
 
 ```
 get_server_info  list_projects  create_project  list_files  read_file
-read_file_at_version  write_file  delete_file  get_history  read_summary
-list_files_since  search_files  translate_file*        (*conditional)
+read_file_at_version  write_file  delete_file  move_file  get_history
+read_summary  list_files_since  search_files  translate_file*  (*conditional)
 ```
 
 ### 4.0 Common argument conventions
@@ -356,7 +356,36 @@ Apply to every tool unless noted:
   `internal/tools/discovery.go:52-91`; `internal/storage/discovery.go:26-31,146-205`.)
 - **Side effects:** none.
 
-### 4.13 `translate_file` (conditional)
+### 4.13 `move_file`
+- **Purpose:** rename or move a file **within one project** as a single atomic,
+  history-preserving git commit, rewriting inbound internal Markdown links so the
+  project stays internally consistent. Same-namespace, same-project only;
+  cross-project move is not supported.
+- **Input:** `namespace` (opt), `project_name` (**required**), `source_path`
+  (**required**), `target_path` (**required**), `if_match` (string, optional —
+  dual semantic: validates the **target's** etag when the target already exists
+  (explicit overwrite), otherwise the **source's** etag).
+- **Output (success):** `new_etag` (string — the destination's content etag),
+  `links_rewritten` (int — count of internal links updated in the same commit;
+  `0` is valid), `message`.
+- **Output (conflict):** `isError: true`; structured `conflict: true`,
+  `current_etag: <etag>`. A target that already exists with **no** `if_match` is
+  refused (a move never silently overwrites); the conflict carries the target's
+  etag. A stale `if_match` carries the relevant file's current etag (see § 5).
+- **Output (project-state refusal):** `isError: true`; structured
+  `reason: "corrupted" | "dangerous" | "write_disabled"` (see § 7).
+- **Side effects:** one synchronous atomic operation (write destination, rewrite
+  referrers, remove source) + a single WAL `move` entry; one background git commit
+  (`Move <source> -> <target>`, history-preserving via blob identity) and a
+  **`file_moved`** webhook with `commit_hash` follow asynchronously. A
+  `file.move` NOTIFY (carrying `source_path` and `path`) is dispatched to other
+  `/ws/ui` connections. Internal-link rewriting covers inline `[text](path)` and
+  `![alt](path)` Markdown links (parsed, not regex-matched; links inside code are
+  left untouched); the moved file's own outbound links are left unchanged.
+  (Source: `internal/tools/file.go`; `internal/storage/move.go`,
+  `linkrewrite.go`, `commit.go`.)
+
+### 4.14 `translate_file` (conditional)
 - **Availability:** registered **only** when `services.google_cloud.project_id`
   is configured. (Source: `cmd/server/main.go:75-83,200-205`.)
 - **Purpose:** translate a Markdown file and write the result as a sibling file.
