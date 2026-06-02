@@ -48,6 +48,11 @@ type Event struct {
 	Kind      string    `json:"kind"`
 	Target    string    `json:"target"`         // "<namespace>/<project>"
 	Path      string    `json:"path,omitempty"` // file path within the project; "" for project-level events
+	// SourcePath is set only on a "file.move" event: it carries the file's OLD
+	// path while Path carries the NEW path, so a consumer can tell which file was
+	// renamed to what (the move-file directive §1.5). Empty (and omitted) for every
+	// other kind, so the wire shape those consumers observe is unchanged.
+	SourcePath string `json:"source_path,omitempty"`
 }
 
 // Center is the in-process collection point for events. A nil *Center is a
@@ -112,17 +117,27 @@ func (c *Center) Notify(kind, target, path string) {
 // The sender is internal to dispatch: it is never written into the Event, so the
 // wire shape subscribers observe is unchanged.
 func (c *Center) NotifyFrom(sender, kind, target, path string) {
+	c.publishFrom(sender, Event{Kind: kind, Target: target, Path: path})
+}
+
+// NotifyMoveFrom publishes a "file.move" event carrying both the source (old) and
+// target (new) paths (the move-file directive §1.5). It is the move analogue of
+// NotifyFrom: the sender is the originating connection/session, excluded from its
+// own event exactly as for file.write/file.delete. target is the joined
+// "<namespace>/<project>"; sourcePath is the old path, path is the new path.
+func (c *Center) NotifyMoveFrom(sender, target, sourcePath, path string) {
+	c.publishFrom(sender, Event{Kind: "file.move", Target: target, Path: path, SourcePath: sourcePath})
+}
+
+// publishFrom records ev (assigning Seq + Timestamp) and fans it out, excluding
+// the originating sender. It is the shared core of NotifyFrom / NotifyMoveFrom.
+func (c *Center) publishFrom(sender string, ev Event) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	ev := Event{
-		Seq:       c.next,
-		Timestamp: time.Now(),
-		Kind:      kind,
-		Target:    target,
-		Path:      path,
-	}
+	ev.Seq = c.next
+	ev.Timestamp = time.Now()
 	c.buf[c.writeIx] = ev
 	c.next++
 	c.writeIx = (c.writeIx + 1) % len(c.buf)
