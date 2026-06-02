@@ -42,10 +42,25 @@ type Entry struct {
 	Namespace string
 	Project   string
 	Path      string
-	Op        string // "write" or "delete"
+	Op        string // "write", "delete", or "move"
 	Version   string // sha256 hex of content
 	Size      int64
 	Content   []byte
+
+	// MoveFrom is the source path of an Op=="move" entry; Path is then the
+	// destination. Content carries the moved file's (unchanged) bytes so the
+	// destination git blob is rebuilt from the WAL — its hash equals the source's
+	// last-committed blob, which is what makes `git log --follow` detect the
+	// rename. Empty for write/delete. (move-file directive, backlog B-24.)
+	MoveFrom string
+
+	// Aux carries additional file writes committed atomically *with* this entry,
+	// in the same single git commit — used by "move" to bundle the internal
+	// markdown link rewrites alongside the rename. Each AuxFile is integrity-
+	// checked independently (its own Size+Version), exactly like the primary
+	// Content payload. Empty for write/delete and for a move with no incoming
+	// links. (move-file directive §1.4.)
+	Aux []AuxFile
 
 	// Commit-author identity (the 2026-06-01 identity-config directive). Carried
 	// here because the commit is produced asynchronously by the WAL worker, so
@@ -62,6 +77,19 @@ type Entry struct {
 	// commit worker honours it after a restart. Defaults to false (agent-author),
 	// so entries written before this field decode to today's behaviour.
 	AuthorIsUser bool
+}
+
+// AuxFile is one secondary file write bundled into the same atomic commit as its
+// parent Entry (the "move" op uses it for internal-link rewrites). Size and
+// Version mirror the parent's content-integrity contract: Size == len(Content)
+// and Version == sha256hex(Content), validated on read so a corrupt aux payload
+// is quarantined exactly like a corrupt primary payload. Append fills Size and
+// Version from Content, so callers set only Path and Content.
+type AuxFile struct {
+	Path    string
+	Content []byte
+	Size    int64
+	Version string // sha256 hex of Content
 }
 
 // EntryHead is an entry's metadata without its content, used by the dispatcher.
@@ -90,6 +118,18 @@ type wireEntry struct {
 	AgentName    string `json:"agent_name,omitempty"`
 	WorkerID     string `json:"worker_id,omitempty"`
 	AuthorIsUser bool   `json:"author_is_user,omitempty"`
+	// Move fields, omitempty so write/delete entries are byte-identical to before.
+	MoveFrom string    `json:"move_from,omitempty"`
+	Aux      []wireAux `json:"aux,omitempty"`
+}
+
+// wireAux is one AuxFile's on-disk JSON shape: base64 content plus its own
+// size+sha, so the integrity check covers each aux payload independently.
+type wireAux struct {
+	Path       string `json:"path"`
+	ContentB64 string `json:"content_b64"`
+	Size       int64  `json:"size"`
+	Version    string `json:"version"`
 }
 
 // Log is an open write-ahead log. It is safe for concurrent use.
@@ -177,6 +217,15 @@ func (l *Log) Append(e Entry) (uint64, error) {
 	}
 	e.Size = int64(len(e.Content))
 	e.Version = sha256Hex(e.Content)
+	// Fill each aux's integrity fields from its content, so the on-disk per-aux
+	// invariant always holds regardless of what the caller set.
+	for i := range e.Aux {
+		if e.Aux[i].Content == nil {
+			e.Aux[i].Content = []byte{}
+		}
+		e.Aux[i].Size = int64(len(e.Aux[i].Content))
+		e.Aux[i].Version = sha256Hex(e.Aux[i].Content)
+	}
 
 	data, err := json.Marshal(toWire(e))
 	if err != nil {
@@ -328,40 +377,75 @@ func readEntryFile(path string, wantSeq uint64) (Entry, error) {
 	if err != nil {
 		return Entry{}, fmt.Errorf("wal: bad ts %q: %w", w.Ts, err)
 	}
+	// Decode and integrity-check each aux payload (same size+sha contract as the
+	// primary content), so a corrupt aux quarantines the whole entry.
+	var aux []AuxFile
+	if len(w.Aux) > 0 {
+		aux = make([]AuxFile, 0, len(w.Aux))
+		for i, wa := range w.Aux {
+			ac, aerr := base64.StdEncoding.DecodeString(wa.ContentB64)
+			if aerr != nil {
+				return Entry{}, fmt.Errorf("wal: bad base64 aux[%d] content: %w", i, aerr)
+			}
+			if int64(len(ac)) != wa.Size {
+				return Entry{}, fmt.Errorf("wal: aux[%d] size mismatch: field=%d actual=%d", i, wa.Size, len(ac))
+			}
+			if got := sha256Hex(ac); got != wa.Version {
+				return Entry{}, fmt.Errorf("wal: aux[%d] hash mismatch: field=%s actual=%s", i, wa.Version, got)
+			}
+			aux = append(aux, AuxFile{Path: wa.Path, Content: ac, Size: wa.Size, Version: wa.Version})
+		}
+	}
 	return Entry{
-		Seq:       seq,
-		Ts:        ts,
-		Namespace: w.Namespace,
-		Project:   w.Project,
-		Path:      w.Path,
-		Op:        w.Op,
-		Version:   w.Version,
-		Size:      w.Size,
+		Seq:          seq,
+		Ts:           ts,
+		Namespace:    w.Namespace,
+		Project:      w.Project,
+		Path:         w.Path,
+		Op:           w.Op,
+		Version:      w.Version,
+		Size:         w.Size,
 		Content:      content,
 		UserName:     w.UserName,
 		UserEmail:    w.UserEmail,
 		AgentName:    w.AgentName,
 		WorkerID:     w.WorkerID,
 		AuthorIsUser: w.AuthorIsUser,
+		MoveFrom:     w.MoveFrom,
+		Aux:          aux,
 	}, nil
 }
 
 func toWire(e Entry) wireEntry {
+	var aux []wireAux
+	if len(e.Aux) > 0 {
+		aux = make([]wireAux, 0, len(e.Aux))
+		for _, a := range e.Aux {
+			aux = append(aux, wireAux{
+				Path:       a.Path,
+				ContentB64: base64.StdEncoding.EncodeToString(a.Content),
+				Size:       a.Size,
+				Version:    a.Version,
+			})
+		}
+	}
 	return wireEntry{
-		Seq:        seqHex(e.Seq),
-		Ts:         e.Ts.UTC().Format(time.RFC3339Nano),
-		Namespace:  e.Namespace,
-		Project:    e.Project,
-		Path:       e.Path,
-		Op:         e.Op,
-		Version:    e.Version,
-		Size:       e.Size,
+		Seq:          seqHex(e.Seq),
+		Ts:           e.Ts.UTC().Format(time.RFC3339Nano),
+		Namespace:    e.Namespace,
+		Project:      e.Project,
+		Path:         e.Path,
+		Op:           e.Op,
+		Version:      e.Version,
+		Size:         e.Size,
 		ContentB64:   base64.StdEncoding.EncodeToString(e.Content),
 		UserName:     e.UserName,
 		UserEmail:    e.UserEmail,
 		AgentName:    e.AgentName,
 		WorkerID:     e.WorkerID,
 		AuthorIsUser: e.AuthorIsUser,
+		MoveFrom:     e.MoveFrom,
+		Aux:          aux,
 	}
 }
 

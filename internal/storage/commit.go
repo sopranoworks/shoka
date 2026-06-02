@@ -48,19 +48,34 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 		}
 	}
 
-	isDelete := e.Op == "delete"
-	var blob plumbing.Hash
-	if !isDelete {
-		blob, err = storeBlob(r, e.Content)
+	// Build the new tree, commit subject, and change-event kind per op. A "move"
+	// folds the rename and all its internal-link rewrites into ONE tree, so the
+	// whole operation lands as a single atomic commit (move-file directive §2).
+	var newTree plumbing.Hash
+	var subject, event string
+	switch e.Op {
+	case "delete":
+		newTree, err = applyToTree(r, baseTree, strings.Split(e.Path, "/"), plumbing.ZeroHash, true)
 		if err != nil {
-			return fmt.Errorf("store blob: %w", err)
+			return fmt.Errorf("build tree: %w", err)
 		}
-	}
-
-	comps := strings.Split(e.Path, "/")
-	newTree, err := applyToTree(r, baseTree, comps, blob, isDelete)
-	if err != nil {
-		return fmt.Errorf("build tree: %w", err)
+		subject, event = "Delete "+e.Path, "file_deleted"
+	case "move":
+		newTree, err = buildMoveTree(r, baseTree, e)
+		if err != nil {
+			return fmt.Errorf("build tree: %w", err)
+		}
+		subject, event = "Move "+e.MoveFrom+" -> "+e.Path, "file_moved"
+	default: // "write"
+		blob, berr := storeBlob(r, e.Content)
+		if berr != nil {
+			return fmt.Errorf("store blob: %w", berr)
+		}
+		newTree, err = applyToTree(r, baseTree, strings.Split(e.Path, "/"), blob, false)
+		if err != nil {
+			return fmt.Errorf("build tree: %w", err)
+		}
+		subject, event = "Update "+e.Path, "file_written"
 	}
 	if newTree == baseTree {
 		// Identical rewrite or delete of an untracked path: nothing to record.
@@ -88,13 +103,7 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 	}
 	committer := object.Signature{Name: id.UserName, Email: id.UserEmail, When: now}
 
-	verb := "Update "
-	event := "file_written"
-	if isDelete {
-		verb = "Delete "
-		event = "file_deleted"
-	}
-	msg := verb + e.Path + "\n\n" + id.Trailers()
+	msg := subject + "\n\n" + id.Trailers()
 	commit := &object.Commit{Author: author, Committer: committer, Message: msg, TreeHash: newTree, ParentHashes: parents}
 	cobj := r.Storer.NewEncodedObject()
 	if err := commit.Encode(cobj); err != nil {
@@ -129,6 +138,39 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 		Timestamp:  now,
 	})
 	return nil
+}
+
+// buildMoveTree derives a single tree from baseTree that applies an entire move
+// atomically: the source path is removed, the destination is added carrying the
+// moved file's (unchanged) bytes, and every internal-link rewrite in e.Aux is
+// folded in. Because the destination blob is rebuilt from the unchanged Content,
+// its hash equals the source's last-committed blob hash — which is exactly what
+// lets `git log --follow` recognise the rename (the move-file directive §1.1).
+// Returns one tree hash; commitEntry turns it into one commit.
+func buildMoveTree(r *git.Repository, baseTree plumbing.Hash, e wal.Entry) (plumbing.Hash, error) {
+	tree, err := applyToTree(r, baseTree, strings.Split(e.MoveFrom, "/"), plumbing.ZeroHash, true)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("remove source: %w", err)
+	}
+	destBlob, err := storeBlob(r, e.Content)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("store moved blob: %w", err)
+	}
+	tree, err = applyToTree(r, tree, strings.Split(e.Path, "/"), destBlob, false)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("add destination: %w", err)
+	}
+	for _, a := range e.Aux {
+		b, berr := storeBlob(r, a.Content)
+		if berr != nil {
+			return plumbing.ZeroHash, fmt.Errorf("store rewrite blob %q: %w", a.Path, berr)
+		}
+		tree, err = applyToTree(r, tree, strings.Split(a.Path, "/"), b, false)
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("apply rewrite %q: %w", a.Path, err)
+		}
+	}
+	return tree, nil
 }
 
 // storeBlob writes content as a git blob and returns its hash.

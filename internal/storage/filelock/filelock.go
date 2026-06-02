@@ -16,6 +16,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"runtime/debug"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -133,6 +134,72 @@ func (m *Manager) WithLock(ctx context.Context, sessionID, path string, fn func(
 			m.logger.Error("filelock: panic in locked function",
 				"path", path, "session", sessionID, "panic", r, "stack", string(debug.Stack()))
 			err = fmt.Errorf("filelock: panic in locked function for %q: %v", path, r)
+		}
+	}()
+
+	return fn()
+}
+
+// WithLocks runs fn while holding the locks for every path in paths at once —
+// the multi-file primitive an atomic move needs (rename source + destination +
+// each rewritten referrer). It exists because the per-path stripe mutexes are
+// non-reentrant and shared by hashing: two distinct paths can map to the same
+// stripe, so a caller cannot safely nest WithLock for a set of paths. WithLocks
+// maps the paths to their DISTINCT stripe mutexes and locks each one exactly
+// once, in ascending stripe-index order. That global ordering makes the
+// acquisition deadlock-free against any concurrent WithLock/WithLocks (all
+// acquire stripes in the same order), and the de-duplication avoids a stripe
+// self-deadlock when two paths collide on one stripe.
+//
+// ctx cancellation is honoured while waiting for each stripe; on cancellation any
+// already-acquired stripes are released and ctx.Err() is returned. A lease is
+// recorded per path (for ReleaseAllForSession and observability), and fn's panic
+// is recovered exactly as in WithLock. An empty paths slice runs fn with no lock.
+func (m *Manager) WithLocks(ctx context.Context, sessionID string, paths []string, fn func() error) (err error) {
+	// Distinct stripe indices, ascending — the canonical lock order.
+	idxSet := make(map[int]struct{}, len(paths))
+	for _, p := range paths {
+		idxSet[int(fnv32a(p)%numStripes)] = struct{}{}
+	}
+	idxs := make([]int, 0, len(idxSet))
+	for i := range idxSet {
+		idxs = append(idxs, i)
+	}
+	sort.Ints(idxs)
+
+	acquired := make([]int, 0, len(idxs))
+	unlockAll := func() {
+		for j := len(acquired) - 1; j >= 0; j-- {
+			m.stripes[acquired[j]].Unlock()
+		}
+	}
+	for _, i := range idxs {
+		if lerr := lockCtx(ctx, &m.stripes[i]); lerr != nil {
+			unlockAll()
+			return lerr
+		}
+		acquired = append(acquired, i)
+	}
+	defer unlockAll()
+
+	m.leasesMu.Lock()
+	for _, p := range paths {
+		m.leases[p] = &lease{sessionID: sessionID, acquiredAt: time.Now()}
+	}
+	m.leasesMu.Unlock()
+	defer func() {
+		m.leasesMu.Lock()
+		for _, p := range paths {
+			delete(m.leases, p)
+		}
+		m.leasesMu.Unlock()
+	}()
+
+	defer func() {
+		if r := recover(); r != nil {
+			m.logger.Error("filelock: panic in locked function (multi)",
+				"paths", paths, "session", sessionID, "panic", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("filelock: panic in locked function for %v: %v", paths, r)
 		}
 	}()
 
