@@ -190,8 +190,9 @@ func TestStore_CorruptedStateAndRecovery(t *testing.T) {
 	_, err = s.Write(context.Background(), "sess", "ns", "proj", "b.md", "x", nil)
 	assert.ErrorIs(t, err, ErrProjectCorrupted)
 
-	// Recovery (A) adopts the working tree and returns to healthy.
-	require.NoError(t, s.RecoverProject("ns", "proj", RecoverAcceptWorkingTree))
+	// Recovery (A) adopts the working tree's tracked changes and returns to healthy.
+	_, rerr := s.RepairTrackedChanges(context.Background(), "ns", "proj")
+	require.NoError(t, rerr)
 	assert.Equal(t, StateHealthy, s.State("ns", "proj"))
 	sum2, err := s.DetectDrift("ns", "proj")
 	require.NoError(t, err)
@@ -223,11 +224,15 @@ func TestStore_DangerousStateAndRecovery(t *testing.T) {
 	_, _, err = s.ReadFileWithETag("ns", "proj", "a.md")
 	assert.ErrorIs(t, err, ErrProjectDangerous)
 
-	// accept-head is not allowed for a dangerous project.
-	assert.Error(t, s.RecoverProject("ns", "proj", RecoverAcceptHead))
+	// restore-to-latest is not allowed for a dangerous project.
+	assert.Error(t, s.RestoreToLatest(context.Background(), "ns", "proj"))
 
-	// Recovery (A) re-initialises .git and returns to healthy.
-	require.NoError(t, s.RecoverProject("ns", "proj", RecoverAcceptWorkingTree))
+	// Recovery (A) re-initialises .git and returns to healthy. (Tracked-only: the
+	// re-init has no HEAD, so nothing is adopted; the project is healthy with its
+	// prior files left untracked on disk — bootstrapping a bare tree's content is
+	// the later lost+found/shoka.ignore directive's job.)
+	_, rerr := s.RepairTrackedChanges(context.Background(), "ns", "proj")
+	require.NoError(t, rerr)
 	assert.Equal(t, StateHealthy, s.State("ns", "proj"))
 }
 

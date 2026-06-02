@@ -5,6 +5,7 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -13,11 +14,28 @@ import (
 )
 
 // Store is the subset of storage the admin API needs.
+//
+// Recovery is two business intents, not one mode-dispatched call: this layer —
+// the user-input boundary — maps the HTTP "mode" parameter to the intent it
+// means and calls that method directly (2026-06-01 gitwrap directive: the
+// submodule exposes intents, not caller-selected options).
 type Store interface {
 	State(namespace, projectName string) storage.ProjectState
 	DetectDrift(namespace, projectName string) (storage.DriftSummary, error)
-	RecoverProject(namespace, projectName string, mode storage.RecoveryMode) error
+	// RepairTrackedChanges adopts the working tree's tracked changes (the
+	// accept-working-tree intent); returns the new commit hash (or "").
+	RepairTrackedChanges(ctx context.Context, namespace, projectName string) (string, error)
+	// RestoreToLatest discards working-tree changes back to HEAD (the
+	// accept-head intent).
+	RestoreToLatest(ctx context.Context, namespace, projectName string) error
 }
+
+// HTTP recovery-mode values (the Web UI dialog / CLI flag contract). The
+// mode→intent mapping lives here, at the user-input boundary, not in storage.
+const (
+	modeAcceptWorkingTree = "accept-working-tree"
+	modeAcceptHead        = "accept-head"
+)
 
 type statusResponse struct {
 	Namespace string `json:"namespace"`
@@ -83,18 +101,24 @@ func New(s Store) http.Handler {
 		if !ok {
 			return
 		}
-		mode := storage.RecoveryMode(r.URL.Query().Get("mode"))
-		if mode != storage.RecoverAcceptWorkingTree && mode != storage.RecoverAcceptHead {
+		mode := r.URL.Query().Get("mode")
+		var recErr error
+		switch mode {
+		case modeAcceptWorkingTree:
+			_, recErr = s.RepairTrackedChanges(r.Context(), ns, project)
+		case modeAcceptHead:
+			recErr = s.RestoreToLatest(r.Context(), ns, project)
+		default:
 			httpError(w, http.StatusBadRequest, "mode must be accept-working-tree or accept-head")
 			return
 		}
-		if err := s.RecoverProject(ns, project, mode); err != nil {
-			httpError(w, http.StatusConflict, err.Error())
+		if recErr != nil {
+			httpError(w, http.StatusConflict, recErr.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, recoverResponse{
 			Namespace: ns, Project: project, State: string(s.State(ns, project)),
-			Message: "recovered with " + string(mode),
+			Message: "recovered with " + mode,
 		})
 	})
 
