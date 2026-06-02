@@ -86,6 +86,22 @@ func (d DriftScanConfig) OnStartupEnabled() bool {
 	return d.OnStartup == nil || *d.OnStartup
 }
 
+// LostFoundConfig controls the lost+found worker (the 2026-06-02 directive): a
+// periodic sweep that deletes untracked files matching shoka.disposable and
+// moves the rest to a per-project lost+found area, restoring the tracked-only
+// invariant. Enabled is a pointer so an absent block defaults to true while an
+// explicit false is kept; Interval defaults to 5m (applied in applyDefaults).
+// Set enabled:false to disable for dev/debug.
+type LostFoundConfig struct {
+	Enabled  *bool    `yaml:"enabled"`
+	Interval Duration `yaml:"interval"`
+}
+
+// IsEnabled reports the effective enabled value (default true).
+func (l LostFoundConfig) IsEnabled() bool {
+	return l.Enabled == nil || *l.Enabled
+}
+
 // FileLockConfig configures the per-file lock manager (internal/storage/filelock).
 type FileLockConfig struct {
 	MaxLeaseDuration Duration `yaml:"max_lease_duration"` // default 5m
@@ -157,6 +173,7 @@ type Config struct {
 	Storage  struct {
 		BaseDir   string          `yaml:"base_dir"`
 		DriftScan DriftScanConfig `yaml:"drift_scan"`
+		LostFound LostFoundConfig `yaml:"lost_found"`
 	} `yaml:"storage"`
 	Services struct {
 		GoogleCloud struct {
@@ -218,6 +235,11 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Identity.AgentDefault.Name == "" {
 		c.Identity.AgentDefault.Name = "shoka-agent"
+	}
+	// Lost+found worker: default to a 5-minute sweep interval (the directive's
+	// default). Enabled defaults to true via LostFoundConfig.IsEnabled.
+	if c.Storage.LostFound.Interval == 0 {
+		c.Storage.LostFound.Interval = Duration(5 * time.Minute)
 	}
 }
 

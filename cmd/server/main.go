@@ -129,6 +129,14 @@ func main() {
 		s.StartDriftScan(ctx, cfg.Storage.DriftScan.Interval.Std())
 	}
 
+	// Lost+found worker (the 2026-06-02 directive): a periodic sweep that deletes
+	// untracked files matching shoka.disposable and moves the rest to a
+	// per-project lost+found area, restoring the tracked-only invariant. Runs
+	// after StartupInit so catalogs/states are ready; disabled via config.
+	if cfg.Storage.LostFound.IsEnabled() {
+		s.StartLostFoundSweep(ctx, cfg.Storage.LostFound.Interval.Std())
+	}
+
 	// Optional Prometheus metrics endpoint: default off, loopback-only (mirrors
 	// the pprof endpoint's defaults).
 	if cfg.Metrics.Addr != "" {

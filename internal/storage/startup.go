@@ -22,9 +22,10 @@ type projectRef struct {
 }
 
 // discoverProjects walks <base_dir>/<namespace>/<project>/ and returns every
-// project directory. Hidden namespace directories (e.g. ".shoka") and the
+// project directory. Hidden namespace directories (e.g. ".shoka"), hidden
+// project-level directories (e.g. the ".shoka-lostfound" area), and the
 // per-project "<project>.db" catalog files (which are not directories) are
-// skipped.
+// skipped — a dot-prefixed entry is Shoka-internal, never a project.
 func (s *FSGitStorage) discoverProjects() []projectRef {
 	var out []projectRef
 	nsEntries, err := os.ReadDir(s.baseDir)
@@ -43,8 +44,8 @@ func (s *FSGitStorage) discoverProjects() []projectRef {
 			continue
 		}
 		for _, pr := range projEntries {
-			if !pr.IsDir() {
-				continue // skips the "<project>.db" catalog files
+			if !pr.IsDir() || strings.HasPrefix(pr.Name(), ".") {
+				continue // skips "<project>.db" files and Shoka-internal dot dirs
 			}
 			out = append(out, projectRef{namespace: ns.Name(), name: pr.Name()})
 		}
