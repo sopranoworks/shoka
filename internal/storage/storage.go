@@ -47,6 +47,15 @@ type StorageService interface {
 	// Delete removes a file with optimistic concurrency (see Write).
 	Delete(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string) error
 
+	// Move renames sourcePath to targetPath within one project as a single atomic
+	// git commit that also rewrites every inbound internal markdown link, and
+	// returns the destination's new etag plus the number of links rewritten.
+	// ifMatch carries a dual semantic: it validates the target's etag when the
+	// target exists (overwrite intent) or the source's etag when it does not; a
+	// target that exists with no ifMatch is refused. Conflicts are
+	// *VersionConflictError. (move-file directive, backlog B-24.)
+	Move(ctx context.Context, sessionID, namespace, projectName, sourcePath, targetPath string, ifMatch *string) (string, int, error)
+
 	// ListProjects returns a list of project names within a namespace.
 	ListProjects(namespace string) ([]string, error)
 
