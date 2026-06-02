@@ -42,6 +42,13 @@ const (
 	// variant — the storage layer searches one project at a time.
 	MsgSearchFiles  MessageType = "SEARCH_FILES"
 	MsgSearchResult MessageType = "SEARCH_RESULT"
+	// MsgMoveFile renames/moves a file within a project; MsgMoveAck carries the
+	// result back (new etag + links-rewritten count). A move is one atomic commit
+	// that also rewrites inbound internal links (the move-file directive). A stale
+	// if_match — or an existing target with no if_match — yields the same CONFLICT
+	// frame SAVE_FILE uses, carrying the relevant file's current etag.
+	MsgMoveFile MessageType = "MOVE_FILE"
+	MsgMoveAck  MessageType = "MOVE_ACK"
 	// MsgNotify carries one notify.Event pushed from the server to the browser
 	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
 	// {type,payload} envelope as every other message, so existing consumers that
@@ -107,6 +114,27 @@ type SearchFilesPayload struct {
 	ProjectName string `json:"projectName"`
 	Query       string `json:"query"`
 	SearchIn    string `json:"search_in,omitempty"`
+}
+
+// MoveFilePayload is the MOVE_FILE request body. IfMatch is optional and carries
+// the same dual semantic as the storage layer: it validates the target's etag
+// when the target exists (explicit overwrite), otherwise the source's etag.
+type MoveFilePayload struct {
+	Namespace   string `json:"namespace"`
+	ProjectName string `json:"projectName"`
+	SourcePath  string `json:"source_path"`
+	TargetPath  string `json:"target_path"`
+	IfMatch     string `json:"if_match,omitempty"`
+}
+
+// MoveAckPayload is the MOVE_ACK frame's body: the source and target paths, the
+// destination's new etag (usable as if_match for a follow-up edit), and the count
+// of internal links rewritten in the same atomic commit.
+type MoveAckPayload struct {
+	SourcePath     string `json:"source_path"`
+	TargetPath     string `json:"target_path"`
+	NewETag        string `json:"new_etag"`
+	LinksRewritten int    `json:"links_rewritten"`
 }
 
 // SearchResultPayload is the SEARCH_RESULT frame's body: the matches, each a
@@ -278,6 +306,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleCreateProject(client, wsMsg.Payload)
 		case MsgSearchFiles:
 			m.handleSearchFiles(client, wsMsg.Payload)
+		case MsgMoveFile:
+			m.handleMoveFile(client, wsMsg.Payload)
 		default:
 			client.sendError("Unknown message type")
 		}
@@ -449,6 +479,50 @@ func (m *Manager) handleSearchFiles(client *wsClient, payload json.RawMessage) {
 	}
 
 	client.sendResponse(MsgSearchResult, SearchResultPayload{Matches: matches})
+}
+
+// handleMoveFile renames/moves a file via storage.Move. Like SAVE_FILE it is the
+// operator acting as themselves (identity.WithUser → operator is the commit
+// Author) and carries the connection's sender id so the resulting file.move
+// NOTIFY is not echoed back to this connection. A conflict (stale if_match, or an
+// existing target with no if_match) returns the same CONFLICT frame SAVE_FILE
+// uses; success returns MOVE_ACK with the new etag and links-rewritten count.
+func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
+	var p MoveFilePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for MOVE_FILE")
+		return
+	}
+
+	ctx := identity.WithUser(context.Background(), identity.User{})
+	ctx = notify.WithSender(ctx, client.id)
+
+	var ifMatch *string
+	if p.IfMatch != "" {
+		ifMatch = &p.IfMatch
+	}
+
+	newEtag, links, err := m.storage.Move(ctx, "", p.Namespace, p.ProjectName, p.SourcePath, p.TargetPath, ifMatch)
+	if err != nil {
+		var conflict *storage.VersionConflictError
+		if errors.As(err, &conflict) {
+			client.sendResponse(MsgConflict, ConflictPayload{
+				Path:        p.TargetPath,
+				CurrentETag: conflict.Current,
+				Message:     "Move rejected: the file was modified or the target already exists",
+			})
+			return
+		}
+		client.sendError(fmt.Sprintf("Failed to move file: %v", err))
+		return
+	}
+
+	client.sendResponse(MsgMoveAck, MoveAckPayload{
+		SourcePath:     p.SourcePath,
+		TargetPath:     p.TargetPath,
+		NewETag:        newEtag,
+		LinksRewritten: links,
+	})
 }
 
 func (m *Manager) handleWriteDraft(client *wsClient, payload json.RawMessage) {
