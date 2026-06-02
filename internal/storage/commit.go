@@ -3,8 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,7 +11,6 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/storage/wal"
@@ -22,8 +19,8 @@ import (
 // emptyTreeHash is git's canonical empty-tree object hash.
 var emptyTreeHash = plumbing.NewHash("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
 
-// gitDirName is the per-project git metadata directory (non-bare repos).
-const gitDirName = ".git"
+// The atomic ref-write funnel (advanceHead / writeRefAtomic) and the index
+// rebuild (resetIndexToTree) live in refwrite.go — the Anchor 3 primitive.
 
 // commitEntry is the walworker CommitFunc: it records one WAL entry into git in
 // the background. The commit captures the entry's *own* content (from the WAL),
@@ -227,94 +224,4 @@ func treeSortName(e object.TreeEntry) string {
 		return e.Name + "/"
 	}
 	return e.Name
-}
-
-// advanceHead atomically points the branch that HEAD references (or HEAD itself,
-// if detached) at commitHash.
-//
-// It writes the loose ref via a temp file + rename rather than go-git's
-// SetReference. go-git's filesystem SetReference (setRefRwfs) opens the ref with
-// O_TRUNC — zeroing it before the new hash is written — which exposes a transient
-// empty ref to Shoka's concurrent lock-free readers (the 2026-06-02 ref-write
-// race; readers on independent handles observe the 0-byte file as
-// ErrReferenceNotFound). rename(2) is atomic on POSIX: a reader observes either
-// the old ref or the new one, never an empty file. Restoring this per-write
-// atomicity is what the storage redesign's "serialized writer + lock-free reads"
-// design already assumed of every write step.
-func advanceHead(projectPath string, r *git.Repository, commitHash plumbing.Hash) error {
-	headRef, err := r.Reference(plumbing.HEAD, false)
-	if err != nil {
-		return err
-	}
-	target := plumbing.HEAD
-	if headRef.Type() == plumbing.SymbolicReference {
-		target = headRef.Target()
-	}
-	return writeRefAtomic(projectPath, target, commitHash)
-}
-
-// writeRefAtomic writes commitHash to the loose ref file for refName under the
-// project's git dir, atomically, in git's on-disk loose-ref format (40-char hex
-// hash + LF). The temp file is created in the ref's own directory so os.Rename is
-// an intra-directory move (atomic on POSIX). The parent dir is created if absent
-// (the first commit creates refs/heads/<branch>).
-func writeRefAtomic(projectPath string, refName plumbing.ReferenceName, commitHash plumbing.Hash) error {
-	refPath := filepath.Join(projectPath, gitDirName, filepath.FromSlash(refName.String()))
-	dir := filepath.Dir(refPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create ref dir: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(refPath)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp ref: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(commitHash.String() + "\n"); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write temp ref: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("close temp ref: %w", err)
-	}
-	if err := os.Rename(tmpName, refPath); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("rename ref into place: %w", err)
-	}
-	return nil
-}
-
-// resetIndexToTree rebuilds the git index to match treeHash — one entry per file
-// ({Name, Hash, Mode}, the same fields go-git's own resetIndex records; the index
-// encoder fills the remaining stat fields with zero and git refreshes them on
-// first use). It writes ONLY the index, never a ref — the replacement for go-git's
-// Reset(MixedReset), whose bundled setHEADCommit performs a redundant, non-atomic
-// ref write. Best-effort: the index is cosmetic for external `git status`.
-func resetIndexToTree(r *git.Repository, treeHash plumbing.Hash) error {
-	tree, err := r.TreeObject(treeHash)
-	if err != nil {
-		return fmt.Errorf("load tree: %w", err)
-	}
-	idx := &index.Index{Version: 2}
-	walker := object.NewTreeWalker(tree, true, nil)
-	defer walker.Close()
-	for {
-		name, entry, werr := walker.Next()
-		if werr == io.EOF {
-			break
-		}
-		if werr != nil {
-			return fmt.Errorf("walk tree: %w", werr)
-		}
-		if !entry.Mode.IsFile() {
-			continue // skip subtree (directory) entries
-		}
-		idx.Entries = append(idx.Entries, &index.Entry{
-			Name: name,
-			Hash: entry.Hash,
-			Mode: entry.Mode,
-		})
-	}
-	return r.Storer.SetIndex(idx)
 }
