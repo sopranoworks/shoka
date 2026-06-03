@@ -103,6 +103,45 @@ func TestTokenOfDifferentLengthRejected(t *testing.T) {
 	}
 }
 
+// serveChallenge runs r through a.Middleware against a 200 handler and returns the
+// status code and the WWW-Authenticate header value.
+func serveChallenge(a *Authenticator, r *http.Request) (int, string) {
+	rec := httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, r)
+	return rec.Code, rec.Header().Get("WWW-Authenticate")
+}
+
+// When OAuth discovery is wired, the 401 challenge carries the resource_metadata
+// parameter so a client can discover the authorization server (RFC 9728 §5.1).
+func TestChallengeCarriesResourceMetadataWhenConfigured(t *testing.T) {
+	const prm = "https://public.example/.well-known/oauth-protected-resource/mcp"
+	a := New(Config{
+		Enabled:             true,
+		Tokens:              []string{"secret"},
+		ResourceMetadataURL: func(*http.Request) string { return prm },
+	})
+	code, hdr := serveChallenge(a, newReq("", "", ""))
+	if code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", code)
+	}
+	want := `Bearer resource_metadata="` + prm + `"`
+	if hdr != want {
+		t.Fatalf("WWW-Authenticate\n got %q\nwant %q", hdr, want)
+	}
+}
+
+// Without OAuth discovery the challenge stays the bare bearer it has always been —
+// byte-for-byte unchanged.
+func TestChallengeBareBearerWhenNotConfigured(t *testing.T) {
+	a := New(Config{Enabled: true, Tokens: []string{"secret"}})
+	_, hdr := serveChallenge(a, newReq("", "", ""))
+	if hdr != "Bearer" {
+		t.Fatalf("expected bare Bearer, got %q", hdr)
+	}
+}
+
 func TestOriginAllowedWhenDisabled(t *testing.T) {
 	a := New(Config{Enabled: false})
 	if !a.OriginAllowed(newReq("", "", "")) {
