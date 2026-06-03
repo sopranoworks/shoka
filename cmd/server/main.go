@@ -274,6 +274,16 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 	}, tools.LoggedTool(logger, "delete_file", tools.DeleteFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "append_to_file",
+		Description: "Insert text into a file without resending the whole file: append at end (default) or insert before/after a unique anchor string. Server-side splice on the file's faithful bytes under the per-file lock; same atomic Git commit and if_match etag as write_file. For large append-mostly files (backlog, journal) this sends only the changed span",
+	}, tools.LoggedTool(logger, "append_to_file", tools.AppendToFileHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "patch_file",
+		Description: "Replace a single unique occurrence of old_string with new_string (str_replace-style; the server never guesses — zero or multiple matches are an error). Server-side splice on the file's faithful bytes under the per-file lock; same atomic Git commit and if_match etag as write_file. Sends only the changed span, not the whole file",
+	}, tools.LoggedTool(logger, "patch_file", tools.PatchFileHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "move_file",
 		Description: "Rename or move a file within a project as a single atomic Git commit (history-preserving), rewriting inbound internal Markdown links so the project stays consistent",
 	}, tools.LoggedTool(logger, "move_file", tools.MoveFileHandler(s)))
