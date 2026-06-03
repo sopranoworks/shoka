@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { Tree, type NodeRendererProps, type TreeApi } from 'react-arborist'
+import {
+  Tree,
+  type NodeApi,
+  type NodeRendererProps,
+  type TreeApi,
+} from 'react-arborist'
 import { toTreeNodes, ancestorDirs } from '../lib/tree'
+import {
+  useMoveController,
+  dirOf,
+  baseOf,
+  joinPath,
+  validateMoveInput,
+} from '../lib/moveController'
+import { useToast } from '../lib/toast'
 import type { FileNode, TreeNode } from '../lib/types'
 import styles from './FileTree.module.css'
 
@@ -11,6 +24,11 @@ import styles from './FileTree.module.css'
  * - directories expand/collapse on toggle
  * - the active file (from the URL) is highlighted, selected, scrolled into
  *   view, and its ancestor directories are expanded (expand-to-active)
+ * - a file leaf can be renamed inline (commit -> moveFile same-dir, new name),
+ *   right-clicked for a context menu (Rename… / Move… / Copy deep link), and
+ *   dragged onto a directory to move it. All mutations funnel through the move
+ *   controller (lib/moveController), never wsClient directly. A move is a pure
+ *   path change — no link surface anywhere.
  */
 export function FileTree({
   namespace,
@@ -24,8 +42,15 @@ export function FileTree({
   activePath: string | null
 }) {
   const navigate = useNavigate()
+  const { requestMove, executeMove } = useMoveController()
+  const { add: addToast } = useToast()
   const data = useMemo(() => toTreeNodes(nodes), [nodes])
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
+
+  // Right-click context menu state: anchor position + the file it targets.
+  const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(
+    null,
+  )
 
   // Expand ancestors of the active file on first paint.
   const initialOpenState = useMemo(() => {
@@ -65,6 +90,53 @@ export function FileTree({
     })
   }
 
+  // Inline-rename commit: react-arborist hands us the new basename; resolve it
+  // against the source directory and move there. Reject a malformed name (slash,
+  // ./.. etc.) with a toast so the user gets feedback (the tree reverts on its
+  // own since no move is issued).
+  const onRename = ({ name, node }: { name: string; node: NodeApi<TreeNode> }) => {
+    if (!node.data.isFile) return
+    const src = node.data.path
+    const err = validateMoveInput('rename', src, name)
+    if (err) {
+      if (name.trim() && name.trim() !== baseOf(src))
+        addToast({ level: 'warn', text: err })
+      return
+    }
+    void executeMove({
+      namespace,
+      project,
+      sourcePath: src,
+      targetPath: joinPath(dirOf(src), name.trim()),
+    })
+  }
+
+  // Drag-and-drop: dropping a file leaf onto a directory (or root) moves it
+  // there, keeping its basename. Folder drags are disabled (disableDrag); a
+  // same-directory drop is a no-op (executeMove guards same-path).
+  const onMove = ({
+    dragNodes,
+    parentNode,
+  }: {
+    dragNodes: NodeApi<TreeNode>[]
+    parentNode: NodeApi<TreeNode> | null
+  }) => {
+    const dragged = dragNodes[0]
+    if (!dragged || !dragged.data.isFile) return
+    const src = dragged.data.path
+    // parentNode null => dropped at the project root; else the target directory.
+    const destDir = parentNode ? parentNode.data.path : ''
+    const target = joinPath(destDir, baseOf(src))
+    void executeMove({ namespace, project, sourcePath: src, targetPath: target })
+  }
+
+  const copyDeepLink = (path: string) => {
+    const url = `${window.location.origin}/p/${encodeURIComponent(
+      namespace,
+    )}/${encodeURIComponent(project)}/blob/${path}`
+    void navigator.clipboard?.writeText(url).catch(() => {})
+  }
+
   return (
     <div ref={wrapRef} className={styles.wrap}>
       <Tree<TreeNode>
@@ -80,14 +152,105 @@ export function FileTree({
         rowHeight={24}
         disableMultiSelection
         selection={activePath ?? undefined}
+        onMove={onMove}
+        onRename={onRename}
+        // disableEdit/disableDrag receive the node DATA (BoolFunc<T>): only file
+        // leaves can be renamed inline or dragged (folder move is out of scope).
+        disableEdit={(data: TreeNode) => !data.isFile}
+        disableDrag={(data: TreeNode) => !data.isFile}
         onActivate={(node) => {
           if (node.data.isFile) openFile(node.data.path)
           else node.toggle()
         }}
       >
-        {(props) => <Row {...props} activePath={activePath} />}
+        {(props) => (
+          <Row
+            {...props}
+            activePath={activePath}
+            onContext={(e, node) => {
+              if (!node.isFile) return
+              e.preventDefault()
+              setMenu({ x: e.clientX, y: e.clientY, node })
+            }}
+          />
+        )}
       </Tree>
+
+      {menu && (
+        <RowContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          onRename={() => {
+            void treeRef.current?.edit(menu.node.id)
+          }}
+          onMove={() =>
+            requestMove({
+              namespace,
+              project,
+              sourcePath: menu.node.path,
+              mode: 'move',
+            })
+          }
+          onCopyLink={() => copyDeepLink(menu.node.path)}
+        />
+      )}
     </div>
+  )
+}
+
+function RowContextMenu({
+  x,
+  y,
+  onClose,
+  onRename,
+  onMove,
+  onCopyLink,
+}: {
+  x: number
+  y: number
+  onClose: () => void
+  onRename: () => void
+  onMove: () => void
+  onCopyLink: () => void
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const item = (label: string, fn: () => void) => (
+    <button
+      className={styles.ctxItem}
+      onClick={() => {
+        onClose()
+        fn()
+      }}
+    >
+      {label}
+    </button>
+  )
+
+  return (
+    <>
+      <div className={styles.ctxOverlay} onClick={onClose} onContextMenu={(e) => {
+        e.preventDefault()
+        onClose()
+      }} />
+      <div
+        className={styles.ctxMenu}
+        style={{ left: x, top: y }}
+        role="menu"
+        aria-label="File actions"
+      >
+        {item('Rename…', onRename)}
+        {item('Move…', onMove)}
+        {item('Copy deep link', onCopyLink)}
+      </div>
+    </>
   )
 }
 
@@ -96,7 +259,11 @@ function Row({
   style,
   dragHandle,
   activePath,
-}: NodeRendererProps<TreeNode> & { activePath: string | null }) {
+  onContext,
+}: NodeRendererProps<TreeNode> & {
+  activePath: string | null
+  onContext: (e: React.MouseEvent, node: TreeNode) => void
+}) {
   const isActive = node.data.isFile && node.data.path === activePath
   return (
     <div
@@ -113,6 +280,7 @@ function Row({
           node.toggle()
         }
       }}
+      onContextMenu={(e) => onContext(e, node.data)}
     >
       <span className={styles.chevron} data-dir={!node.data.isFile}>
         {!node.data.isFile && (
@@ -132,8 +300,36 @@ function Row({
       <span className={styles.icon}>
         {node.data.isFile ? <FileIcon /> : <DirIcon open={node.isOpen} />}
       </span>
-      <span className={styles.name}>{node.data.name}</span>
+      {node.isEditing ? (
+        <RenameInput node={node} />
+      ) : (
+        <span className={styles.name}>{node.data.name}</span>
+      )}
     </div>
+  )
+}
+
+// The inline-rename field. Mirrors react-arborist's default edit form: focus +
+// select on mount, Enter submits (fires onRename), Escape / blur cancels.
+function RenameInput({ node }: { node: NodeApi<TreeNode> }) {
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    ref.current?.focus()
+    ref.current?.select()
+  }, [])
+  return (
+    <input
+      ref={ref}
+      className={styles.editInput}
+      defaultValue={node.data.name}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={() => node.reset()}
+      onKeyDown={(e) => {
+        e.stopPropagation()
+        if (e.key === 'Escape') node.reset()
+        if (e.key === 'Enter') node.submit(ref.current?.value ?? '')
+      }}
+    />
   )
 }
 
