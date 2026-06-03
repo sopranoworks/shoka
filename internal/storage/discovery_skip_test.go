@@ -18,8 +18,10 @@ func TestDiscoverProjects_SkipsDotPrefixedProjectDirs(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	// A real project and a Shoka-internal lost+found area, side by side.
-	if err := os.MkdirAll(filepath.Join(dir, "ns", "proj"), 0o755); err != nil {
+	// A real, git-backed project and a Shoka-internal lost+found area, side by side.
+	// proj must be a genuine project (CreateProject git-inits); a bare directory
+	// without .git is leftover, not a project, and discovery rightly skips it (B-37).
+	if err := s.CreateProject("ns", "proj"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "ns", ".shoka-lostfound", "proj", "20260602T115550Z"), 0o755); err != nil {

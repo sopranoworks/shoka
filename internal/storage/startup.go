@@ -47,10 +47,34 @@ func (s *FSGitStorage) discoverProjects() []projectRef {
 			if !pr.IsDir() || strings.HasPrefix(pr.Name(), ".") {
 				continue // skips "<project>.db" files and Shoka-internal dot dirs
 			}
+			projectPath := filepath.Join(s.baseDir, ns.Name(), pr.Name())
+			if !hasGitRepo(projectPath) {
+				// A directory with no .git is not a project — it is leftover (a pre-B-37
+				// guard-less write half-created one: dir + per-project .db, no repo).
+				// Registering it would re-adopt the phantom every boot and loop the WAL
+				// worker, so skip it: not registered, no state, never handed to the
+				// worker. The stray "<name>.db" is a non-dir (already skipped above) and
+				// is only opened for a registered project, so skipping the directory
+				// neutralises both. Surfaced for the operator; routing such leftovers to
+				// lost+found is a follow-up (B-38).
+				s.log().Warn("discovery: skipping non-project directory (no .git)",
+					"namespace", ns.Name(), "project", pr.Name(), "path", projectPath)
+				continue
+			}
 			out = append(out, projectRef{namespace: ns.Name(), name: pr.Name()})
 		}
 	}
 	return out
+}
+
+// hasGitRepo reports whether projectPath is a real, git-backed project: it has a
+// .git entry. CreateProject git-inits every legitimate project, so a .git-less
+// directory is not a project but leftover (a pre-B-37 guard-less write half-created
+// one). Used by the write-path guard (checkWritable) and discovery, so neither the
+// mutation path nor catalog init ever treats a repo-less directory as a project.
+func hasGitRepo(projectPath string) bool {
+	_, err := os.Stat(filepath.Join(projectPath, ".git"))
+	return err == nil
 }
 
 // StartupInit performs the blocking startup gate (directive §6): it drains the

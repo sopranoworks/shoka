@@ -114,6 +114,11 @@ type ChangeHandler func(ChangeEvent)
 var (
 	// ErrProjectDangerous means the project's .git is unreadable/absent.
 	ErrProjectDangerous = errors.New("project is in dangerous state: git repository is unreadable")
+	// ErrProjectNotFound means the mutation targeted a project that has no git
+	// repository — it was never created (CreateProject git-inits). Without this the
+	// write path silently half-creates a project (the B-37 phantom); the guard in
+	// checkWritable refuses such ops before any side-effect.
+	ErrProjectNotFound = errors.New("project not found: no git repository at the target path")
 	// ErrProjectCorrupted means the working tree drifted from git HEAD outside
 	// the redesign's write path (hand-edit, git pull, another tool).
 	ErrProjectCorrupted = errors.New("project is in corrupted state: working tree has uncommitted drift")
@@ -600,6 +605,22 @@ func (s *FSGitStorage) checkWritable(namespace, projectName string) error {
 		return ErrProjectDangerous
 	case StateCorrupted:
 		return ErrProjectCorrupted
+	}
+	// A mutation may only touch a real, git-backed project. CreateProject git-inits,
+	// so a legitimate project always has a repo; a repo-less path is "not a project".
+	// Without this, a write to a never-created project is silently accepted and
+	// half-creates one — a working-tree dir, a per-project .db, and an un-committable
+	// WAL entry the worker loops on forever (the B-37 phantom). checkWritable is the
+	// single gate every mutation (write/delete/append/patch/move) funnels through, and
+	// it runs before any side-effect, so the half-project is never born. The state
+	// switch above stays first, so a KNOWN dangerous/corrupted project keeps its own
+	// reason; only a never-seen repo-less path reports not-found.
+	projectPath, err := s.getProjectPath(namespace, projectName)
+	if err != nil {
+		return err
+	}
+	if !hasGitRepo(projectPath) {
+		return ErrProjectNotFound
 	}
 	if s.wal.PendingCount() >= s.maxWALEntries {
 		return ErrWriteDisabled

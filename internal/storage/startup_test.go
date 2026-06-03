@@ -84,18 +84,29 @@ func TestStartup_OneDBCorrupted(t *testing.T) {
 	assert.Contains(t, files, "a.md")
 }
 
-func TestStartup_RebuildFailureMarksDangerous(t *testing.T) {
+// TestStartup_GitlessDirectoryNotRegistered pins the B-37 §2.2 contract: a
+// directory with no .git is not a project. Catalog init must NOT register it (it
+// formerly marked such a directory dangerous and the WAL worker looped on it
+// forever — the phantom). This supersedes the old "rebuild failure marks
+// dangerous" expectation: a .git-less directory is leftover, surfaced via the
+// discovery warning (and routed to lost+found by the B-38 follow-up), never a
+// registered dangerous phantom. (A genuinely broken project that still HAS a .git
+// is a different, still-dangerous case.)
+func TestStartup_GitlessDirectoryNotRegistered(t *testing.T) {
 	dir := seedTwoProjects(t)
-	// Force a rebuild of p2 (delete its catalog) AND make the rebuild fail by
-	// removing its git repository.
+	// Make p2 a .git-less leftover (no repo, stray working tree + catalog removed).
 	require.NoError(t, os.Remove(filepath.Join(dir, "ns", "p2.db")))
 	require.NoError(t, os.RemoveAll(filepath.Join(dir, "ns", "p2", ".git")))
 
 	s := freshStore(t, dir)
 	s.StartupInit(context.Background())
 
-	assert.Equal(t, StateHealthy, s.State("ns", "p1"), "the healthy project is unaffected")
-	assert.Equal(t, StateDangerous, s.State("ns", "p2"), "a project whose rebuild fails is dangerous")
+	assert.Equal(t, StateHealthy, s.State("ns", "p1"), "the real project is unaffected")
+	_, registered := s.AllStates()["ns/p2"]
+	assert.False(t, registered, "a .git-less directory must not be registered as a project")
+	for key, st := range s.AllStates() {
+		assert.NotEqualf(t, StateDangerous, st, "no project may be dangerous after init: %s", key)
+	}
 }
 
 // TestStartup_GateComputesEveryProjectState asserts the gate's contract: when
