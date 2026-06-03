@@ -60,6 +60,7 @@ type User struct {
 
 type ctxKey struct{}
 type userCtxKey struct{}
+type committerCtxKey struct{}
 
 // WithAgent attaches a per-request agent declaration to ctx. The MCP tool
 // handler sets this from the connecting client's initialize info; other write
@@ -84,6 +85,24 @@ func WithUser(ctx context.Context, u User) context.Context {
 // UserFrom returns the owning-user declaration carried on ctx, if any.
 func UserFrom(ctx context.Context) (User, bool) {
 	u, ok := ctx.Value(userCtxKey{}).(User)
+	return u, ok
+}
+
+// WithCommitter marks the write on ctx as performed by an agent ON BEHALF OF the
+// given principal (the MCP+OAuth path): the principal becomes the git Committer
+// and the Shoka-User trailer, while the self-declared agent (WithAgent) stays the
+// git Author. This is deliberately decoupled from WithUser — it does NOT set
+// AuthorIsUser — so an OAuth-authenticated MCP write records Author=agent /
+// Committer=principal, not the web path's Author=user. The principal is the
+// current-mode principal sourced from the OAuth flow (premise 1), not a config
+// constant; multi-user enablement reuses this seam unchanged (B-28).
+func WithCommitter(ctx context.Context, u User) context.Context {
+	return context.WithValue(ctx, committerCtxKey{}, u)
+}
+
+// CommitterFrom returns the committer-only principal carried on ctx, if any.
+func CommitterFrom(ctx context.Context) (User, bool) {
+	u, ok := ctx.Value(committerCtxKey{}).(User)
 	return u, ok
 }
 
@@ -117,6 +136,17 @@ func Resolve(ctx context.Context, d Defaults) CommitIdentity {
 		if u.Name != "" {
 			id.UserName = u.Name
 			id.UserEmail = u.Email
+		}
+	} else if c, ok := CommitterFrom(ctx); ok {
+		// An OAuth-authenticated MCP write (WithCommitter): the principal becomes
+		// the Committer + Shoka-User trailer, but AuthorIsUser stays false so the
+		// self-declared agent remains the git Author. The committer principal rides
+		// the existing UserName/UserEmail WAL fields — no schema change is needed,
+		// because only AuthorIsUser distinguishes the web (true) and OAuth (false)
+		// cases.
+		if c.Name != "" {
+			id.UserName = c.Name
+			id.UserEmail = c.Email
 		}
 	}
 	return id

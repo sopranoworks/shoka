@@ -130,3 +130,35 @@ func TestTrailers(t *testing.T) {
 		t.Fatalf("worker trailer missing when set:\n%s", id.Trailers())
 	}
 }
+
+// WithCommitter sets the committer principal (UserName/UserEmail) WITHOUT setting
+// AuthorIsUser — so the agent stays the git Author (the OAuth+MCP case). This is
+// the AuthorIsUser decoupling (B-39 §2.5).
+func TestResolve_WithCommitterDoesNotFlipAuthor(t *testing.T) {
+	ctx := WithAgent(context.Background(), Agent{Name: "claude-code"})
+	ctx = WithCommitter(ctx, User{Name: "Alice", Email: "alice@example.test"})
+	id := Resolve(ctx, defaults)
+	if id.AuthorIsUser {
+		t.Fatalf("WithCommitter must NOT set AuthorIsUser")
+	}
+	if id.AgentName != "claude-code" {
+		t.Fatalf("agent should remain the author layer: %q", id.AgentName)
+	}
+	if id.UserName != "Alice" || id.UserEmail != "alice@example.test" {
+		t.Fatalf("committer principal not applied: %+v", id)
+	}
+}
+
+// WithUser still wins and is byte-for-byte unchanged (AuthorIsUser=true) even if a
+// committer is also present — the web path is the precedence and stays untouched.
+func TestResolve_WithUserTakesPrecedenceOverCommitter(t *testing.T) {
+	ctx := WithCommitter(context.Background(), User{Name: "Alice", Email: "alice@example.test"})
+	ctx = WithUser(ctx, User{})
+	id := Resolve(ctx, defaults)
+	if !id.AuthorIsUser {
+		t.Fatalf("WithUser must keep AuthorIsUser=true")
+	}
+	if id.UserName != "Osamu Takahashi" {
+		t.Fatalf("empty WithUser keeps the configured operator: %+v", id)
+	}
+}

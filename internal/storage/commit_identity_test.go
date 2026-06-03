@@ -132,6 +132,35 @@ func TestCommitIdentity_WithUserMakesUserAuthor(t *testing.T) {
 	}
 }
 
+// An OAuth-authenticated MCP write (WithCommitter) records Author = the
+// self-declared agent and Committer = the OAuth principal — the AuthorIsUser
+// decoupling (B-39 directive §2.5). Contrast with TestCommitIdentity_WithUserMakesUserAuthor,
+// where the web path makes the user the Author. The principal also lands in the
+// Shoka-User trailer; the agent layer stays in Shoka-Agent.
+func TestCommitIdentity_WithCommitterKeepsAgentAuthor(t *testing.T) {
+	s := newIdentityStorage(t)
+	ctx := identity.WithAgent(context.Background(), identity.Agent{Name: "claude-code"})
+	ctx = identity.WithCommitter(ctx, identity.User{Name: "Alice", Email: "alice@example.test"})
+	if _, err := s.Write(ctx, "", "ns", "proj", "oauth.md", "# OAuth", nil); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, s)
+
+	c := headCommit(t, s)
+	if c.Author.Name != "claude-code" || c.Author.Email != "claude-code@agents.shoka.local" {
+		t.Errorf("author = %s <%s>, want the agent", c.Author.Name, c.Author.Email)
+	}
+	if c.Committer.Name != "Alice" || c.Committer.Email != "alice@example.test" {
+		t.Errorf("committer = %s <%s>, want the OAuth principal", c.Committer.Name, c.Committer.Email)
+	}
+	if !strings.Contains(c.Message, "Shoka-User: Alice <alice@example.test>") {
+		t.Errorf("missing principal trailer:\n%s", c.Message)
+	}
+	if !strings.Contains(c.Message, "Shoka-Agent: claude-code") {
+		t.Errorf("missing agent trailer:\n%s", c.Message)
+	}
+}
+
 // An entry written before identity fields existed (empty identity) still gets an
 // intentional author from the configured default — not a zero/environmental one.
 func TestCommitIdentity_OlderEntryFallsBackToDefault(t *testing.T) {
