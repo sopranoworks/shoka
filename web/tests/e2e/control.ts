@@ -51,3 +51,22 @@ export function backendCreateProject(
     await rpc(ws, 'CREATE_PROJECT', { namespace, projectName: project })
   })
 }
+
+// Move a file over a SEPARATE /ws/ui connection, so the server broadcasts a
+// file.move NOTIFY to the page (which is sender-excluded only from its OWN
+// connection's moves). Used to test the open-view follow on another connection.
+export function backendMove(
+  namespace: string,
+  project: string,
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  return withWs(async (ws) => {
+    await rpc(ws, 'MOVE_FILE', {
+      namespace,
+      projectName: project,
+      source_path: sourcePath,
+      target_path: targetPath,
+    })
+  })
+}
