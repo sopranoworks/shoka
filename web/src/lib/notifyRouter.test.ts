@@ -218,7 +218,7 @@ describe('routeNotify file.move (follow + relocate, §2.9)', () => {
     expect(r.banner).toBeUndefined()
   })
 
-  it('moved displayed edit file: follow intent preserves edit mode', () => {
+  it('moved displayed edit file: editSignal move (editor follows itself, buffer-safe)', () => {
     const { qc } = makeQc()
     const r = routeNotify(
       {
@@ -230,14 +230,11 @@ describe('routeNotify file.move (follow + relocate, §2.9)', () => {
       qc,
       EDIT,
     )
-    expect(r.follow).toEqual({
-      route: 'edit',
-      namespace: 'demo',
-      project: 'docs',
-      path: 'renamed.md',
-    })
-    // No edit-route external-change banner for a move — it just follows.
-    expect(r.editSignal).toBeUndefined()
+    // The edit route is NOT navigated by NotifyBridge (the editor's dirty guard
+    // would block it); instead a move signal tells the editor to follow itself.
+    expect(r.follow).toBeUndefined()
+    expect(r.editSignal).toEqual({ kind: 'move', path: 'README.md', to: 'renamed.md' })
+    expect(r.banner).toBeUndefined()
   })
 
   it('move of a non-displayed file: no follow, tree invalidated, stale src dropped, no banner', () => {

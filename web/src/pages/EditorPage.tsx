@@ -86,6 +86,30 @@ export function EditorPage() {
     if (data && !initialized) load(data.content, data.etag)
   }, [data, initialized, load])
 
+  // Buffer-safe follow: if the file under edit was moved by another connection,
+  // the editor navigates itself to the new path WITHOUT discarding the buffer.
+  // It must drive the navigation (rather than NotifyBridge) so it can set
+  // bypassGuard — otherwise the unsaved-changes guard would block the follow and
+  // prompt to discard. The buffer (already initialized) survives the same-route
+  // param change and rides to the new path; the moved content/etag are unchanged.
+  useEffect(() => {
+    if (extSignal?.kind === 'move' && extSignal.path === path) {
+      bypassGuard.current = true
+      const to = extSignal.to
+      clearExtSignal()
+      void navigate({
+        to: '/p/$namespace/$project/edit/$',
+        params: { namespace, project, _splat: to },
+      })
+    }
+  }, [extSignal, path, namespace, project, navigate, clearExtSignal])
+
+  // Re-arm the unsaved-changes guard after the path settles (the move-follow
+  // above set it to bypass for that one navigation).
+  useEffect(() => {
+    bypassGuard.current = false
+  }, [path])
+
   // Commit a successful save: prime the file cache so the viewer shows the new
   // content immediately, rebaseline the buffer (clean → no beforeunload prompt),
   // and navigate to the file view for the saved path.
@@ -301,7 +325,7 @@ export function EditorPage() {
           onSaveAs={() => setSaveAsOpen(true)}
           onShowDiff={showDiff}
         />
-      ) : extSignal && extSignal.path === path ? (
+      ) : extSignal && extSignal.kind !== 'move' && extSignal.path === path ? (
         <ExternalChangeBanner
           kind={extSignal.kind}
           busy={busy}

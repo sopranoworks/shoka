@@ -48,10 +48,13 @@ export interface ToastIntent {
 // An external-change signal for the edit route. Unlike `banner` (whose Reload
 // refetches the displayed query), this never touches the editor buffer — the
 // editor renders its own banner with buffer-safe actions. See lib/editSignal.
-export interface EditSignalIntent {
-  kind: 'write' | 'delete'
-  path: string
-}
+export type EditSignalIntent =
+  | { kind: 'write'; path: string }
+  | { kind: 'delete'; path: string }
+  // The edited file was moved elsewhere: the editor follows to `to` itself,
+  // buffer-safe (NotifyBridge does not navigate the edit route, so the editor's
+  // dirty guard cannot block the follow).
+  | { kind: 'move'; path: string; to: string }
 // A follow intent for file.move: the open view of a moved file should navigate
 // from the old path to the new, preserving mode (blob→blob, edit→edit). The
 // router relocates the file cache; NotifyBridge performs the navigation. For the
@@ -232,9 +235,13 @@ export function routeNotify(
         queryKey: ['file', namespace, project, src],
         exact: true,
       })
-      return {
-        follow: { route: view.route === 'edit' ? 'edit' : 'blob', namespace, project, path: dst },
+      // Blob: NotifyBridge navigates (no guard there). Edit: the editor follows
+      // itself (buffer-safe; NotifyBridge must NOT navigate the edit route or the
+      // editor's dirty guard would block it and prompt to discard).
+      if (view.route === 'edit') {
+        return { editSignal: { kind: 'move', path: src, to: dst } }
       }
+      return { follow: { route: 'blob', namespace, project, path: dst } }
     }
 
     // Not the displayed file: drop any stale cache for the old path; no banner.
