@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useRouterState } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { wsClient } from '../lib/wsClient'
 import {
   routeNotify,
@@ -24,6 +24,7 @@ export function NotifyBridge() {
   const { show: showBanner, clear: clearBanner } = useBanner()
   const { add: addToast } = useToast()
   const { set: setEditSignal, clear: clearEditSignal } = useEditSignal()
+  const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
   // Latest view context, read by the NOTIFY handler without re-subscribing.
@@ -39,9 +40,28 @@ export function NotifyBridge() {
       if (res.banner) showBanner(res.banner)
       if (res.toast) addToast(res.toast)
       if (res.editSignal) setEditSignal(res.editSignal)
+      if (res.follow) {
+        // The open view of a moved file follows to the new path, preserving
+        // mode. For the edit route this is buffer-safe — EditorPage keeps its
+        // initialized buffer across the same-route param change, so unsaved
+        // edits ride along. clearEditSignal() drops any prior edit-route signal
+        // so it does not linger against the new path.
+        clearEditSignal()
+        void navigate({
+          to:
+            res.follow.route === 'edit'
+              ? '/p/$namespace/$project/edit/$'
+              : '/p/$namespace/$project/blob/$',
+          params: {
+            namespace: res.follow.namespace,
+            project: res.follow.project,
+            _splat: res.follow.path,
+          },
+        })
+      }
     })
     return () => wsClient().setNotifyHandler(() => {})
-  }, [queryClient, showBanner, addToast, setEditSignal])
+  }, [queryClient, showBanner, addToast, setEditSignal, clearEditSignal, navigate])
 
   // Reconnect → stale-while-revalidate. Only after a real disconnect (not the
   // initial connect): track whether a disconnect happened since last connected.

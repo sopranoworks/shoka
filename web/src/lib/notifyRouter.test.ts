@@ -11,11 +11,15 @@ import {
 interface Recorded {
   invalidate: { queryKey?: unknown[]; refetchType?: string }[]
   refetch: { queryKey?: unknown[]; type?: string }[]
+  removed: { queryKey?: unknown[]; exact?: boolean }[]
+  store: Map<string, unknown>
   qc: QueryClient
 }
-function makeQc(): Recorded {
+function makeQc(seed?: Record<string, unknown>): Recorded {
   const invalidate: Recorded['invalidate'] = []
   const refetch: Recorded['refetch'] = []
+  const removed: Recorded['removed'] = []
+  const store = new Map<string, unknown>(Object.entries(seed ?? {}))
   const qc = {
     invalidateQueries: (o: unknown) => {
       invalidate.push((o ?? {}) as never)
@@ -24,8 +28,16 @@ function makeQc(): Recorded {
       refetch.push((o ?? {}) as never)
       return Promise.resolve()
     },
+    getQueryData: (key: unknown[]) => store.get(JSON.stringify(key)),
+    setQueryData: (key: unknown[], data: unknown) => {
+      store.set(JSON.stringify(key), data)
+    },
+    removeQueries: (o: { queryKey?: unknown[]; exact?: boolean }) => {
+      removed.push(o)
+      if (o.queryKey) store.delete(JSON.stringify(o.queryKey))
+    },
   } as unknown as QueryClient
-  return { invalidate, refetch, qc }
+  return { invalidate, refetch, removed, store, qc }
 }
 
 const has = (
@@ -163,6 +175,93 @@ describe('routeNotify edit route (buffer-safe, §3.6)', () => {
     )
     expect(r.editSignal).toBeUndefined()
     expect(r.banner).toBeUndefined()
+  })
+})
+
+describe('routeNotify file.move (follow + relocate, §2.9)', () => {
+  it('moved displayed blob: follow intent (blob), cache relocated old→new, tree invalidated', () => {
+    const { qc, invalidate, removed, store } = makeQc({
+      [JSON.stringify(['file', 'demo', 'docs', 'README.md'])]: {
+        path: 'README.md',
+        content: 'hello',
+        etag: 'e1',
+      },
+    })
+    const r = routeNotify(
+      {
+        kind: 'file.move',
+        target: 'demo/docs',
+        sourcePath: 'README.md',
+        path: 'docs/README.md',
+      },
+      qc,
+      BLOB,
+    )
+    expect(r.follow).toEqual({
+      route: 'blob',
+      namespace: 'demo',
+      project: 'docs',
+      path: 'docs/README.md',
+    })
+    // New key carries the same content + etag (a pure move); old key removed.
+    expect(store.get(JSON.stringify(['file', 'demo', 'docs', 'docs/README.md']))).toEqual(
+      { path: 'docs/README.md', content: 'hello', etag: 'e1' },
+    )
+    expect(
+      removed.some(
+        (e) =>
+          JSON.stringify(e.queryKey) ===
+          JSON.stringify(['file', 'demo', 'docs', 'README.md']),
+      ),
+    ).toBe(true)
+    expect(has(invalidate, ['tree', 'demo', 'docs'])).toBeTruthy()
+    expect(r.banner).toBeUndefined()
+  })
+
+  it('moved displayed edit file: follow intent preserves edit mode', () => {
+    const { qc } = makeQc()
+    const r = routeNotify(
+      {
+        kind: 'file.move',
+        target: 'demo/docs',
+        sourcePath: 'README.md',
+        path: 'renamed.md',
+      },
+      qc,
+      EDIT,
+    )
+    expect(r.follow).toEqual({
+      route: 'edit',
+      namespace: 'demo',
+      project: 'docs',
+      path: 'renamed.md',
+    })
+    // No edit-route external-change banner for a move — it just follows.
+    expect(r.editSignal).toBeUndefined()
+  })
+
+  it('move of a non-displayed file: no follow, tree invalidated, stale src dropped, no banner', () => {
+    const { qc, invalidate, removed } = makeQc()
+    const r = routeNotify(
+      {
+        kind: 'file.move',
+        target: 'demo/docs',
+        sourcePath: 'other.md',
+        path: 'sub/other.md',
+      },
+      qc,
+      BLOB,
+    )
+    expect(r.follow).toBeUndefined()
+    expect(r.banner).toBeUndefined()
+    expect(has(invalidate, ['tree', 'demo', 'docs'])).toBeTruthy()
+    expect(
+      removed.some(
+        (e) =>
+          JSON.stringify(e.queryKey) ===
+          JSON.stringify(['file', 'demo', 'docs', 'other.md']),
+      ),
+    ).toBe(true)
   })
 })
 

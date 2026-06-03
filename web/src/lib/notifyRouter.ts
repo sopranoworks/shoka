@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
+import type { FileContent } from './types'
 
 // Routes /ws/ui NOTIFY events (and reconnect revalidation) into TanStack Query
 // cache effects + user-facing banner/toast intents.
@@ -51,10 +52,22 @@ export interface EditSignalIntent {
   kind: 'write' | 'delete'
   path: string
 }
+// A follow intent for file.move: the open view of a moved file should navigate
+// from the old path to the new, preserving mode (blob→blob, edit→edit). The
+// router relocates the file cache; NotifyBridge performs the navigation. For the
+// edit route this is buffer-safe — EditorPage keeps its initialized buffer across
+// a same-route param change, so a dirty buffer rides along to the new path.
+export interface FollowIntent {
+  route: 'blob' | 'edit'
+  namespace: string
+  project: string
+  path: string
+}
 export interface RouterResult {
   banner?: BannerIntent
   toast?: ToastIntent
   editSignal?: EditSignalIntent
+  follow?: FollowIntent
 }
 
 export function parseNotifyEvent(payload: unknown): NotifyEvent | null {
@@ -182,6 +195,53 @@ export function routeNotify(
     // Not the displayed core: silent invalidate (active queries refetch).
     queryClient.invalidateQueries({ queryKey: treeKey })
     queryClient.invalidateQueries({ queryKey: fileKey })
+    return {}
+  }
+
+  if (kind === 'file.move') {
+    // A move is a pure path change (B-33): there is NO link surface here — no
+    // count, no banner about stale links. The issuer is sender-excluded and
+    // drives its own follow from MOVE_ACK (lib/moveController), so this branch
+    // only runs on OTHER connections.
+    const { namespace, project } = splitTarget(event.target)
+    const src = event.sourcePath ?? ''
+    const dst = event.path ?? ''
+    const treeKey = ['tree', namespace, project]
+    // The tree is peripheral: refresh it live so the rename shows.
+    queryClient.invalidateQueries({ queryKey: treeKey })
+
+    const onMoved =
+      (view.route === 'blob' || view.route === 'edit') &&
+      view.namespace === namespace &&
+      view.project === project &&
+      (view.path ?? '') === src
+
+    if (onMoved) {
+      // Relocate the file cache old→new so the follow lands on warm data with no
+      // flash. A pure move leaves content (hence etag) unchanged, so the cached
+      // etag carries over to the new path.
+      const old = queryClient.getQueryData<FileContent>(['file', namespace, project, src])
+      if (old) {
+        queryClient.setQueryData<FileContent>(['file', namespace, project, dst], {
+          path: dst,
+          content: old.content,
+          etag: old.etag,
+        })
+      }
+      queryClient.removeQueries({
+        queryKey: ['file', namespace, project, src],
+        exact: true,
+      })
+      return {
+        follow: { route: view.route === 'edit' ? 'edit' : 'blob', namespace, project, path: dst },
+      }
+    }
+
+    // Not the displayed file: drop any stale cache for the old path; no banner.
+    queryClient.removeQueries({
+      queryKey: ['file', namespace, project, src],
+      exact: true,
+    })
     return {}
   }
 
