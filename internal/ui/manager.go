@@ -43,10 +43,14 @@ const (
 	MsgSearchFiles  MessageType = "SEARCH_FILES"
 	MsgSearchResult MessageType = "SEARCH_RESULT"
 	// MsgMoveFile renames/moves a file within a project; MsgMoveAck carries the
-	// result back (new etag + links-rewritten count). A move is one atomic commit
-	// that also rewrites inbound internal links (the move-file directive). A stale
-	// if_match — or an existing target with no if_match — yields the same CONFLICT
-	// frame SAVE_FILE uses, carrying the relevant file's current etag.
+	// result back (new etag + an always-0 links_rewritten count). A move is a
+	// pure path change: one atomic, history-preserving rename (git log --follow
+	// keeps working) that rewrites no inbound links. Inbound-link rewriting was
+	// decoupled and disabled in B-33; the goldmark rewriter is retained dormant
+	// pending a future reverse-link index (B-33/B-34), so links_rewritten is
+	// always 0 today. A stale if_match — or an existing target with no if_match —
+	// yields the same CONFLICT frame SAVE_FILE uses, carrying the relevant file's
+	// current etag.
 	MsgMoveFile MessageType = "MOVE_FILE"
 	MsgMoveAck  MessageType = "MOVE_ACK"
 	// MsgNotify carries one notify.Event pushed from the server to the browser
@@ -128,8 +132,10 @@ type MoveFilePayload struct {
 }
 
 // MoveAckPayload is the MOVE_ACK frame's body: the source and target paths, the
-// destination's new etag (usable as if_match for a follow-up edit), and the count
-// of internal links rewritten in the same atomic commit.
+// destination's new etag (usable as if_match for a follow-up edit), and
+// LinksRewritten. A move is a pure path change, so LinksRewritten is currently
+// always 0; the field is reserved for the future reverse-link-index
+// re-enablement (B-33/B-34) and is kept in the shape deliberately, not removed.
 type MoveAckPayload struct {
 	SourcePath     string `json:"source_path"`
 	TargetPath     string `json:"target_path"`
@@ -486,7 +492,9 @@ func (m *Manager) handleSearchFiles(client *wsClient, payload json.RawMessage) {
 // Author) and carries the connection's sender id so the resulting file.move
 // NOTIFY is not echoed back to this connection. A conflict (stale if_match, or an
 // existing target with no if_match) returns the same CONFLICT frame SAVE_FILE
-// uses; success returns MOVE_ACK with the new etag and links-rewritten count.
+// uses; success returns MOVE_ACK with the new etag and an always-0
+// links_rewritten count (a move is a pure path change; inbound-link rewriting is
+// disabled and the rewriter retained dormant per B-33).
 func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
 	var p MoveFilePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
