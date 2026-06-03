@@ -352,6 +352,24 @@ func ifMatchPtr(expected string) *string {
 }
 
 func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectName, path, content string, ifMatch *string) (string, error) {
+	// A plain whole-file write is the identity transform: the new bytes are the
+	// caller's content, regardless of the file's current bytes.
+	return s.writeTransformed(ctx, sessionID, namespace, projectName, path, ifMatch,
+		func(_ []byte) ([]byte, error) { return []byte(content), nil })
+}
+
+// writeTransformed is the shared read-modify-write critical section behind write()
+// (whole-file replace) and the B-36 partial-edit ops AppendToFile / PatchFile.
+// Under the per-file lock it reads the file's current faithful bytes, enforces
+// if_match against their etag, hands them to transform to compute the new bytes
+// (transform may return a typed error — e.g. *MatchError — to abort with no
+// write), writes the result atomically, appends ONE ordinary "write" WAL entry
+// (so the background worker makes one faithful commit), updates the catalog, and
+// publishes the file.write NOTIFY. transform always sees the SERVER's bytes, so
+// for a partial edit the only LLM-mediated bytes are whatever it splices in. No
+// new lock, WAL op, commit branch, or NOTIFY kind: append/patch are, to every
+// observer, just file writes.
+func (s *FSGitStorage) writeTransformed(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string, transform func(current []byte) ([]byte, error)) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return "", err
@@ -371,20 +389,24 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 		if ifMatch != nil && *ifMatch != currentEtag {
 			return &VersionConflictError{Expected: *ifMatch, Current: currentEtag}
 		}
+		newContent, terr := transform(current)
+		if terr != nil {
+			return terr
+		}
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 			return fmt.Errorf("failed to create directories for file: %w", err)
 		}
-		if err := atomicWriteFile(fullPath, []byte(content)); err != nil {
+		if err := atomicWriteFile(fullPath, newContent); err != nil {
 			return fmt.Errorf("failed to write file: %w", err)
 		}
-		newEtag = sha256Hex([]byte(content))
+		newEtag = sha256Hex(newContent)
 		id := identity.Resolve(ctx, s.identityDefaults)
 		if _, err := s.wal.Append(wal.Entry{
 			Namespace:    namespace,
 			Project:      projectName,
 			Path:         rel,
 			Op:           "write",
-			Content:      []byte(content),
+			Content:      newContent,
 			UserName:     id.UserName,
 			UserEmail:    id.UserEmail,
 			AgentName:    id.AgentName,
@@ -395,7 +417,7 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 		}
 		// Catalog update (working tree → WAL → catalog, §5.1). Best-effort: it
 		// never fails the write, since the working tree and WAL already succeeded.
-		s.catalogPut(namespace, projectName, rel, newEtag, len(content), fullPath)
+		s.catalogPut(namespace, projectName, rel, newEtag, len(newContent), fullPath)
 		return nil
 	})
 	if lockErr != nil {
