@@ -8,6 +8,7 @@ import { CommandPalette } from './CommandPalette'
 import { Banner } from './Banner'
 import { Toaster } from './Toaster'
 import { NotifyBridge } from './NotifyBridge'
+import { MoveProvider } from '../lib/moveController'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import styles from './Shell.module.css'
 
@@ -25,6 +26,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const direction = isNarrow ? 'vertical' : 'horizontal'
 
   return (
+    <MoveProvider>
     <div className={styles.shell} data-narrow={isNarrow}>
       <TitleBar onToggleSidebar={() => setSidebarOpen((v) => !v)} />
 
@@ -75,5 +77,6 @@ export function Shell({ children }: { children: ReactNode }) {
       <Toaster />
       <NotifyBridge />
     </div>
+    </MoveProvider>
   )
 }

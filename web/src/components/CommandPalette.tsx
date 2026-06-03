@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Command } from 'cmdk'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { usePalette } from '../lib/palette'
+import { useMoveController } from '../lib/moveController'
 import { useTheme } from '../lib/theme'
 import { useProjectsQuery, useAllProjectFiles } from '../lib/queries'
 import { namespacesOf } from '../lib/tree'
@@ -15,6 +16,7 @@ type Page = 'root' | 'files' | 'projects' | 'namespaces'
 export function CommandPalette() {
   const { open, mode, setOpen, closePalette, openPalette } = usePalette()
   const navigate = useNavigate()
+  const { requestMove } = useMoveController()
   const { theme, toggle } = useTheme()
 
   const [page, setPage] = useState<Page>('root')
@@ -34,6 +36,12 @@ export function CommandPalette() {
   const view = useMemo(() => deriveViewContext(pathname), [pathname])
   const onBlob = view.route === 'blob' && !!view.namespace && !!view.project
   const onProject = !!view.namespace && !!view.project
+  // Move/Rename operate on the file in context — the open blob OR edit file.
+  const onFileView =
+    (view.route === 'blob' || view.route === 'edit') &&
+    !!view.namespace &&
+    !!view.project &&
+    !!view.path
 
   const editCurrentFile = useCallback(() => {
     if (view.route !== 'blob' || !view.namespace || !view.project) return
@@ -73,6 +81,40 @@ export function CommandPalette() {
       params: { namespace: view.namespace, project: view.project },
     })
   }, [view, navigate])
+
+  // Move / Rename the file in context. These open the move/rename dialog (the
+  // operator's primary surface); the move is a pure path change, so the dialog
+  // goes straight to the move with no link interstitial.
+  const moveCurrentFile = useCallback(() => {
+    if (
+      (view.route !== 'blob' && view.route !== 'edit') ||
+      !view.namespace ||
+      !view.project ||
+      !view.path
+    )
+      return
+    requestMove({
+      namespace: view.namespace,
+      project: view.project,
+      sourcePath: view.path,
+      mode: 'move',
+    })
+  }, [view, requestMove])
+  const renameCurrentFile = useCallback(() => {
+    if (
+      (view.route !== 'blob' && view.route !== 'edit') ||
+      !view.namespace ||
+      !view.project ||
+      !view.path
+    )
+      return
+    requestMove({
+      namespace: view.namespace,
+      project: view.project,
+      sourcePath: view.path,
+      mode: 'rename',
+    })
+  }, [view, requestMove])
 
   const { data: projects = [] } = useProjectsQuery()
   const namespaces = useMemo(() => namespacesOf(projects), [projects])
@@ -211,6 +253,20 @@ export function CommandPalette() {
                   label="New file in this project"
                   hint="Choose a path at save"
                   onSelect={() => run(newFileInProject)}
+                />
+              )}
+              {onFileView && (
+                <CmdItem
+                  label="Rename file…"
+                  hint="Same folder, new name"
+                  onSelect={() => run(renameCurrentFile)}
+                />
+              )}
+              {onFileView && (
+                <CmdItem
+                  label="Move file…"
+                  hint="Type the destination path"
+                  onSelect={() => run(moveCurrentFile)}
                 />
               )}
             </Command.Group>
