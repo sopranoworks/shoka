@@ -43,6 +43,27 @@ server:
     # allowed_origins:
     #   - "http://localhost:8080"
 
+    # Built-in OAuth 2.1 authorization server (B-39). When enabled, Shoka acts as
+    # its own AS: it serves discovery (RFC 9728 / RFC 8414), runs /authorize +
+    # /token, verifies clients via CIMD (no DCR), and ENFORCES OAuth access tokens
+    # on the MCP path — superseding the static `tokens` above on that path.
+    # Requires a TLS-terminating reverse proxy and `mcp.external_url` set to the
+    # public origin. Leave disabled for local single-operator use.
+    oauth:
+      enabled: false
+      # Gates /authorize approval (the consent step). Set a long secret; an empty
+      # value denies all consent. Replaced by per-user auth under multi-user mode.
+      # consent_credential: "replace-with-a-long-random-secret"
+      # Allowlist of client (CIMD) metadata domains Shoka will fetch and trust (a
+      # host or any subdomain of it). DEFAULT-DENY: empty means no client can
+      # connect. List the legitimate connector domain(s) for your deployment.
+      # trusted_client_metadata_domains:
+      #   - "the-connector-domain-you-trust"
+      # Token lifetimes (optional; defaults: access 1h, refresh 720h, code 1m).
+      # access_token_ttl: "1h"
+      # refresh_token_ttl: "720h"
+      # authorization_code_ttl: "1m"
+
 # Commit-author identity. PROVISIONAL: this is "single-user mode" — the floor of
 # a larger authentication design (maintenance backlog B-28), NOT that design.
 # There is no authentication; `user` is the one operator Shoka records as the
