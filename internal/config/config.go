@@ -75,6 +75,22 @@ type AuthConfig struct {
 // proxy's X-Forwarded-* headers); see internal/serverurl.
 type OAuthConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// ConsentCredential gates the /authorize approval in single-user mode (the
+	// pluggable principal-auth seam; B-39 (b)). The operator sets a secret; an
+	// empty value denies all consent (a safe default — consent cannot be granted
+	// until configured). Multi-user enablement later replaces this seam with
+	// per-user authentication.
+	ConsentCredential string `yaml:"consent_credential"`
+	// TrustedClientMetadataDomains is the allowlist of client (CIMD) metadata
+	// domains Shoka will fetch and trust (a host or any subdomain of it). It is
+	// default-deny: empty means no client can connect, so the operator MUST list
+	// the legitimate connector domain(s) here. The value lives ONLY in config,
+	// never in source — confidentiality and flexibility.
+	TrustedClientMetadataDomains []string `yaml:"trusted_client_metadata_domains"`
+	// Token lifetimes (0 = built-in defaults: access 1h, refresh 30d, code 1m).
+	AccessTokenTTL       Duration `yaml:"access_token_ttl"`
+	RefreshTokenTTL      Duration `yaml:"refresh_token_ttl"`
+	AuthorizationCodeTTL Duration `yaml:"authorization_code_ttl"`
 }
 
 // WebhookConfig describes one outbound webhook subscription. Events is any of

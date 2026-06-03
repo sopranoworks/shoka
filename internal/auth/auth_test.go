@@ -165,3 +165,91 @@ func TestOriginRestrictedWhenEnabled(t *testing.T) {
 		t.Fatal("empty origin must be rejected when auth enabled")
 	}
 }
+
+// --- OAuth token enforcement (B-39 (b)) -------------------------------------
+
+func TestMiddleware_OAuthEnforcement_RejectsAbsentAndInvalid(t *testing.T) {
+	a := New(Config{
+		ValidateToken: func(token string) (Principal, bool) {
+			if token == "good" {
+				return Principal{Name: "Op", Email: "op@example.test"}, true
+			}
+			return Principal{}, false
+		},
+		ResourceMetadataURL: func(*http.Request) string { return "https://rs.example/.well-known/oauth-protected-resource/mcp" },
+	})
+
+	// No bearer -> 401 with the resource_metadata challenge.
+	rec := httptest.NewRecorder()
+	var called bool
+	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { called = true }))
+	h.ServeHTTP(rec, newReq("", "", ""))
+	if rec.Code != http.StatusUnauthorized || called {
+		t.Fatalf("absent token: want 401 and handler not called, got %d called=%v", rec.Code, called)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got == "" || !contains(got, "resource_metadata=") {
+		t.Fatalf("missing enforced challenge: %q", got)
+	}
+
+	// Invalid token -> 401.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, newReq("Bearer nope", "", ""))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid token: want 401, got %d", rec.Code)
+	}
+}
+
+func TestMiddleware_OAuthEnforcement_AcceptsAndAttachesPrincipal(t *testing.T) {
+	a := New(Config{
+		ValidateToken: func(token string) (Principal, bool) {
+			if token == "good" {
+				return Principal{Name: "Op", Email: "op@example.test"}, true
+			}
+			return Principal{}, false
+		},
+	})
+	rec := httptest.NewRecorder()
+	var gotPrincipal Principal
+	var ok bool
+	a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPrincipal, ok = PrincipalFrom(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, newReq("Bearer good", "", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid token: want 200, got %d", rec.Code)
+	}
+	if !ok || gotPrincipal.Name != "Op" || gotPrincipal.Email != "op@example.test" {
+		t.Fatalf("principal not attached: %+v ok=%v", gotPrincipal, ok)
+	}
+}
+
+// OAuth enforcement supersedes static-bearer: a valid static token is NOT
+// accepted when an OAuth validator is present; only a valid OAuth token is.
+func TestMiddleware_OAuthSupersedesStaticBearer(t *testing.T) {
+	a := New(Config{
+		Enabled: true,
+		Tokens:  []string{"static-secret"},
+		ValidateToken: func(token string) (Principal, bool) {
+			return Principal{Name: "Op"}, token == "oauth-good"
+		},
+	})
+	// A valid STATIC bearer is rejected (OAuth supersedes).
+	if code := serveMiddleware(a, newReq("Bearer static-secret", "", "")); code != http.StatusUnauthorized {
+		t.Fatalf("static bearer under OAuth enforcement: want 401, got %d", code)
+	}
+	// The OAuth token is accepted.
+	if code := serveMiddleware(a, newReq("Bearer oauth-good", "", "")); code != http.StatusOK {
+		t.Fatalf("oauth token: want 200, got %d", code)
+	}
+}
+
+func contains(s, sub string) bool { return len(s) >= len(sub) && (indexOf(s, sub) >= 0) }
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}

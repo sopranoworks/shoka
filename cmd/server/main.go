@@ -13,6 +13,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -32,6 +33,7 @@ import (
 	"github.com/shoka/mcp-server/internal/serverurl"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
+	"github.com/shoka/mcp-server/internal/storage/oauthstore"
 	"github.com/shoka/mcp-server/internal/storage/walworker"
 	"github.com/shoka/mcp-server/internal/tools"
 	"github.com/shoka/mcp-server/internal/translation"
@@ -172,12 +174,12 @@ func main() {
 		Tokens:         cfg.Server.Auth.Tokens,
 		AllowedOrigins: cfg.Server.Auth.AllowedOrigins,
 	}
+	var authServer *oauth.AuthServer
+	var oauthStore *oauthstore.Store
 	if oauthEnabled {
-		// When OAuth discovery is on, the 401 challenge advertises where to find
-		// the Protected Resource Metadata (RFC 9728 §5.1). The URL is composed
-		// per-request so the proxy's X-Forwarded-* headers can drive it when no
-		// external_url is configured. This injects discovery only — it adds no
-		// token enforcement (a later directive does that).
+		// The 401 challenge advertises where to find the Protected Resource
+		// Metadata (RFC 9728 §5.1), composed per-request so the proxy's
+		// X-Forwarded-* headers can drive it when no external_url is configured.
 		authConfig.ResourceMetadataURL = func(r *http.Request) string {
 			base, err := serverurl.Base(discoveryCfg.ExternalURL, r)
 			if err != nil {
@@ -189,6 +191,55 @@ func main() {
 			logger.Warn("oauth discovery enabled without server.mcp.external_url; " +
 				"relying on per-request X-Forwarded-* headers to compose the public URL — " +
 				"set external_url in production")
+		}
+
+		// The authorization-server core (B-39 (b)): a go-git-free token store, the
+		// CIMD verifier (trusted-domain allowlist from config), and the /authorize +
+		// /token endpoints. Enabling oauth now ENFORCES tokens on the MCP path (it
+		// supersedes the static-bearer switch); discovery alone is no longer the
+		// only effect of the toggle.
+		var oerr error
+		oauthStore, oerr = oauthstore.Open(filepath.Join(cfg.Storage.BaseDir, "oauth.db"))
+		if oerr != nil {
+			log.Fatalf("failed to open oauth token store: %v", oerr)
+		}
+		defer func() { _ = oauthStore.Close() }()
+
+		oc := cfg.Server.Auth.OAuth
+		if len(oc.TrustedClientMetadataDomains) == 0 {
+			logger.Warn("oauth enabled with an empty trusted_client_metadata_domains allowlist; " +
+				"no client can connect until at least the legitimate connector domain is listed")
+		}
+		if oc.ConsentCredential == "" {
+			logger.Warn("oauth enabled without server.auth.oauth.consent_credential; " +
+				"all /authorize approvals will be denied until a consent credential is set")
+		}
+		verifier := oauth.NewVerifier(oc.TrustedClientMetadataDomains)
+		authServer = oauth.NewAuthServer(oauthStore, verifier, oauth.AuthServerConfig{
+			ExternalURL: cfg.Server.MCP.ExternalURL,
+			PrincipalAuth: oauth.ConsentCredentialAuth{
+				Credential: oc.ConsentCredential,
+				Principal: oauthstore.Principal{
+					Name:  cfg.Identity.User.Name,
+					Email: cfg.Identity.User.Email,
+				},
+			},
+			AccessTTL:  oc.AccessTokenTTL.Std(),
+			RefreshTTL: oc.RefreshTokenTTL.Std(),
+			CodeTTL:    oc.AuthorizationCodeTTL.Std(),
+		})
+
+		// Token enforcement: a valid OAuth access token is required on the MCP path
+		// and its bound principal is attached to the request (→ commit Committer).
+		authConfig.ValidateToken = func(token string) (auth.Principal, bool) {
+			if token == "" {
+				return auth.Principal{}, false
+			}
+			rec, lerr := oauthStore.Lookup(token, time.Now())
+			if lerr != nil {
+				return auth.Principal{}, false
+			}
+			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, true
 		}
 	}
 	authenticator := auth.New(authConfig)
@@ -231,7 +282,7 @@ func main() {
 
 	// MCP Server
 	g.Go(func() error {
-		return runServer(ctx, "MCP", cfg.Server.MCP, httplog.Middleware(logger)(mcpListenerHandler(oauthEnabled, discoveryCfg, mcpHandler, authenticator)), logger)
+		return runServer(ctx, "MCP", cfg.Server.MCP, httplog.Middleware(logger)(mcpListenerHandler(oauthEnabled, discoveryCfg, authServer, mcpHandler, authenticator)), logger)
 	})
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
@@ -482,13 +533,16 @@ func startMetricsServer(ctx context.Context, addr string, src metrics.Source, lo
 // becomes the auth-wrapped catch-all. When disabled, the handler is exactly the
 // auth-wrapped MCP handler — behaviour byte-for-byte unchanged. The MCP handler is
 // path-agnostic, so the "/" catch-all serves it on /mcp and elsewhere as before.
-func mcpListenerHandler(oauthEnabled bool, discoveryCfg oauth.DiscoveryConfig, mcpHandler http.Handler, authenticator *auth.Authenticator) http.Handler {
+func mcpListenerHandler(oauthEnabled bool, discoveryCfg oauth.DiscoveryConfig, authServer *oauth.AuthServer, mcpHandler http.Handler, authenticator *auth.Authenticator) http.Handler {
 	authed := authenticator.Middleware(mcpHandler)
 	if !oauthEnabled {
 		return authed
 	}
 	mux := http.NewServeMux()
-	oauth.RegisterDiscovery(mux, discoveryCfg)
+	oauth.RegisterDiscovery(mux, discoveryCfg) // RFC 9728 / RFC 8414, no auth
+	if authServer != nil {
+		authServer.RegisterEndpoints(mux) // /authorize + /token, no bearer (they mint one)
+	}
 	mux.Handle("/", authed)
 	return mux
 }

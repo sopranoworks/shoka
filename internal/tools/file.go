@@ -8,11 +8,27 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/shoka/mcp-server/internal/auth"
 	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/utils"
 )
+
+// withWriteIdentity stamps the per-request commit identity on ctx for a mutating
+// MCP call: the self-declared agent is the git Author (WithAgent), and, when the
+// request is OAuth-authenticated, the bound principal is the git Committer
+// (WithCommitter — the B-39 §2.5 decoupling, Author=agent / Committer=principal).
+// The principal rides the request context from the auth middleware, propagated to
+// the tool handler via the MCP session's connect context. Unauthenticated calls
+// carry no principal and fall back to the configured operator (today's behaviour).
+func withWriteIdentity(ctx context.Context, req *mcp.CallToolRequest) context.Context {
+	ctx = identity.WithAgent(ctx, agentFromMCP(req))
+	if p, ok := auth.PrincipalFrom(ctx); ok {
+		ctx = identity.WithCommitter(ctx, identity.User{Name: p.Name, Email: p.Email})
+	}
+	return ctx
+}
 
 // workerMetaKey is the Shoka-namespaced key under the MCP initialize _meta where
 // a client may declare its Rohrpost worker id.
@@ -139,7 +155,7 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, WriteFileOutput{}, nil
 		}
 
-		ctx = identity.WithAgent(ctx, agentFromMCP(req))
+		ctx = withWriteIdentity(ctx, req)
 		ctx = notify.WithSender(ctx, mcpSender(req))
 		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, input.Path, input.Content, input.IfMatch)
 		if err != nil {
@@ -216,7 +232,7 @@ func DeleteFileHandler(s storage.StorageService) func(context.Context, *mcp.Call
 			}, DeleteFileOutput{}, nil
 		}
 
-		ctx = identity.WithAgent(ctx, agentFromMCP(req))
+		ctx = withWriteIdentity(ctx, req)
 		ctx = notify.WithSender(ctx, mcpSender(req))
 		err := s.Delete(ctx, "", input.Namespace, input.ProjectName, input.Path, input.IfMatch)
 		if err != nil {
@@ -284,7 +300,7 @@ func MoveFileHandler(s storage.StorageService) func(context.Context, *mcp.CallTo
 			}, MoveFileOutput{}, nil
 		}
 
-		ctx = identity.WithAgent(ctx, agentFromMCP(req))
+		ctx = withWriteIdentity(ctx, req)
 		ctx = notify.WithSender(ctx, mcpSender(req))
 		newEtag, links, err := s.Move(ctx, "", input.Namespace, input.ProjectName, input.SourcePath, input.TargetPath, input.IfMatch)
 		if err != nil {

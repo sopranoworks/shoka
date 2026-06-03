@@ -5,10 +5,34 @@
 package auth
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"strings"
 )
+
+// Principal is the authenticated OAuth principal bound to a validated access
+// token. It is attached to the MCP request context on a successful OAuth-enforced
+// request so the write path can record it as the commit Committer (the B-39 §2.5
+// decoupling). Name/Email come from the token's binding, not a config constant.
+type Principal struct {
+	Name  string
+	Email string
+}
+
+type principalCtxKey struct{}
+
+// WithPrincipal attaches the authenticated principal to ctx.
+func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalCtxKey{}, p)
+}
+
+// PrincipalFrom returns the authenticated principal carried on ctx, if any. The
+// MCP tool handlers read it to set the commit Committer via identity.WithCommitter.
+func PrincipalFrom(ctx context.Context) (Principal, bool) {
+	p, ok := ctx.Value(principalCtxKey{}).(Principal)
+	return p, ok
+}
 
 // Config configures the Authenticator. The zero value is a disabled
 // authenticator that allows everything.
@@ -21,9 +45,16 @@ type Config struct {
 	// returns a non-empty value the 401 WWW-Authenticate challenge carries the
 	// resource_metadata parameter so a client can discover the authorization
 	// server. Injected by the server when OAuth discovery is enabled; this keeps
-	// the auth package free of any URL-composition dependency. It does NOT enable
-	// token enforcement — that is a later directive.
+	// the auth package free of any URL-composition dependency.
 	ResourceMetadataURL func(*http.Request) string
+	// ValidateToken, when set, enables OAuth token ENFORCEMENT on the MCP path
+	// (the B-39 (b) directive). It validates a bearer access token against the
+	// token store and returns the bound principal. When set it SUPERSEDES the
+	// static-bearer check on the MCP middleware: only a valid OAuth access token
+	// is accepted, and the bound principal is attached to the request context.
+	// When nil, the MCP middleware behaves exactly as before (static-bearer or
+	// disabled) — preserving the (a) discovery-only semantics.
+	ValidateToken func(token string) (Principal, bool)
 }
 
 // Authenticator enforces token authentication and origin restrictions.
@@ -32,6 +63,7 @@ type Authenticator struct {
 	tokens              []string
 	allowedOrigins      []string
 	resourceMetadataURL func(*http.Request) string
+	validateToken       func(token string) (Principal, bool)
 }
 
 // New builds an Authenticator from c.
@@ -41,6 +73,7 @@ func New(c Config) *Authenticator {
 		tokens:              c.Tokens,
 		allowedOrigins:      c.AllowedOrigins,
 		resourceMetadataURL: c.ResourceMetadataURL,
+		validateToken:       c.ValidateToken,
 	}
 }
 
@@ -66,11 +99,26 @@ func (a *Authenticator) AuthenticateWebSocket(r *http.Request) bool {
 	return a.validToken(tokenFromRequest(r))
 }
 
-// Middleware wraps next with header-only Bearer authentication (used for the
-// MCP/SSE endpoint). Returns 401 when auth is enabled and no valid Bearer token
-// is present. When disabled it passes every request through.
+// Middleware wraps next with authentication for the MCP endpoint. When an OAuth
+// token validator is injected (enforcement on, B-39 (b)) it SUPERSEDES the
+// static-bearer check: only a valid OAuth access token is accepted, a 401 with
+// the resource_metadata challenge is returned otherwise, and the bound principal
+// is attached to the request context so the write path can record it as the
+// commit Committer. When no validator is injected the behaviour is exactly the
+// prior static-bearer (or disabled) one.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
-	return a.middleware(next, a.Authenticate)
+	if a.validateToken == nil {
+		return a.middleware(next, a.Authenticate)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := a.validateToken(bearerToken(r))
+		if !ok {
+			w.Header().Set("WWW-Authenticate", a.challenge(r))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
+	})
 }
 
 // MiddlewareAllowQueryToken wraps next with authentication that also accepts the
