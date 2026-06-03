@@ -1,5 +1,5 @@
 import { wsClient } from './wsClient'
-import type { FileContent, SaveAck, ConflictPayload } from './types'
+import type { FileContent, SaveAck, ConflictPayload, MoveAck } from './types'
 
 // Imperative /ws/ui file operations for the editor. Unlike the read queries
 // (lib/queries), these are user-initiated mutations, so they live outside
@@ -44,6 +44,57 @@ export async function saveFile(args: SaveArgs): Promise<SaveResult> {
   }
   const p = frame.payload as SaveAck
   return { ok: true, path: p.path, etag: p.etag }
+}
+
+// The single imperative move op all move surfaces (dialog, inline rename,
+// drag-drop, context menu, palette) funnel through — no surface talks to wsClient
+// directly. A move is a PURE PATH CHANGE (B-33): the backend renames atomically
+// and rewrites NO links, so MOVE_ACK's links_rewritten is always 0. We read it
+// off the frame but deliberately do NOT surface or branch on it — there is no
+// link concern in this UI (move-file directive §0).
+export type MoveResult =
+  | { ok: true; sourcePath: string; targetPath: string; newEtag: string }
+  | { ok: false; path: string; currentEtag: string; message: string }
+
+export interface MoveArgs {
+  namespace: string
+  project: string
+  sourcePath: string
+  targetPath: string
+  // Optimistic-concurrency etag, with the backend's dual semantic: when the
+  // target exists it guards the target (explicit overwrite); when the target is
+  // free it guards the source. The default move sends none — so a move onto an
+  // occupied target is REFUSED (CONFLICT), never a silent overwrite (§2.8).
+  ifMatch?: string | null
+}
+
+export async function moveFile(args: MoveArgs): Promise<MoveResult> {
+  const payload: Record<string, unknown> = {
+    namespace: args.namespace,
+    projectName: args.project,
+    source_path: args.sourcePath,
+    target_path: args.targetPath,
+  }
+  if (args.ifMatch != null) payload.if_match = args.ifMatch
+
+  const frame = await wsClient().requestFrame('MOVE_FILE', payload)
+  if (frame.type === 'CONFLICT') {
+    const p = frame.payload as ConflictPayload
+    return {
+      ok: false,
+      path: p.path,
+      currentEtag: p.current_etag,
+      message: p.message,
+    }
+  }
+  const p = frame.payload as MoveAck
+  // p.links_rewritten is present and always 0 — intentionally ignored.
+  return {
+    ok: true,
+    sourcePath: p.source_path,
+    targetPath: p.target_path,
+    newEtag: p.new_etag,
+  }
 }
 
 // A fresh read straight off /ws/ui (not the query cache), for "Discard mine,

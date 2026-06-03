@@ -43,6 +43,17 @@ export interface ConflictPayload {
   message: string
 }
 
+// The MOVE_ACK response payload (mirrors Go's ui.MoveAckPayload). A move is a
+// pure path change (B-33): new_etag is the moved file's etag (equal to the
+// source's, since content is unchanged), and links_rewritten is ALWAYS 0 — the
+// field is retained for forward compatibility but the UI never surfaces it.
+export interface MoveAck {
+  source_path: string
+  target_path: string
+  new_etag: string
+  links_rewritten: number
+}
+
 // One SEARCH_RESULT match (mirrors Go's storage.SearchMatch). The snippet is a
 // short context window around the match, not a line; the backend does not carry
 // a line number, so the result UI shows path + snippet and navigates to the
