@@ -58,9 +58,23 @@ type ServerSettings struct {
 // false (the default) no authentication is performed and all WebSocket origins
 // are accepted, preserving single-operator local behaviour.
 type AuthConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	Tokens         []string `yaml:"tokens"`
-	AllowedOrigins []string `yaml:"allowed_origins"`
+	Enabled        bool        `yaml:"enabled"`
+	Tokens         []string    `yaml:"tokens"`
+	AllowedOrigins []string    `yaml:"allowed_origins"`
+	OAuth          OAuthConfig `yaml:"oauth"`
+}
+
+// OAuthConfig configures the OAuth 2.1 discovery substrate (the 2026-06-03 OAuth
+// (a) directive). When Enabled, Shoka serves RFC 9728 Protected Resource Metadata
+// and RFC 8414 Authorization Server Metadata, and its 401 challenge carries the
+// resource_metadata parameter — so a client (e.g. Claude.ai) can DISCOVER the
+// authorization server. This is discovery ONLY: it issues no tokens and enforces
+// no OAuth (that is a later directive). It is intentionally distinct from
+// AuthConfig.Enabled (the static-bearer switch) so discovery can be toggled
+// independently. The public URL is composed from server.mcp.external_url (or the
+// proxy's X-Forwarded-* headers); see internal/serverurl.
+type OAuthConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // WebhookConfig describes one outbound webhook subscription. Events is any of

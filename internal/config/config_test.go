@@ -87,6 +87,57 @@ storage:
 	assert.Equal(t, []string{"https://app.example.com"}, cfg.Server.Auth.AllowedOrigins)
 }
 
+func TestLoad_OAuthDiscovery(t *testing.T) {
+	yamlContent := `
+server:
+  http:
+    listen: ":8080"
+  mcp:
+    listen: ":8081"
+    external_url: "https://public.example"
+  auth:
+    oauth:
+      enabled: true
+storage:
+  base_dir: "/tmp/shoka"
+`
+	tmpFile, err := os.CreateTemp("", "config-oauth*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+	_, err = tmpFile.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	cfg, err := Load(tmpFile.Name())
+	require.NoError(t, err)
+
+	// OAuth discovery is a distinct switch from the static-bearer auth.enabled.
+	assert.True(t, cfg.Server.Auth.OAuth.Enabled)
+	assert.False(t, cfg.Server.Auth.Enabled)
+	assert.Equal(t, "https://public.example", cfg.Server.MCP.ExternalURL)
+}
+
+func TestLoad_OAuthDiscoveryDefaultsDisabled(t *testing.T) {
+	yamlContent := `
+server:
+  http:
+    listen: ":8080"
+  mcp:
+    listen: ":8081"
+storage:
+  base_dir: "/tmp/shoka"
+`
+	f, err := os.CreateTemp(t.TempDir(), "config-nooauth*.yaml")
+	require.NoError(t, err)
+	_, err = f.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	cfg, err := Load(f.Name())
+	require.NoError(t, err)
+	assert.False(t, cfg.Server.Auth.OAuth.Enabled)
+}
+
 func TestLoad_AuthDefaultsDisabled(t *testing.T) {
 	yamlContent := `
 server:

@@ -28,6 +28,8 @@ import (
 	"github.com/shoka/mcp-server/internal/logging"
 	"github.com/shoka/mcp-server/internal/metrics"
 	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/shoka/mcp-server/internal/oauth"
+	"github.com/shoka/mcp-server/internal/serverurl"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
 	"github.com/shoka/mcp-server/internal/storage/walworker"
@@ -163,11 +165,33 @@ func main() {
 
 	uim := ui.NewManager(s, dm, notifyCenter)
 
-	authenticator := auth.New(auth.Config{
+	oauthEnabled := cfg.Server.Auth.OAuth.Enabled
+	discoveryCfg := oauth.DiscoveryConfig{ExternalURL: cfg.Server.MCP.ExternalURL}
+	authConfig := auth.Config{
 		Enabled:        cfg.Server.Auth.Enabled,
 		Tokens:         cfg.Server.Auth.Tokens,
 		AllowedOrigins: cfg.Server.Auth.AllowedOrigins,
-	})
+	}
+	if oauthEnabled {
+		// When OAuth discovery is on, the 401 challenge advertises where to find
+		// the Protected Resource Metadata (RFC 9728 §5.1). The URL is composed
+		// per-request so the proxy's X-Forwarded-* headers can drive it when no
+		// external_url is configured. This injects discovery only — it adds no
+		// token enforcement (a later directive does that).
+		authConfig.ResourceMetadataURL = func(r *http.Request) string {
+			base, err := serverurl.Base(discoveryCfg.ExternalURL, r)
+			if err != nil {
+				return ""
+			}
+			return serverurl.ProtectedResourceMetadataURL(base)
+		}
+		if cfg.Server.MCP.ExternalURL == "" {
+			logger.Warn("oauth discovery enabled without server.mcp.external_url; " +
+				"relying on per-request X-Forwarded-* headers to compose the public URL — " +
+				"set external_url in production")
+		}
+	}
+	authenticator := auth.New(authConfig)
 	dm.SetOriginChecker(authenticator.OriginAllowed)
 	uim.SetOriginChecker(authenticator.OriginAllowed)
 
@@ -207,7 +231,7 @@ func main() {
 
 	// MCP Server
 	g.Go(func() error {
-		return runServer(ctx, "MCP", cfg.Server.MCP, httplog.Middleware(logger)(authenticator.Middleware(mcpHandler)), logger)
+		return runServer(ctx, "MCP", cfg.Server.MCP, httplog.Middleware(logger)(mcpListenerHandler(oauthEnabled, discoveryCfg, mcpHandler, authenticator)), logger)
 	})
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
@@ -450,6 +474,23 @@ func startMetricsServer(ctx context.Context, addr string, src metrics.Source, lo
 			logger.Error("metrics server error", "error", err)
 		}
 	}()
+}
+
+// mcpListenerHandler assembles the MCP listener's HTTP handler. When OAuth
+// discovery is enabled, the RFC 9728 / RFC 8414 discovery documents are mounted
+// WITHOUT auth (they must be reachable before a token exists) and the MCP handler
+// becomes the auth-wrapped catch-all. When disabled, the handler is exactly the
+// auth-wrapped MCP handler — behaviour byte-for-byte unchanged. The MCP handler is
+// path-agnostic, so the "/" catch-all serves it on /mcp and elsewhere as before.
+func mcpListenerHandler(oauthEnabled bool, discoveryCfg oauth.DiscoveryConfig, mcpHandler http.Handler, authenticator *auth.Authenticator) http.Handler {
+	authed := authenticator.Middleware(mcpHandler)
+	if !oauthEnabled {
+		return authed
+	}
+	mux := http.NewServeMux()
+	oauth.RegisterDiscovery(mux, discoveryCfg)
+	mux.Handle("/", authed)
+	return mux
 }
 
 func runServer(ctx context.Context, name string, settings config.ServerSettings, handler http.Handler, logger *slog.Logger) error {
