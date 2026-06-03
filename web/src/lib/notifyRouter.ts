@@ -3,16 +3,23 @@ import type { QueryClient } from '@tanstack/react-query'
 // Routes /ws/ui NOTIFY events (and reconnect revalidation) into TanStack Query
 // cache effects + user-facing banner/toast intents.
 //
-// Event shape is source-verified from internal/notify/center.go: the four kinds
-// that reach the browser are file.write, file.delete, project.create, and
+// Event shape is source-verified from internal/notify/center.go: the kinds that
+// reach the browser are file.write, file.delete, file.move, project.create, and
 // catalog.invariant_violation. `target` is the JOINED string "namespace/project"
 // (not separate fields — the directive §1.2 hint was wrong here); there is no
 // project.delete event. See reports/progress/2026-06-01-session-2-notify-event-inventory.md.
+//
+// `sourcePath` (wire `source_path`) is carried ONLY by file.move: it is the old
+// path, while `path` is the new path. Session 2's parse dropped unknown fields,
+// so the move-file directive extends both the type and parseNotifyEvent to keep
+// it — without this the displayed view could not be matched against the move's
+// origin and the follow (§2.9) would be impossible.
 
 export interface NotifyEvent {
   kind: string
   target: string // "namespace/project"
   path?: string
+  sourcePath?: string // file.move only: the old path (wire `source_path`)
   seq?: number
   timestamp?: string
 }
@@ -58,6 +65,7 @@ export function parseNotifyEvent(payload: unknown): NotifyEvent | null {
     kind: p.kind,
     target: p.target,
     path: typeof p.path === 'string' ? p.path : undefined,
+    sourcePath: typeof p.source_path === 'string' ? p.source_path : undefined,
     seq: typeof p.seq === 'number' ? p.seq : undefined,
     timestamp: typeof p.timestamp === 'string' ? p.timestamp : undefined,
   }

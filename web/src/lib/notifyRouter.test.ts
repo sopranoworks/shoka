@@ -66,6 +66,26 @@ describe('splitTarget / parseNotifyEvent', () => {
     expect(parseNotifyEvent({ kind: 'file.write' })).toBeNull()
     expect(parseNotifyEvent(null)).toBeNull()
   })
+  it('carries file.move source_path through the parse (session-2 dropped it)', () => {
+    expect(
+      parseNotifyEvent({
+        kind: 'file.move',
+        target: 'demo/docs',
+        source_path: 'old.md',
+        path: 'new.md',
+      }),
+    ).toMatchObject({
+      kind: 'file.move',
+      target: 'demo/docs',
+      sourcePath: 'old.md',
+      path: 'new.md',
+    })
+    // Non-move events leave sourcePath undefined.
+    expect(
+      parseNotifyEvent({ kind: 'file.write', target: 'demo/docs', path: 'a.md' })
+        ?.sourcePath,
+    ).toBeUndefined()
+  })
 })
 
 describe('routeNotify file.write', () => {
