@@ -149,14 +149,15 @@ Controlled by config `server.auth` (Source: `internal/config/config.go:23-30`;
 
 ## 4. Tool catalog
 
-v1 exposes **14 tools**. Thirteen are always registered; `translate_file` is
+v1 exposes **16 tools**. Fifteen are always registered; `translate_file` is
 registered **only** when `services.google_cloud.project_id` is set. (Source:
-`cmd/server/main.go:131-208`, conditional at `:75` and `:200-205`.)
+`cmd/server/main.go`.)
 
 ```
 get_server_info  list_projects  create_project  list_files  read_file
-read_file_at_version  write_file  delete_file  move_file  get_history
-read_summary  list_files_since  search_files  translate_file*  (*conditional)
+read_file_at_version  write_file  delete_file  append_to_file  patch_file
+move_file  get_history  read_summary  list_files_since  search_files
+translate_file*  (*conditional)
 ```
 
 ### 4.0 Common argument conventions
@@ -169,9 +170,11 @@ Apply to every tool unless noted:
 - **`namespace` / `project_name` validation** — must match `^[A-Za-z0-9_-]+$`
   (alphanumeric, hyphen, underscore). Invalid names return a tool error. (Source:
   `internal/utils`/`IsValidName`; e.g. `internal/tools/file.go:40-45`.)
-- **`if_match`** (write/delete only) — optional; when omitted, the
-  optimistic-concurrency check is skipped. When present, the file's current
-  `etag` must equal it or the call is rejected with a conflict. See § 5.
+- **`if_match`** (`write_file`/`delete_file`/`append_to_file`/`patch_file`/
+  `move_file`) — optional; when omitted, the optimistic-concurrency check is
+  skipped. When present, the file's current `etag` must equal it or the call is
+  rejected with a conflict. See § 5. It is the **only** integrity argument: there
+  is deliberately no `sha256` argument on the partial-edit tools (see § 4.14/4.15).
 - **`path`** — project-relative. Absolute paths and `..` traversal are rejected.
   (Source: `internal/storage/fs_git.go` `relWithin` and parallel checks.)
 - **Errors** surface as a **tool-level result with `isError: true`** and a
@@ -389,7 +392,88 @@ Apply to every tool unless noted:
   (Source: `internal/tools/file.go`; `internal/storage/move.go`,
   `linkrewrite.go`, `commit.go`.)
 
-### 4.14 `translate_file` (conditional)
+### 4.14 `append_to_file`
+- **Purpose:** insert text into a file **without resending the whole file** — the
+  partial-edit complement to `write_file` for large append-mostly source-of-truth
+  (`backlog.md`, `journal.md`). The splice is computed **server-side on the file's
+  current faithful bytes under the per-file lock**; only the inserted fragment (and
+  the anchor, if any) is LLM-mediated. (Backlog B-36.)
+- **Input:** `namespace` (opt), `project_name` (**required**), `path`
+  (**required**), `content` (string, **required** — inserted **verbatim**; the
+  server adds **no** newline, so the caller owns all newline placement),
+  `position` (string, opt — `end` (default) | `before` | `after`), `anchor`
+  (string — **required** when `position` is `before`/`after`, and **rejected**
+  when `position` is `end`), `if_match` (string, opt — see § 5).
+- **Anchor uniqueness (structural):** for `before`/`after`, `anchor` must occur in
+  the file **exactly once**. **Zero matches → error** (`anchor not found in file`);
+  **two or more → error** (`anchor is ambiguous: N matches; include more
+  surrounding context to make it unique`). The server **never guesses** which
+  match was meant — pass enough surrounding context to be unique.
+- **Newline semantics:** `content` is inserted byte-for-byte at the chosen point —
+  end-append concatenates it at EOF; `before`/`after` insert it immediately
+  before/after the anchor occurrence. No separator is injected; if you want a
+  trailing newline, include it in `content`.
+- **Output (success):** `message` (string), `etag` (string — the new content etag
+  of the **whole** file).
+- **Output (anchor/argument error):** `isError: true`; human-readable `text`
+  (anchor not-found / ambiguous; missing-anchor-for-before/after;
+  anchor-with-end). These are **not** conflicts and carry no `current_etag`.
+- **Output (conflict):** `isError: true`; structured `conflict: true`,
+  `current_etag: <etag>` (stale `if_match`; see § 5).
+- **Output (project-state refusal):** `isError: true`; structured
+  `reason: "corrupted" | "dangerous" | "write_disabled"` (see § 7).
+- **Side effects:** identical to `write_file` — synchronous atomic file write +
+  WAL append; a background git commit (`Update <path>`) and a **`file_written`**
+  webhook with `commit_hash` follow; a `file.write` NOTIFY is dispatched to other
+  `/ws/ui` connections. An append/patch is, to every observer, **just a file
+  write** (no new commit kind, no new NOTIFY kind). (Source:
+  `internal/tools/partialedit.go`; `internal/storage/partialedit.go`,
+  `fs_git.go` `writeTransformed`.)
+
+### 4.15 `patch_file`
+- **Purpose:** replace **one unique occurrence** of `old_string` with `new_string`
+  (`str_replace`-style) — the partial-edit complement to `write_file` for flipping
+  a `status:` line or updating a single paragraph without resending the whole file.
+  The replace is computed **server-side on the file's current faithful bytes under
+  the per-file lock**; only `old_string` and `new_string` are LLM-mediated.
+  (Backlog B-36.)
+- **Input:** `namespace` (opt), `project_name` (**required**), `path`
+  (**required**), `old_string` (string, **required** — must be non-empty and occur
+  **exactly once**), `new_string` (string, **required** — **may be empty** to
+  delete the matched span), `if_match` (string, opt — see § 5).
+- **Uniqueness (structural):** `old_string` must occur **exactly once**. **Zero
+  matches → error** (`old_string not found in file`); **two or more → error**
+  (`old_string is ambiguous: N matches; include more surrounding context to make
+  it unique`). The server **never guesses**. The required exact match of
+  `old_string` is itself a positional integrity check — the patch applies only if
+  the expected text is actually there.
+- **Output (success):** `message` (string), `etag` (string — the new content etag
+  of the **whole** file).
+- **Output (match/argument error):** `isError: true`; human-readable `text`
+  (`old_string` not-found / ambiguous / empty). Not a conflict; no `current_etag`.
+- **Output (conflict):** `isError: true`; structured `conflict: true`,
+  `current_etag: <etag>` (stale `if_match`; see § 5).
+- **Output (project-state refusal):** `isError: true`; structured
+  `reason: "corrupted" | "dangerous" | "write_disabled"` (see § 7).
+- **Side effects:** identical to `write_file` (see § 4.14 side effects — same WAL
+  entry, background `Update <path>` commit, `file_written` webhook, `file.write`
+  NOTIFY). (Source: `internal/tools/partialedit.go`;
+  `internal/storage/partialedit.go`, `fs_git.go` `writeTransformed`.)
+
+> **Byte-fidelity (B-16) note for `append_to_file`/`patch_file`.** These tools
+> **reduce** but do not eliminate the LLM byte-fidelity risk. Homoglyph /
+> Unicode-normalization substitution happens *inside the model* before the tool
+> call, so no server-side check can detect a substitution the model already made
+> in the fragment it sends — and there is deliberately **no `sha256` argument** (a
+> whole-file hash would require the caller to have built the whole file, defeating
+> the purpose; a fragment hash would cover the same already-corrupted bytes and
+> catch nothing — see backlog B-16/B-36). What these tools *do* deliver is **range
+> reduction**: the bytes the model must re-utter shrink from the whole document to
+> the changed span, cutting the exposed surface by orders of magnitude. `if_match`
+> and the exact `old_string`/`anchor` match are the integrity guarantees; both are
+> stronger than a fragment hash and free.
+
+### 4.16 `translate_file` (conditional)
 - **Availability:** registered **only** when `services.google_cloud.project_id`
   is configured. (Source: `cmd/server/main.go:75-83,200-205`.)
 - **Purpose:** translate a Markdown file and write the result as a sibling file.
