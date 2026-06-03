@@ -8,6 +8,7 @@ import { PaletteProvider } from './lib/palette'
 import { ToastProvider } from './lib/toast'
 import { BannerProvider } from './lib/banner'
 import { EditSignalProvider } from './lib/editSignal'
+import { AdminProvider } from './lib/admin'
 import { wsClient } from './lib/wsClient'
 import './styles/global.css'
 
@@ -29,9 +30,14 @@ createRoot(document.getElementById('root')!).render(
         <ToastProvider>
           <BannerProvider>
             <EditSignalProvider>
-              <PaletteProvider>
-                <RouterProvider router={router} />
-              </PaletteProvider>
+              {/* Single-user mode: the sole operator is the administrator, so
+                  admin defaults to true. B-28 wires the real authenticated
+                  identity here (and the matching server seam). */}
+              <AdminProvider>
+                <PaletteProvider>
+                  <RouterProvider router={router} />
+                </PaletteProvider>
+              </AdminProvider>
             </EditSignalProvider>
           </BannerProvider>
         </ToastProvider>

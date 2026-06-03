@@ -25,6 +25,13 @@ const SearchPage = lazy(() =>
 const NewFilePage = lazy(() =>
   import('./pages/NewFilePage').then((m) => ({ default: m.NewFilePage })),
 )
+// The OAuth connection management view (B-39 (c)) — a global, administrator-only
+// admin screen, lazy-loaded since it is rarely opened.
+const ConnectionsPage = lazy(() =>
+  import('./pages/ConnectionsPage').then((m) => ({
+    default: m.ConnectionsPage,
+  })),
+)
 
 // Wrap a lazily-loaded page in a Suspense boundary with the delayed fallback.
 function lazyRoute(Page: React.ComponentType) {
@@ -112,6 +119,17 @@ const newFileRoute = createRoute({
   component: lazyRoute(NewFilePage),
 })
 
+// "/admin/connections" administrator-only OAuth connection management (B-39 (c)).
+// The /admin prefix encodes the authorization boundary in the URL and is the
+// future attach point for a route-level admin gate — but it does NOT itself
+// secure anything: the authoritative gate is the server-side admin predicate on
+// OAUTH_LIST/OAUTH_REVOKE (the page also hides for non-admins via useIsAdmin).
+const connectionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/connections',
+  component: lazyRoute(ConnectionsPage),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   projectRoute,
@@ -119,6 +137,7 @@ const routeTree = rootRoute.addChildren([
   editRoute,
   searchRoute,
   newFileRoute,
+  connectionsRoute,
 ])
 
 export const router = createRouter({
@@ -147,6 +166,7 @@ export {
   editRoute,
   searchRoute,
   newFileRoute,
+  connectionsRoute,
   type IndexSearch,
   type SearchSearch,
 }

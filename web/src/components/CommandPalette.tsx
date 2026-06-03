@@ -4,6 +4,7 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { usePalette } from '../lib/palette'
 import { useMoveController } from '../lib/moveController'
 import { useTheme } from '../lib/theme'
+import { useIsAdmin } from '../lib/admin'
 import { useProjectsQuery, useAllProjectFiles } from '../lib/queries'
 import { namespacesOf } from '../lib/tree'
 import { deriveViewContext } from '../lib/viewContext'
@@ -18,6 +19,7 @@ export function CommandPalette() {
   const navigate = useNavigate()
   const { requestMove } = useMoveController()
   const { theme, toggle } = useTheme()
+  const isAdmin = useIsAdmin()
 
   const [page, setPage] = useState<Page>('root')
   const [search, setSearch] = useState('')
@@ -292,6 +294,21 @@ export function CommandPalette() {
                 onSelect={() => run(() => navigate({ to: '/' }))}
               />
             </Command.Group>
+
+            {/* Admin group — exposed only when the admin predicate is true. This
+                UI gate is SECONDARY; the authoritative gate is the server-side
+                admin check on OAUTH_LIST/OAUTH_REVOKE (manager.go §2.1a). */}
+            {isAdmin && (
+              <Command.Group heading="Admin" className={styles.group}>
+                <CmdItem
+                  label="Manage OAuth connections…"
+                  hint="List & revoke MCP connections"
+                  onSelect={() =>
+                    run(() => navigate({ to: '/admin/connections' }))
+                  }
+                />
+              </Command.Group>
+            )}
 
             <Command.Group heading="View" className={styles.group}>
               <CmdItem
