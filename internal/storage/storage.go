@@ -47,6 +47,22 @@ type StorageService interface {
 	// Delete removes a file with optimistic concurrency (see Write).
 	Delete(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string) error
 
+	// AppendToFile inserts content into a file without resending the whole file:
+	// position "end" (default) appends; "before"/"after" insert relative to a
+	// unique anchor (zero/≥2 anchor matches are a typed *MatchError). The splice
+	// runs server-side on the file's faithful bytes under the per-file lock, so
+	// only the inserted fragment is LLM-mediated (backlog B-36). Same write path,
+	// etag, and conflict semantics as Write; returns the new etag.
+	AppendToFile(ctx context.Context, sessionID, namespace, projectName, path, content, position, anchor string, ifMatch *string) (string, error)
+
+	// PatchFile replaces the single unique occurrence of oldString with newString
+	// (str_replace-style; zero or ≥2 matches are a typed *MatchError — the server
+	// never guesses). The replace runs server-side on the file's faithful bytes
+	// under the per-file lock, so only old/new fragments are LLM-mediated (backlog
+	// B-36). Same write path, etag, and conflict semantics as Write; returns the
+	// new etag.
+	PatchFile(ctx context.Context, sessionID, namespace, projectName, path, oldString, newString string, ifMatch *string) (string, error)
+
 	// Move renames sourcePath to targetPath within one project as a single atomic
 	// git commit that also rewrites every inbound internal markdown link, and
 	// returns the destination's new etag plus the number of links rewritten.
