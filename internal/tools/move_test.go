@@ -50,8 +50,10 @@ func TestMoveFileHandler_Success(t *testing.T) {
 	if out.NewETag == "" {
 		t.Error("expected NewETag")
 	}
-	if out.LinksRewritten != 1 {
-		t.Errorf("LinksRewritten = %d, want 1", out.LinksRewritten)
+	// Link auto-update on move is disabled (B-33): the ref.md referrer set up above
+	// is deliberately NOT rewritten, so the count is always 0.
+	if out.LinksRewritten != 0 {
+		t.Errorf("LinksRewritten = %d, want 0 (link rewrite on move is disabled)", out.LinksRewritten)
 	}
 	// MCP move is agent-authored; that git-author guarantee is pinned inside the
 	// storage submodule (storage.TestMove_MCPIsAgentAuthored) to keep go-git out of

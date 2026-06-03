@@ -81,8 +81,10 @@ func TestWSUI_MoveFileEndToEnd(t *testing.T) {
 	if ack.NewETag == "" {
 		t.Error("ack missing new_etag")
 	}
-	if ack.LinksRewritten != 1 {
-		t.Errorf("ack links_rewritten = %d, want 1", ack.LinksRewritten)
+	// Link auto-update on move is disabled (B-33): the ref.md referrer is left
+	// untouched, so MOVE_ACK always reports 0 links rewritten.
+	if ack.LinksRewritten != 0 {
+		t.Errorf("ack links_rewritten = %d, want 0 (link rewrite on move is disabled)", ack.LinksRewritten)
 	}
 
 	// B: the file.move NOTIFY carrying both paths.

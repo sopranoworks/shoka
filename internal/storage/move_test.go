@@ -195,7 +195,15 @@ func TestMove_SamePathRejected(t *testing.T) {
 	}
 }
 
-func TestMove_RewritesInboundLinksInOneCommit(t *testing.T) {
+// TestMove_DoesNotRewriteInboundLinks pins the path-only contract (backlog B-33,
+// directives/2026-06-03-shoka-move-file-disable-link-rewrite): a move changes ONLY
+// the moved file's path. Inbound referrers are left byte-for-byte untouched and
+// links_rewritten is 0, while the rename is still a single atomic,
+// history-preserving commit. (Converted from the former
+// TestMove_RewritesInboundLinksInOneCommit, which asserted the now-disabled
+// rewrite; the dormant rewriter's retained correctness is pinned separately by
+// TestMove_DormantInboundLinkRewriteSeam and TestRewriteLinks.)
+func TestMove_DoesNotRewriteInboundLinks(t *testing.T) {
 	s := newTestStorage(t)
 	mustWrite(t, s, "old.md", "# Old\n")
 	mustWrite(t, s, "ref.md", "see [the doc](old.md) here\n")
@@ -208,34 +216,70 @@ func TestMove_RewritesInboundLinksInOneCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("move: %v", err)
 	}
-	if links != 2 {
-		t.Fatalf("links rewritten = %d, want 2", links)
+	if links != 0 {
+		t.Fatalf("links rewritten = %d, want 0 (link auto-update on move is disabled)", links)
 	}
 	drain(t, s)
 
-	if got, _ := s.ReadFile("ns", "proj", "ref.md"); got != "see [the doc](new.md) here\n" {
-		t.Errorf("ref.md = %q, want rewritten to new.md", got)
+	// Referrers are UNTOUCHED — the inbound links still point at the old path.
+	if got, _ := s.ReadFile("ns", "proj", "ref.md"); got != "see [the doc](old.md) here\n" {
+		t.Errorf("ref.md = %q, want UNCHANGED (no link rewrite)", got)
 	}
-	if got, _ := s.ReadFile("ns", "proj", "docs/deep.md"); got != "nested [link](../new.md)\n" {
-		t.Errorf("docs/deep.md = %q, want rewritten relative link", got)
+	if got, _ := s.ReadFile("ns", "proj", "docs/deep.md"); got != "nested [link](../old.md)\n" {
+		t.Errorf("docs/deep.md = %q, want UNCHANGED", got)
 	}
 	if got, _ := s.ReadFile("ns", "proj", "other.md"); got != "unrelated [x](something.md)\n" {
 		t.Errorf("other.md unexpectedly changed: %q", got)
 	}
 
-	// All of it — rename + both rewrites — is ONE commit on top of preHead.
+	// The rename is still ONE atomic commit on top of preHead, and only the path
+	// changed: the old path is gone, the new path present.
 	r, _ := git.PlainOpen(s.baseDir + "/ns/proj")
 	headRef, _ := r.Head()
 	hc, _ := r.CommitObject(headRef.Hash())
 	if len(hc.ParentHashes) != 1 || hc.ParentHashes[0] != preHead {
-		t.Errorf("link-rewrite move was not a single atomic commit (parents=%v)", hc.ParentHashes)
-	}
-	// The rewritten referrer content is in that same commit's tree.
-	if got := fileContentAt(t, r, headRef.Hash(), "ref.md"); got != "see [the doc](new.md) here\n" {
-		t.Errorf("committed ref.md = %q, want rewritten", got)
+		t.Errorf("move was not a single atomic commit (parents=%v)", hc.ParentHashes)
 	}
 	if blobHashAt(t, s, "ns", "proj", headRef.Hash().String(), "old.md") != plumbing.ZeroHash {
 		t.Error("old.md still present in the committed tree")
+	}
+	// The referrer content is unchanged in that same commit's tree (not rewritten).
+	if got := fileContentAt(t, r, headRef.Hash(), "ref.md"); got != "see [the doc](old.md) here\n" {
+		t.Errorf("committed ref.md = %q, want unchanged", got)
+	}
+}
+
+// TestMove_DormantInboundLinkRewriteSeam proves the retained-but-dormant inbound
+// link-rewrite pipeline (discoverReferrers + the goldmark rewriter + Aux assembly)
+// still works in isolation, even though storage.Move no longer calls it (the B-33
+// re-enablement seam). This is the directive §2 non-negotiable: a retained direct
+// unit test proving the rewriter still works, decoupled from the move path.
+func TestMove_DormantInboundLinkRewriteSeam(t *testing.T) {
+	s := newTestStorage(t)
+	mustWrite(t, s, "old.md", "# Old\n")
+	mustWrite(t, s, "ref.md", "see [the doc](old.md) here\n")
+	mustWrite(t, s, "docs/deep.md", "nested [link](../old.md)\n")
+	mustWrite(t, s, "other.md", "unrelated [x](something.md)\n")
+	drain(t, s)
+
+	projectPath := s.baseDir + "/ns/proj"
+	aux, err := s.rewriteInboundLinksForMove(projectPath, "old.md", "new.md")
+	if err != nil {
+		t.Fatalf("dormant seam: %v", err)
+	}
+	// Two referrers link to old.md (ref.md, docs/deep.md); other.md does not.
+	if len(aux) != 2 {
+		t.Fatalf("aux len = %d, want 2 (dormant rewriter must still find both referrers)", len(aux))
+	}
+	got := map[string]string{}
+	for _, a := range aux {
+		got[a.Path] = string(a.Content)
+	}
+	if got["ref.md"] != "see [the doc](new.md) here\n" {
+		t.Errorf("dormant rewrite of ref.md = %q, want pointed at new.md", got["ref.md"])
+	}
+	if got["docs/deep.md"] != "nested [link](../new.md)\n" {
+		t.Errorf("dormant rewrite of docs/deep.md = %q, want relative link to new.md", got["docs/deep.md"])
 	}
 }
 

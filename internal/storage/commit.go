@@ -49,8 +49,9 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 	}
 
 	// Build the new tree, commit subject, and change-event kind per op. A "move"
-	// folds the rename and all its internal-link rewrites into ONE tree, so the
-	// whole operation lands as a single atomic commit (move-file directive §2).
+	// folds ONLY the rename into one tree (a pure, history-preserving path change),
+	// landing as a single atomic commit. Inbound-link auto-update was decoupled on
+	// 2026-06-03 (backlog B-33), so a move entry carries no Aux.
 	var newTree plumbing.Hash
 	var subject, event string
 	switch e.Op {
@@ -140,13 +141,20 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 	return nil
 }
 
-// buildMoveTree derives a single tree from baseTree that applies an entire move
-// atomically: the source path is removed, the destination is added carrying the
-// moved file's (unchanged) bytes, and every internal-link rewrite in e.Aux is
-// folded in. Because the destination blob is rebuilt from the unchanged Content,
-// its hash equals the source's last-committed blob hash — which is exactly what
-// lets `git log --follow` recognise the rename (the move-file directive §1.1).
+// buildMoveTree derives a single tree from baseTree that applies the move
+// atomically: the source path is removed and the destination is added carrying the
+// moved file's (unchanged) bytes. Because the destination blob is rebuilt from the
+// unchanged Content, its hash equals the source's last-committed blob hash — which
+// is exactly what lets `git log --follow` recognise the rename (the move-file
+// directive §1.1). The move is a PURE rename: it folds no other file's content.
 // Returns one tree hash; commitEntry turns it into one commit.
+//
+// RE-ENABLEMENT SEAM (B-33): inbound-link auto-update on move was decoupled on
+// 2026-06-03, so e.Aux is always empty for a move. To restore link-update-on-move
+// once a reverse-link index exists, re-fold e.Aux here — store each AuxFile.Content
+// as a blob and applyToTree it onto the tree — alongside re-wiring storage.Move to
+// populate Aux (see rewriteInboundLinksForMove). Until then a move touches only the
+// two paths.
 func buildMoveTree(r *git.Repository, baseTree plumbing.Hash, e wal.Entry) (plumbing.Hash, error) {
 	tree, err := applyToTree(r, baseTree, strings.Split(e.MoveFrom, "/"), plumbing.ZeroHash, true)
 	if err != nil {
@@ -159,16 +167,6 @@ func buildMoveTree(r *git.Repository, baseTree plumbing.Hash, e wal.Entry) (plum
 	tree, err = applyToTree(r, tree, strings.Split(e.Path, "/"), destBlob, false)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("add destination: %w", err)
-	}
-	for _, a := range e.Aux {
-		b, berr := storeBlob(r, a.Content)
-		if berr != nil {
-			return plumbing.ZeroHash, fmt.Errorf("store rewrite blob %q: %w", a.Path, berr)
-		}
-		tree, err = applyToTree(r, tree, strings.Split(a.Path, "/"), b, false)
-		if err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("apply rewrite %q: %w", a.Path, err)
-		}
 	}
 	return tree, nil
 }
