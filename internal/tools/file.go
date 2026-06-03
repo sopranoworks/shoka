@@ -253,8 +253,11 @@ type MoveFileOutput struct {
 	// NewETag is the destination's etag (SHA-256 of the moved content) on success.
 	NewETag string `json:"new_etag,omitempty"`
 	// LinksRewritten is the number of internal markdown links updated to point at
-	// the new path, committed atomically with the rename. Zero is valid.
-	LinksRewritten int `json:"links_rewritten,omitempty"`
+	// the new path. Link auto-update on move is currently DISABLED (backlog B-33,
+	// 2026-06-03), so this is ALWAYS 0; the field is retained in the shape (no
+	// omitempty — always emitted as 0) so re-enabling it later is additive, not a
+	// contract change. See storage.rewriteInboundLinksForMove (re-enablement seam).
+	LinksRewritten int `json:"links_rewritten"`
 	// Conflict is true when if_match did not match (or the target exists and no
 	// if_match was given); CurrentETag then holds the relevant file's current etag.
 	Conflict    bool   `json:"conflict,omitempty"`

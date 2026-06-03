@@ -358,30 +358,34 @@ Apply to every tool unless noted:
 
 ### 4.13 `move_file`
 - **Purpose:** rename or move a file **within one project** as a single atomic,
-  history-preserving git commit, rewriting inbound internal Markdown links so the
-  project stays internally consistent. Same-namespace, same-project only;
-  cross-project move is not supported.
+  history-preserving git commit — a **pure path change**. Same-namespace,
+  same-project only; cross-project move is not supported.
+  > **Inbound-link rewriting is currently DISABLED** (2026-06-03). A move no longer
+  > updates internal Markdown links that point at the moved file; `links_rewritten`
+  > is **always `0`**. The field is retained in the response shape so re-enabling
+  > link auto-update later (once a reverse-link index exists) is additive, not a
+  > breaking change. See backlog B-33.
 - **Input:** `namespace` (opt), `project_name` (**required**), `source_path`
   (**required**), `target_path` (**required**), `if_match` (string, optional —
   dual semantic: validates the **target's** etag when the target already exists
   (explicit overwrite), otherwise the **source's** etag).
 - **Output (success):** `new_etag` (string — the destination's content etag),
-  `links_rewritten` (int — count of internal links updated in the same commit;
-  `0` is valid), `message`.
+  `links_rewritten` (int — **always `0`**: link auto-update on move is disabled,
+  see Purpose; field retained for forward compatibility), `message`.
 - **Output (conflict):** `isError: true`; structured `conflict: true`,
   `current_etag: <etag>`. A target that already exists with **no** `if_match` is
   refused (a move never silently overwrites); the conflict carries the target's
   etag. A stale `if_match` carries the relevant file's current etag (see § 5).
 - **Output (project-state refusal):** `isError: true`; structured
   `reason: "corrupted" | "dangerous" | "write_disabled"` (see § 7).
-- **Side effects:** one synchronous atomic operation (write destination, rewrite
-  referrers, remove source) + a single WAL `move` entry; one background git commit
+- **Side effects:** one synchronous atomic operation (write destination, remove
+  source) + a single WAL `move` entry; one background git commit
   (`Move <source> -> <target>`, history-preserving via blob identity) and a
   **`file_moved`** webhook with `commit_hash` follow asynchronously. A
   `file.move` NOTIFY (carrying `source_path` and `path`) is dispatched to other
-  `/ws/ui` connections. Internal-link rewriting covers inline `[text](path)` and
-  `![alt](path)` Markdown links (parsed, not regex-matched; links inside code are
-  left untouched); the moved file's own outbound links are left unchanged.
+  `/ws/ui` connections. **No other file's content changes** — a move is a pure
+  rename; inbound-link rewriting is disabled (see Purpose). The goldmark-based
+  rewriter is retained dormant for future re-enablement.
   (Source: `internal/tools/file.go`; `internal/storage/move.go`,
   `linkrewrite.go`, `commit.go`.)
 
