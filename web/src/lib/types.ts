@@ -63,6 +63,36 @@ export interface SearchMatch {
   snippet?: string
 }
 
+// One live OAuth/MCP connection in the OAUTH_LIST response (mirrors Go's
+// ui.OAuthConnectionInfo). NO SECRETS: this carries the connecting client's
+// identity (client_id = its CIMD metadata URL), the bound principal, the times,
+// and the series id (the revoke target + a short prefix for display) — never an
+// access/refresh token, code, or PKCE value. Times are RFC3339 strings.
+export interface OAuthConnection {
+  series_id: string
+  series_id_short: string
+  client_id: string
+  principal_name: string
+  principal_email: string
+  issued_at: string
+  access_expiry: string
+}
+
+// The OAUTH_LIST response payload (mirrors Go's ui.OAuthListPayload). The slice
+// is always present (possibly empty — the management view's empty state).
+export interface OAuthListPayload {
+  connections: OAuthConnection[]
+}
+
+// The OAUTH_DENIED frame (mirrors Go's ui.OAuthDeniedPayload): a typed refusal of
+// an admin-only OAuth request. reason is "forbidden" (caller is not an
+// administrator) or "oauth_disabled" (OAuth is off on this server). Distinct from
+// a generic ERROR so the client can recognise an authorization refusal.
+export interface OAuthDenied {
+  reason: 'forbidden' | 'oauth_disabled' | (string & {})
+  message: string
+}
+
 // react-arborist node, derived from FileNode via lib/tree.
 export interface TreeNode {
   id: string // unique within a project; for files this is the file path
