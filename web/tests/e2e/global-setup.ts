@@ -149,6 +149,13 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       '    level: "warn"',
       '  auth:',
       '    enabled: false',
+      // OAuth is enabled so the server opens the connection store and serves the
+      // admin OAUTH_LIST/OAUTH_REVOKE management requests (B-39 (c)). Enforcement
+      // is MCP-path only, so /ws/ui (the web UI) is unaffected. The trusted-domain
+      // allowlist / consent credential are left empty (the server only warns) —
+      // we seed the store directly below rather than running a real OAuth flow.
+      '    oauth:',
+      '      enabled: true',
       'storage:',
       `  base_dir: "${join(dataDir, 'data')}"`,
       '  drift_scan:',
@@ -157,6 +164,15 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       '',
     ].join('\n'),
   )
+
+  // Seed one OAuth token series BEFORE the server starts (so the bbolt
+  // single-writer lock is free). The management view then has a real connection
+  // to list and revoke. Test-only fixture tooling using the existing oauthstore
+  // public API — no backend/store change. Placeholder client_id only (§0(b)).
+  execFileSync('go', ['run', './web/tests/e2e/seed-oauth', join(dataDir, 'data', 'oauth.db')], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  })
 
   const logFd = openSync(join(dataDir, 'server.log'), 'w')
   server = spawn(binPath, ['--config', cfgPath], {
