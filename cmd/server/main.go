@@ -205,6 +205,13 @@ func main() {
 		}
 		defer func() { _ = oauthStore.Close() }()
 
+		// Wire the OAuth connection store into the Web UI manager so the
+		// administrator-only OAUTH_LIST/OAUTH_REVOKE management requests can
+		// enumerate and revoke connections (B-39 (c)). The admin authorizer stays
+		// the single-user default (sole user = admin) until the B-28 Web-auth leg
+		// supplies a real role check via uim.SetAdminAuthorizer.
+		uim.SetOAuthStore(oauthStore)
+
 		oc := cfg.Server.Auth.OAuth
 		if len(oc.TrustedClientMetadataDomains) == 0 {
 			logger.Warn("oauth enabled with an empty trusted_client_metadata_domains allowlist; " +

@@ -11,12 +11,14 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/shoka/mcp-server/internal/drafts"
 	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/shoka/mcp-server/internal/storage/oauthstore"
 )
 
 type MessageType string
@@ -53,6 +55,26 @@ const (
 	// current etag.
 	MsgMoveFile MessageType = "MOVE_FILE"
 	MsgMoveAck  MessageType = "MOVE_ACK"
+	// MsgOAuthList enumerates the live OAuth/MCP connections (token series) the
+	// built-in authorization server holds, and MsgOAuthList carries the summaries
+	// back; MsgOAuthRevoke revokes one connection by series id and acks. This is
+	// the operator-facing management surface over the (b) oauthstore's List/Revoke
+	// (the 2026-06-03 MCP OAuth (c) directive). NO SECRETS cross the wire: the
+	// response carries oauthstore.SeriesInfo only (client identity, principal,
+	// times, series id) — never an access/refresh token, code, or PKCE value.
+	//
+	// Both requests are ADMINISTRATOR-ONLY, gated server-side (the authoritative
+	// gate): a non-admin caller receives MsgOAuthDenied, not data — hiding the UI
+	// is not sufficient. They are also refused (MsgOAuthDenied) when OAuth is not
+	// enabled (no store). See AdminAuthorizer and the §2.1a seam below.
+	MsgOAuthList   MessageType = "OAUTH_LIST"
+	MsgOAuthRevoke MessageType = "OAUTH_REVOKE"
+	// MsgOAuthDenied is the typed refusal frame for the admin-only OAuth requests:
+	// reason "forbidden" (the caller is not an administrator) or "oauth_disabled"
+	// (OAuth is off, so there is no connection store). It is distinct from the
+	// generic ERROR frame so the client can recognise an authorization refusal
+	// (and hide the management surface) rather than treat it as a transport error.
+	MsgOAuthDenied MessageType = "OAUTH_DENIED"
 	// MsgNotify carries one notify.Event pushed from the server to the browser
 	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
 	// {type,payload} envelope as every other message, so existing consumers that
@@ -143,6 +165,53 @@ type MoveAckPayload struct {
 	LinksRewritten int    `json:"links_rewritten"`
 }
 
+// OAuthConnectionInfo is one live OAuth/MCP connection in the OAUTH_LIST
+// response — the no-secret view of an oauthstore.SeriesInfo. It carries the
+// connecting client's identity (its CIMD metadata URL, the Claude side — shown
+// to tell connections apart), the bound principal, the issued/expiry times, and
+// the series id (the revoke target, plus a short prefix for display). It NEVER
+// carries an access/refresh token, authorization code, or PKCE value — those
+// live only in the store's SeriesRecord/CodeRecord and never reach List.
+type OAuthConnectionInfo struct {
+	// SeriesID is the full opaque series identifier — the OAUTH_REVOKE target. It
+	// is NOT a bearer credential (it cannot authenticate anything; only access
+	// tokens can), so exposing it to an admin client is safe.
+	SeriesID      string `json:"series_id"`
+	SeriesIDShort string `json:"series_id_short"`
+	// ClientID is the connecting client's CIMD metadata URL (its identity). Shown
+	// at runtime only; no concrete value is ever written into source/tests.
+	ClientID       string    `json:"client_id"`
+	PrincipalName  string    `json:"principal_name"`
+	PrincipalEmail string    `json:"principal_email"`
+	IssuedAt       time.Time `json:"issued_at"`
+	AccessExpiry   time.Time `json:"access_expiry"`
+}
+
+// OAuthListPayload is the OAUTH_LIST response body: the live connections. The
+// slice is always non-nil so the client receives [] rather than null on zero
+// connections (the empty-state case).
+type OAuthListPayload struct {
+	Connections []OAuthConnectionInfo `json:"connections"`
+}
+
+// OAuthRevokeRequest is the OAUTH_REVOKE request body: the series id to revoke.
+type OAuthRevokeRequest struct {
+	SeriesID string `json:"series_id"`
+}
+
+// OAuthRevokePayload is the OAUTH_REVOKE ack: the series id that was revoked.
+type OAuthRevokePayload struct {
+	SeriesID string `json:"series_id"`
+	Status   string `json:"status"`
+}
+
+// OAuthDeniedPayload is the OAUTH_DENIED frame's body. Reason is "forbidden"
+// (caller is not an administrator) or "oauth_disabled" (OAuth is off).
+type OAuthDeniedPayload struct {
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
 // SearchResultPayload is the SEARCH_RESULT frame's body: the matches, each a
 // {path, snippet}. The slice is always non-nil so the client receives [] rather
 // than null on a no-match query.
@@ -204,6 +273,43 @@ func (c *wsClient) sendResponse(msgType MessageType, payload interface{}) {
 	}
 }
 
+// OAuthConnectionStore is the narrow capability the OAuth management requests
+// (OAUTH_LIST/OAUTH_REVOKE) depend on — exactly the (b) oauthstore's no-secret
+// List and per-series Revoke. The Manager depends on this interface, not the
+// concrete *oauthstore.Store, so the handle stays nil when OAuth is disabled and
+// tests can inject a fake. NO store change is implied: *oauthstore.Store already
+// satisfies it.
+type OAuthConnectionStore interface {
+	List() ([]oauthstore.SeriesInfo, error)
+	Revoke(seriesID string) error
+}
+
+// AdminAuthorizer is the administrator-only authorization seam for the OAuth
+// management requests (the 2026-06-03 MCP OAuth (c) directive §2.1a). It gates
+// OAUTH_LIST/OAUTH_REVOKE on the SERVER side — the authoritative gate — because
+// those requests can cut off other users' MCP connections, a privileged
+// operation (unlike file move/list, which any project user may do). Hiding the
+// UI is not enough: the request itself must refuse a non-admin caller.
+//
+// B-28 ATTACH POINT: Shoka has no admin/role concept today, and /ws/ui carries
+// NO authenticated identity (a connection has only a "ws-<seq>" sender id, not a
+// user). So the single-user implementation (singleUserAdmin) returns true — the
+// sole operator IS the administrator, and the screen works normally today. When
+// the Web-auth / multi-user leg (B-28) lands, the connection will carry a real
+// identity; a real admin-role check drops into this seam additively, and the
+// method's signature widens to take that identity. This is the seam, NOT an RBAC
+// system — do not build roles here.
+type AdminAuthorizer interface {
+	IsAdmin() bool
+}
+
+// singleUserAdmin is the default AdminAuthorizer for single-user mode: the sole
+// user is the administrator, so it is trivially true. Replaced via
+// SetAdminAuthorizer when a real role check exists (B-28).
+type singleUserAdmin struct{}
+
+func (singleUserAdmin) IsAdmin() bool { return true }
+
 type Manager struct {
 	storage       storage.StorageService
 	drafts        *drafts.Manager
@@ -211,6 +317,14 @@ type Manager struct {
 	originChecker func(*http.Request) bool
 	upgrader      websocket.Upgrader
 	notifyDrops   atomic.Int64
+	// oauth is the OAuth connection store for the admin management requests. It is
+	// nil when OAuth is disabled (set via SetOAuthStore inside the oauth-enabled
+	// wiring), in which case OAUTH_LIST/OAUTH_REVOKE return MsgOAuthDenied with
+	// reason "oauth_disabled" rather than nil-panicking.
+	oauth OAuthConnectionStore
+	// admin gates the administrator-only OAuth requests (§2.1a). Never nil:
+	// NewManager defaults it to singleUserAdmin (trivially true).
+	admin AdminAuthorizer
 	// connSeq assigns each connection a unique sender id ("ws-<seq>"). Atomic so
 	// concurrent upgrades never collide on an id.
 	connSeq atomic.Uint64
@@ -223,6 +337,7 @@ func NewManager(s storage.StorageService, d *drafts.Manager, notifyCenter *notif
 		storage: s,
 		drafts:  d,
 		notify:  notifyCenter,
+		admin:   singleUserAdmin{},
 	}
 	m.upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -239,6 +354,23 @@ func NewManager(s storage.StorageService, d *drafts.Manager, notifyCenter *notif
 // all origins are accepted.
 func (m *Manager) SetOriginChecker(fn func(*http.Request) bool) {
 	m.originChecker = fn
+}
+
+// SetOAuthStore wires the OAuth connection store for the admin management
+// requests. Called only in the oauth-enabled startup path; when unset the store
+// is nil and OAUTH_LIST/OAUTH_REVOKE return MsgOAuthDenied ("oauth_disabled").
+func (m *Manager) SetOAuthStore(s OAuthConnectionStore) {
+	m.oauth = s
+}
+
+// SetAdminAuthorizer overrides the administrator-only authorization seam for the
+// OAuth management requests (§2.1a). The default is singleUserAdmin (trivially
+// true). This is the B-28 attach point: a real admin-role check replaces the
+// default once /ws/ui carries an authenticated identity.
+func (m *Manager) SetAdminAuthorizer(a AdminAuthorizer) {
+	if a != nil {
+		m.admin = a
+	}
 }
 
 // NotifyDrops reports how many notify events were dropped because a client's
@@ -314,6 +446,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleSearchFiles(client, wsMsg.Payload)
 		case MsgMoveFile:
 			m.handleMoveFile(client, wsMsg.Payload)
+		case MsgOAuthList:
+			m.handleOAuthList(client)
+		case MsgOAuthRevoke:
+			m.handleOAuthRevoke(client, wsMsg.Payload)
 		default:
 			client.sendError("Unknown message type")
 		}
@@ -531,6 +667,97 @@ func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
 		NewETag:        newEtag,
 		LinksRewritten: links,
 	})
+}
+
+// adminGate enforces the §2.1a administrator-only authorization on the OAuth
+// management requests and that OAuth is enabled at all. It is the AUTHORITATIVE
+// server-side gate: it returns false and sends an OAUTH_DENIED frame when the
+// caller is not an administrator (reason "forbidden") or when OAuth is disabled
+// so there is no store (reason "oauth_disabled"). Authorization is checked
+// before capability, so a non-admin never learns whether OAuth is enabled. A
+// true return guarantees m.oauth is non-nil, so handlers never nil-panic.
+func (m *Manager) adminGate(client *wsClient) bool {
+	if !m.admin.IsAdmin() {
+		client.sendResponse(MsgOAuthDenied, OAuthDeniedPayload{
+			Reason:  "forbidden",
+			Message: "OAuth connection management is administrator-only",
+		})
+		return false
+	}
+	if m.oauth == nil {
+		client.sendResponse(MsgOAuthDenied, OAuthDeniedPayload{
+			Reason:  "oauth_disabled",
+			Message: "OAuth is not enabled on this server",
+		})
+		return false
+	}
+	return true
+}
+
+// handleOAuthList returns the live OAuth/MCP connections as no-secret summaries
+// (oauthstore.SeriesInfo). Administrator-only (adminGate). Read-only — no commit,
+// no NOTIFY — so, like handleSearchFiles, it carries no identity or sender
+// context. The Connections slice is always non-nil so the wire shape is always
+// {"connections": [...]} (the empty-state client renders [] as "no connections").
+func (m *Manager) handleOAuthList(client *wsClient) {
+	if !m.adminGate(client) {
+		return
+	}
+	infos, err := m.oauth.List()
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to list OAuth connections: %v", err))
+		return
+	}
+	conns := make([]OAuthConnectionInfo, 0, len(infos))
+	for _, s := range infos {
+		conns = append(conns, toOAuthConnectionInfo(s))
+	}
+	client.sendResponse(MsgOAuthList, OAuthListPayload{Connections: conns})
+}
+
+// handleOAuthRevoke revokes one connection by series id (oauthstore.Revoke).
+// Administrator-only (adminGate). Revoking one series leaves every other intact
+// (the store guarantees it). An absent series_id is a typed error rather than a
+// silent no-op; a well-formed but already-revoked id succeeds idempotently (the
+// store's Revoke is idempotent — the right behaviour when two admins race or the
+// row is already gone).
+func (m *Manager) handleOAuthRevoke(client *wsClient, payload json.RawMessage) {
+	if !m.adminGate(client) {
+		return
+	}
+	var p OAuthRevokeRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for OAUTH_REVOKE")
+		return
+	}
+	if p.SeriesID == "" {
+		client.sendError("OAUTH_REVOKE requires a series_id")
+		return
+	}
+	if err := m.oauth.Revoke(p.SeriesID); err != nil {
+		client.sendError(fmt.Sprintf("Failed to revoke OAuth connection: %v", err))
+		return
+	}
+	client.sendResponse(MsgOAuthRevoke, OAuthRevokePayload{SeriesID: p.SeriesID, Status: "ok"})
+}
+
+// toOAuthConnectionInfo maps a store SeriesInfo to the no-secret wire DTO,
+// computing a short series-id prefix for display. The full series id rides along
+// as the revoke target (it is not a bearer credential).
+func toOAuthConnectionInfo(s oauthstore.SeriesInfo) OAuthConnectionInfo {
+	short := s.SeriesID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return OAuthConnectionInfo{
+		SeriesID:       s.SeriesID,
+		SeriesIDShort:  short,
+		ClientID:       s.ClientID,
+		PrincipalName:  s.Principal.Name,
+		PrincipalEmail: s.Principal.Email,
+		IssuedAt:       s.IssuedAt,
+		AccessExpiry:   s.AccessExpiry,
+	}
 }
 
 func (m *Manager) handleWriteDraft(client *wsClient, payload json.RawMessage) {
