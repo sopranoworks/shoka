@@ -52,6 +52,13 @@ import (
 type IndexRecord struct {
 	Etag    string   `json:"etag"`
 	Bigrams []string `json:"bigrams,omitempty"`
+	// OutboundLinks is the sorted, deduplicated set of project-relative targets
+	// of the file's internal markdown links (I3, the reverse-link index). It is
+	// derived only for markdown files (see storage.scanOutboundLinks). The store
+	// inverts these forward sets to answer "what links to P" (Referrers), the
+	// signal the asynchronous fix_links reconciliation uses to repair referrers
+	// after a move. Additive over I1/I2: an older record decodes with it nil.
+	OutboundLinks []string `json:"outbound_links,omitempty"`
 }
 
 // Bigrams returns the sorted, deduplicated set of overlapping rune-2-grams of
@@ -326,6 +333,45 @@ func (idx *Index) ReplaceAll(records map[string]IndexRecord, commit string) erro
 		}
 		return meta.Put([]byte(MetaLastIndexedCommit), []byte(commit))
 	})
+}
+
+// Referrers returns the sorted within-project paths of every record whose
+// OutboundLinks contains target — the inversion of the forward outbound-link map
+// (I3). target is normalised the same way record paths are, so a queried target
+// with a leading "/" or "./" matches the stored (already path.Clean'd) outbound
+// entries. It is a single read-only scan of the files bucket: no maintained
+// inverted bucket, so the write path stays a single record field and ReplaceAll
+// rebuilds the inversion atomically. The fix_links worker is the only consumer.
+func (idx *Index) Referrers(target string) ([]string, error) {
+	nt := normalizePath(target)
+	if nt == "" {
+		return nil, nil
+	}
+	var refs []string
+	err := idx.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(filesBucket))
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			var rec IndexRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return nil // skip an undecodable record rather than fail the scan
+			}
+			for _, out := range rec.OutboundLinks {
+				if out == nt {
+					refs = append(refs, string(k))
+					break
+				}
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(refs)
+	return refs, nil
 }
 
 // Count returns the number of records in the forward map (for tests + inertness

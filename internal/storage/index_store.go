@@ -97,7 +97,11 @@ func (s *FSGitStorage) indexPut(namespace, projectName, rel string, content []by
 		s.idxUpdateFailedWrite.Add(1)
 		return
 	}
-	if perr := ix.PutRecord(rel, index.IndexRecord{Etag: etag, Bigrams: index.Bigrams(string(content))}); perr != nil {
+	if perr := ix.PutRecord(rel, index.IndexRecord{
+		Etag:          etag,
+		Bigrams:       index.Bigrams(string(content)),
+		OutboundLinks: derivedOutboundLinks(rel, content),
+	}); perr != nil {
 		s.log().Warn("index update failed for write",
 			"namespace", namespace, "project", projectName, "path", rel, "err", perr)
 		s.idxUpdateFailedWrite.Add(1)

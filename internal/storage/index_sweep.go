@@ -152,9 +152,11 @@ func workingTreeIndexRecords(projectPath string) (map[string]index.IndexRecord, 
 		if readErr != nil {
 			return nil
 		}
-		records[filepath.ToSlash(rel)] = index.IndexRecord{
-			Etag:    sha256Hex(data),
-			Bigrams: index.Bigrams(string(data)),
+		relSlash := filepath.ToSlash(rel)
+		records[relSlash] = index.IndexRecord{
+			Etag:          sha256Hex(data),
+			Bigrams:       index.Bigrams(string(data)),
+			OutboundLinks: derivedOutboundLinks(relSlash, data),
 		}
 		return nil
 	})

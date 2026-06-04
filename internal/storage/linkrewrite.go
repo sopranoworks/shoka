@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -273,10 +274,113 @@ func closingParen(s []byte, m int) (after int, ok bool) {
 
 func isMDSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
 
+// resolveLinkTarget resolves the destination span [pStart,pStop) of an inline
+// link/image in referrerPath to its project-relative slash target — the SAME
+// normalisation makeRewrite compares against movedSrc and the reverse-link index
+// (I3) records as an outbound link. It returns ("", false) for a destination
+// that is not an internal project-file reference: a pure same-page anchor, or an
+// external URL (one with a scheme like http: or mailto:). This is the single
+// shared resolver so "the index says R links to T" and "the rewriter rewrites R
+// because its link resolves to movedSrc" agree by construction.
+func resolveLinkTarget(content []byte, pStart, pStop int, referrerPath string) (string, bool) {
+	dest := content[pStart:pStop]
+	// Drop any #fragment — the target is the path part only.
+	rawPath := dest
+	if h := bytes.IndexByte(dest, '#'); h >= 0 {
+		rawPath = dest[:h]
+	}
+	if len(rawPath) == 0 {
+		return "", false // pure same-page anchor
+	}
+	decoded := rawPath
+	if d, err := url.PathUnescape(string(rawPath)); err == nil {
+		decoded = []byte(d)
+	}
+	if u, err := url.Parse(string(decoded)); err == nil && u.Scheme != "" {
+		return "", false // external
+	}
+	if decoded[0] == '/' {
+		return path.Clean(string(decoded[1:])), true
+	}
+	return path.Clean(path.Join(path.Dir(referrerPath), string(decoded))), true
+}
+
+// derivedOutboundLinks returns the file's outbound internal-link targets for the
+// reverse-link index (I3), or nil for a non-markdown file. The .md-only gate
+// matches discoverReferrers' corpus exactly, so the healthy-path Referrers() set
+// equals the not-healthy discoverReferrers() set — link repair is identical
+// whether or not the index is consulted. rel is a within-project slash path.
+func derivedOutboundLinks(rel string, content []byte) []string {
+	if !strings.HasSuffix(strings.ToLower(rel), ".md") {
+		return nil
+	}
+	return scanOutboundLinks(content, rel)
+}
+
+// scanOutboundLinks returns the sorted, deduplicated set of project-relative
+// targets of every internal inline link/image in content, resolved relative to
+// referrerPath via resolveLinkTarget (the same resolver makeRewrite uses).
+// Protected (code/HTML) ranges, external URLs, and pure same-page anchors are
+// excluded. It is the reverse-link index's extractor (I3): the forward map
+// file → [outbound targets] the store inverts to answer "who links to P". It
+// returns nil when there are no internal outbound links.
+func scanOutboundLinks(content []byte, referrerPath string) []string {
+	protected := protectedRanges(content)
+	set := map[string]struct{}{}
+	var openers []int
+	n := len(content)
+	for i := 0; i < n; {
+		c := content[i]
+		if c == '\\' {
+			i += 2
+			continue
+		}
+		switch c {
+		case '[':
+			if !inAnyRange(protected, i) {
+				openers = append(openers, i)
+			}
+			i++
+		case ']':
+			if len(openers) > 0 && !inAnyRange(protected, i) {
+				openers = openers[:len(openers)-1]
+				if i+1 < n && content[i+1] == '(' && !inAnyRange(protected, i+1) {
+					pStart, pStop, after, ok := parseInlineDestination(content, i+2)
+					if ok {
+						if target, internal := resolveLinkTarget(content, pStart, pStop, referrerPath); internal {
+							set[target] = struct{}{}
+						}
+						i = after
+						continue
+					}
+				}
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // makeRewrite decides whether the destination span [pStart,pStop) points at
 // movedSrc and, if so, builds the replacement (new path, anchor preserved). The
-// destination's form (project-absolute "/x" vs relative) is preserved.
+// destination's form (project-absolute "/x" vs relative) is preserved. Target
+// resolution is delegated to resolveLinkTarget so the rewriter and the
+// reverse-link extractor share one notion of "this link points at T".
 func makeRewrite(content []byte, pStart, pStop int, referrerPath, movedSrc, movedDst string) (rewrite, bool) {
+	resolved, internal := resolveLinkTarget(content, pStart, pStop, referrerPath)
+	if !internal || resolved != movedSrc {
+		return rewrite{}, false
+	}
 	dest := content[pStart:pStop]
 	// Split off a #fragment (preserved verbatim).
 	rawPath := dest
@@ -285,27 +389,11 @@ func makeRewrite(content []byte, pStart, pStop int, referrerPath, movedSrc, move
 		rawPath = dest[:h]
 		anchor = dest[h:]
 	}
-	if len(rawPath) == 0 {
-		return rewrite{}, false // pure same-page anchor
-	}
 	decoded := rawPath
 	if d, err := url.PathUnescape(string(rawPath)); err == nil {
 		decoded = []byte(d)
 	}
-	// External (has a URL scheme like http: or mailto:) → never a project file.
-	if u, err := url.Parse(string(decoded)); err == nil && u.Scheme != "" {
-		return rewrite{}, false
-	}
 	absolute := decoded[0] == '/'
-	var resolved string
-	if absolute {
-		resolved = path.Clean(string(decoded[1:]))
-	} else {
-		resolved = path.Clean(path.Join(path.Dir(referrerPath), string(decoded)))
-	}
-	if resolved != movedSrc {
-		return rewrite{}, false
-	}
 	// Build the new destination in the same form the original used.
 	var newPath string
 	if absolute {
