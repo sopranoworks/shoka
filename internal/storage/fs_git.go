@@ -60,6 +60,13 @@ type FSGitStorage struct {
 	catRebuildSchema       atomic.Int64
 	catRebuildUnreadable   atomic.Int64
 
+	// lazyRescans counts D1 lazy-rescan-on-corrupted-hit invocations: a write that
+	// hit checkWritable's case StateCorrupted and re-ran DetectDrift before deciding
+	// (B-25). Observability for the self-extinguishing cost — a healthy project never
+	// increments it; a genuinely-corrupted one re-pays per write attempt until
+	// recovery clears it. Surfaced via LazyRescanCount().
+	lazyRescans atomic.Int64
+
 	// notify is the in-process notification center (internal/notify). It may be
 	// nil; every call site uses the nil-safe receiver method, so storage never
 	// guards it. It is a side-channel: a failure to publish (impossible in the
@@ -604,7 +611,37 @@ func (s *FSGitStorage) checkWritable(namespace, projectName string) error {
 	case StateDangerous:
 		return ErrProjectDangerous
 	case StateCorrupted:
-		return ErrProjectCorrupted
+		// B-25 (D1): the in-memory corrupted state may merely be stale. An operator
+		// can reconcile drift out-of-band (commit the working tree by hand — exactly
+		// how this project's own directives/reports are placed), after which the tree
+		// matches the catalog but nothing has re-run DetectDrift, so honest writes
+		// keep being refused with reason=corrupted until the next rescan/restart. Look
+		// again before refusing: re-run drift detection, then proceed iff the project
+		// is now genuinely healthy.
+		//
+		// This recomputes TRUTH, not success. If the bytes actually diverge from the
+		// catalog (an operator content-edit behind Shoka's back), DetectDrift reports
+		// Modified, the state stays corrupted, and the write is still (correctly)
+		// refused — the operator's path then is recovery (RepairTrackedChanges), not a
+		// write that papers over a real divergence.
+		//
+		// No deadlock: this branch holds no lock (State() RLocked and released before
+		// the switch body), DetectDrift takes no file lock, and the per-file lock is
+		// taken only after checkWritable returns; setState is stateMu-guarded. Cost is
+		// self-extinguishing — paid only on the corrupted branch, and the first clean
+		// rescan flips the project to healthy so subsequent writes hit case
+		// StateHealthy and skip it.
+		s.lazyRescans.Add(1)
+		_, _ = s.DetectDrift(namespace, projectName)
+		switch s.State(namespace, projectName) {
+		case StateDangerous:
+			return ErrProjectDangerous
+		case StateHealthy:
+			// Genuinely healthy now: fall through to the repo-less / WAL-full guards
+			// below and allow the write.
+		default:
+			return ErrProjectCorrupted
+		}
 	}
 	// A mutation may only touch a real, git-backed project. CreateProject git-inits,
 	// so a legitimate project always has a repo; a repo-less path is "not a project".
@@ -820,6 +857,12 @@ func (s *FSGitStorage) GetCurrentVersion(namespace, projectName, path string) (s
 	}
 	return sha256Hex(content), nil
 }
+
+// LazyRescanCount returns the number of D1 lazy rescans run at checkWritable's
+// corrupted branch (B-25 observability). It is 0 for a project that never went
+// corrupted; it increments once when a stale-corrupted clean project is unblocked,
+// and once per write attempt for a genuinely-corrupted project until recovery.
+func (s *FSGitStorage) LazyRescanCount() int64 { return s.lazyRescans.Load() }
 
 // --- WAL / worker observability (for get_server_info §8.6 and metrics §11) ---
 

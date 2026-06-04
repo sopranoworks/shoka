@@ -2,7 +2,10 @@ package storage
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/stretchr/testify/assert"
@@ -88,13 +91,20 @@ func TestNotify_FailedWriteByConflictPublishesNothing(t *testing.T) {
 
 func TestNotify_FailedWriteByCorruptedStatePublishesNothing(t *testing.T) {
 	s, nc := newNotifyStore(t)
-	// Force the project into corrupted state so checkWritable refuses the write
-	// before any file or WAL mutation occurs.
+	// GENUINE corruption: write a tracked file, then hand-edit it off the write
+	// path so the working tree diverges from the catalog. This must be a real
+	// divergence, not merely a stale in-memory mark — under D1 (B-25) a clean tree
+	// with a stale corrupted mark is lazily rescanned and the write proceeds, so
+	// only a true divergence keeps the corrupted refusal that this test pins.
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "v1", nil)
+	require.NoError(t, err)
+	require.True(t, s.WaitForWAL(10*time.Second), "WAL must drain before hand-editing")
+	require.NoError(t, os.WriteFile(filepath.Join(s.baseDir, "ns", "proj", "a.md"), []byte("hand-edited"), 0o644))
 	s.setState("ns", "proj", StateCorrupted)
 
 	before := nc.Snapshot()
-	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
-	require.ErrorIs(t, err, ErrProjectCorrupted)
+	_, err = s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
+	require.ErrorIs(t, err, ErrProjectCorrupted, "a genuinely-corrupted project stays refused after the lazy rescan")
 
 	assert.Len(t, nc.Snapshot(), len(before), "write refused by corrupted state must not publish")
 }
