@@ -2,6 +2,10 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -99,19 +103,15 @@ func (s *FSGitStorage) reconcileIndex(namespace, projectName string) {
 
 // rebuildIndexInto rebuilds the forward map wholesale from working-tree bytes and
 // advances the marker to head, atomically (one bbolt transaction via ReplaceAll).
-// workingTreeContentHashes is the same path→sha256 source the catalog/drift use
-// (it skips .git/.shoka/.drafts and transient temp files), so the index reflects
-// exactly the catalog's managed-file view.
+// workingTreeIndexRecords walks the same managed-file corpus as the catalog/drift
+// (the shared derivativeWalkSkip* predicates) and SearchFiles, so the rebuilt index
+// reflects exactly the set the fast path's fallback would scan.
 func (s *FSGitStorage) rebuildIndexInto(namespace, projectName, projectPath, head string, ix *index.Index) {
-	hashes, werr := workingTreeContentHashes(projectPath)
+	records, werr := workingTreeIndexRecords(projectPath)
 	if werr != nil {
 		s.log().Error("index reconcile: walk working tree failed",
 			"project", projectKey(namespace, projectName), "error", werr)
 		return
-	}
-	records := make(map[string]index.IndexRecord, len(hashes))
-	for p, h := range hashes {
-		records[p] = index.IndexRecord{Etag: h}
 	}
 	if rerr := ix.ReplaceAll(records, head); rerr != nil {
 		s.log().Error("index reconcile: rebuild failed",
@@ -119,6 +119,49 @@ func (s *FSGitStorage) rebuildIndexInto(namespace, projectName, projectPath, hea
 		return
 	}
 	s.idxRebuilds.Add(1)
+}
+
+// workingTreeIndexRecords walks a project's working tree and derives the full
+// index record for every managed file: the content etag (sha256) and the
+// full-text bigram set (I2). It reads one file at a time (memory is bounded by the
+// accumulating record map, not the whole corpus held at once) and shares the
+// derivativeWalkSkip* predicates with SearchFiles and workingTreeContentHashes so
+// the index corpus is identical to the fallback's scan corpus by construction.
+// Unlike drift's workingTreeContentHashes (which keeps only the hash), this keeps
+// the bytes long enough to derive bigrams, then drops them.
+func workingTreeIndexRecords(projectPath string) (map[string]index.IndexRecord, error) {
+	records := map[string]index.IndexRecord{}
+	err := filepath.WalkDir(projectPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != projectPath && derivativeWalkSkipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if derivativeWalkSkipFile(d.Name()) {
+			return nil
+		}
+		rel, relErr := filepath.Rel(projectPath, p)
+		if relErr != nil {
+			return nil
+		}
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return nil
+		}
+		records[filepath.ToSlash(rel)] = index.IndexRecord{
+			Etag:    sha256Hex(data),
+			Bigrams: index.Bigrams(string(data)),
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("index: walk working tree: %w", err)
+	}
+	return records, nil
 }
 
 // headCommit returns the project's HEAD commit hash and whether the repo could be

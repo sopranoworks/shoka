@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -107,16 +106,12 @@ func workingTreeContentHashes(projectPath string) (map[string]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if p != projectPath {
-				switch d.Name() {
-				case ".git", ".shoka", ".drafts":
-					return filepath.SkipDir
-				}
+			if p != projectPath && derivativeWalkSkipDir(d.Name()) {
+				return filepath.SkipDir
 			}
 			return nil
 		}
-		name := d.Name()
-		if strings.HasPrefix(name, ".tmp-write-") {
+		if derivativeWalkSkipFile(d.Name()) {
 			return nil // transient atomic-write staging file
 		}
 		rel, relErr := filepath.Rel(projectPath, p)

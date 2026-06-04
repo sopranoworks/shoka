@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -184,7 +186,8 @@ func TestMarkerRoundTrip(t *testing.T) {
 }
 
 // TestRecordForwardCompatibleDecode proves an old record (only "etag") decodes
-// cleanly — the property that lets I2/I3 add fields without a migration.
+// cleanly — the property that lets I2/I3 add fields without a migration. After I2
+// added Bigrams, an I1-era record must still decode with Bigrams nil.
 func TestRecordForwardCompatibleDecode(t *testing.T) {
 	idx, err := Create(tmpIndexPath(t), "ns", "proj")
 	if err != nil {
@@ -197,5 +200,97 @@ func TestRecordForwardCompatibleDecode(t *testing.T) {
 	rec, ok, err := idx.GetRecord("f.md")
 	if err != nil || !ok || rec.Etag != "x" {
 		t.Fatalf("decode: ok=%v err=%v etag=%q", ok, err, rec.Etag)
+	}
+	if rec.Bigrams != nil {
+		t.Errorf("an I1-era record must decode with Bigrams nil, got %v", rec.Bigrams)
+	}
+}
+
+// TestBigrams_OverlappingSortedDeduped pins the bigram set: overlapping rune
+// 2-grams, lowercased, deduplicated, sorted.
+func TestBigrams_OverlappingSortedDeduped(t *testing.T) {
+	// "abab" → {"ab","ba"} (ab appears twice, deduped); sorted.
+	got := Bigrams("abab")
+	want := []string{"ab", "ba"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Bigrams(abab) = %v, want %v", got, want)
+	}
+}
+
+// TestBigrams_CaseFolded pins that Bigrams lowercases exactly like the verifier,
+// so the index's "contains" equals SearchFiles' case-insensitive match.
+func TestBigrams_CaseFolded(t *testing.T) {
+	if !reflect.DeepEqual(Bigrams("HEllo"), Bigrams("hello")) {
+		t.Fatalf("Bigrams must be case-folded: %v vs %v", Bigrams("HEllo"), Bigrams("hello"))
+	}
+}
+
+// TestBigrams_JapaneseRuneAware pins CJK correctness: bigrams are over runes, not
+// bytes, so a 3-rune Japanese word yields 2 multibyte 2-grams (never a split
+// mid-rune).
+func TestBigrams_JapaneseRuneAware(t *testing.T) {
+	got := Bigrams("日本語") // runes: 日 本 語 → bigrams 日本, 本語
+	want := []string{"日本", "本語"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Bigrams(日本語) = %v, want %v", got, want)
+	}
+	for _, b := range got {
+		if len([]rune(b)) != 2 {
+			t.Errorf("bigram %q is not 2 runes", b)
+		}
+	}
+}
+
+// TestBigrams_ShortQueryHasNone pins the short-query rule's basis: a query shorter
+// than 2 runes has no bigram (the caller then falls back to the full scan).
+func TestBigrams_ShortQueryHasNone(t *testing.T) {
+	if Bigrams("a") != nil {
+		t.Errorf("a 1-rune string must have no bigram, got %v", Bigrams("a"))
+	}
+	if Bigrams("") != nil {
+		t.Errorf("an empty string must have no bigram, got %v", Bigrams(""))
+	}
+	if Bigrams("あ") != nil { // 1 rune (multibyte)
+		t.Errorf("a 1-rune multibyte string must have no bigram, got %v", Bigrams("あ"))
+	}
+}
+
+// TestContainsAllBigrams pins the narrowing test: a record contains all of a
+// query's bigrams iff every query bigram is present (the no-false-negative gate).
+func TestContainsAllBigrams(t *testing.T) {
+	rec := IndexRecord{Bigrams: Bigrams("the quick brown fox")}
+	if !rec.ContainsAllBigrams(Bigrams("quick")) {
+		t.Error("a substring's bigrams must all be present")
+	}
+	if rec.ContainsAllBigrams(Bigrams("zebra")) {
+		t.Error("a non-substring with an absent bigram must be excluded")
+	}
+	// A bigram false positive: "kb" is absent, but even a query whose bigrams are
+	// all present need not be a real substring — that is what truth-verify catches.
+	// Here we only assert the gate's no-false-negative direction.
+	if !rec.ContainsAllBigrams(nil) {
+		t.Error("an empty query bigram set is vacuously contained")
+	}
+}
+
+// TestBigrams_NoFalseNegativeOverCorpus is the property the fast path rests on:
+// for any file content and any query that IS a case-insensitive substring of it,
+// the content's bigrams contain all the query's bigrams. (Truth-verify handles the
+// converse — false positives.)
+func TestBigrams_NoFalseNegativeOverCorpus(t *testing.T) {
+	contents := []string{"Hello, World", "日本語のテスト文書", "mixed 日本 and ASCII", "aaaa"}
+	for _, c := range contents {
+		rec := IndexRecord{Bigrams: Bigrams(c)}
+		lc := strings.ToLower(c)
+		runes := []rune(lc)
+		// Every contiguous substring of length >= 2 must pass the gate.
+		for i := 0; i < len(runes); i++ {
+			for j := i + 2; j <= len(runes); j++ {
+				sub := string(runes[i:j])
+				if !rec.ContainsAllBigrams(Bigrams(sub)) {
+					t.Fatalf("substring %q of %q failed the bigram gate (false negative)", sub, c)
+				}
+			}
+		}
 	}
 }

@@ -107,3 +107,16 @@ func TestIndexUpdate_CatalogStaysAuthoritativeWhenIndexBroken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, names, "kept.md", "catalog-backed listing must include the file despite the broken index")
 }
+
+// TestIndexUpdate_WriteStoresBigrams (I2 §3.2) — the write hook derives the file's
+// full-text bigram set from the content it already carries, matching index.Bigrams.
+func TestIndexUpdate_WriteStoresBigrams(t *testing.T) {
+	s, _ := newStore(t, Options{})
+	require.NoError(t, s.CreateProject("ns", "proj"))
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello world", nil)
+	require.NoError(t, err)
+
+	rec, ok := idxRecord(t, s, "ns", "proj", "a.md")
+	require.True(t, ok)
+	assert.Equal(t, index.Bigrams("hello world"), rec.Bigrams, "the write hook must store the content's bigrams")
+}

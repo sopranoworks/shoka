@@ -29,20 +29,73 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
 
-// IndexRecord is the per-file derived record I1 stores. I1 holds only the
-// content etag — enough to make incremental upsert/delete meaningful and to let
-// the repair sweep diff cheaply. It is a struct (not a bare string) so I2 can add
-// bigram-posting references and I3 can add outbound links as new JSON fields with
-// NO migration: a record written by an older build decodes with the new fields at
-// their zero values.
+// IndexRecord is the per-file derived record. I1 held only the content etag; I2
+// adds the file's full-text bigram set (Bigrams). It is a struct so fields are
+// added with NO migration: an I1-era record (only "etag") decodes with Bigrams
+// nil, and a query simply finds no candidate bigrams there until the repair sweep
+// re-derives it.
+//
+// Bigrams is the sorted, deduplicated set of overlapping rune-2-grams of the
+// file's content under the verifier's normalisation (see Bigrams). It is the
+// gated-walk fast path's narrowing signal (I2, decision A): a file whose Bigrams
+// do NOT contain every bigram of the query cannot contain the query as a
+// substring, so its content read is skipped; every file that survives the gate
+// (or is unindexed) is still truth-verified by SearchFiles' exact substring
+// check, so results are identical to the full scan — only faster.
 type IndexRecord struct {
-	Etag string `json:"etag"`
+	Etag    string   `json:"etag"`
+	Bigrams []string `json:"bigrams,omitempty"`
+}
+
+// Bigrams returns the sorted, deduplicated set of overlapping rune-2-grams of
+// strings.ToLower(s). The lowering MUST match storage.SearchFiles' matching
+// (strings.Contains(strings.ToLower(content), strings.ToLower(query))) so the
+// index's notion of "contains" is identical to the verifier's. strings.ToLower is
+// a 1:1 rune map in Go, so lower-then-bigram is consistent with lower-then-scan.
+//
+// The no-false-negative property the fast path relies on: if a (lowercased)
+// string contains a (lowercased) query as a contiguous substring, it contains
+// every consecutive rune-2-gram of that query — so query.Bigrams ⊆ content.Bigrams
+// for every true match. A query shorter than 2 runes has no bigram (returns nil);
+// the caller must fall back to the full scan for it.
+func Bigrams(s string) []string {
+	runes := []rune(strings.ToLower(s))
+	if len(runes) < 2 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(runes)-1)
+	for i := 0; i+1 < len(runes); i++ {
+		set[string(runes[i:i+2])] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for bg := range set {
+		out = append(out, bg)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ContainsAllBigrams reports whether the record's Bigrams set contains every
+// bigram in query (the query's Bigrams, also from Bigrams, so sorted). It is the
+// gated-walk narrowing test: false means the file definitively cannot contain the
+// query and its content read is skipped. r.Bigrams is sorted, so each lookup is a
+// binary search. An empty query is vacuously contained (the caller handles the
+// short-query fallback before reaching here).
+func (r IndexRecord) ContainsAllBigrams(query []string) bool {
+	for _, b := range query {
+		i := sort.SearchStrings(r.Bigrams, b)
+		if i >= len(r.Bigrams) || r.Bigrams[i] != b {
+			return false
+		}
+	}
+	return true
 }
 
 // Meta keys held in the _meta bucket.

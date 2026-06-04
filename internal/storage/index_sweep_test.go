@@ -151,3 +151,23 @@ func mustMarker(t *testing.T, ix *index.Index) string {
 	require.NoError(t, err)
 	return m
 }
+
+// TestIndexSweep_RebuildStoresBigrams (I2 §3.2) — the wholesale rebuild derives
+// bigrams from working-tree bytes too, not just the etag.
+func TestIndexSweep_RebuildStoresBigrams(t *testing.T) {
+	s, _ := newStore(t, Options{})
+	require.NoError(t, s.CreateProject("ns", "proj"))
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "日本語の本文", nil)
+	require.NoError(t, err)
+	drain(t, s)
+
+	// Force a wholesale rebuild from working-tree bytes.
+	evictIndexHandle(s, "ns", "proj")
+	require.NoError(t, os.Remove(s.indexPath("ns", "proj")))
+	s.reconcileIndex("ns", "proj")
+
+	rec, found, err := openIndexRO(t, s, "ns", "proj").GetRecord("a.md")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, index.Bigrams("日本語の本文"), rec.Bigrams, "the rebuild must derive bigrams from working-tree bytes")
+}

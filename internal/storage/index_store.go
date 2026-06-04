@@ -86,9 +86,9 @@ func (s *FSGitStorage) indexForRead(namespace, projectName string) *index.Index 
 // indexPut records a write/move-destination in the index. Best-effort: a failure
 // is logged + counted but never fails the operation (the working tree, WAL, and
 // catalog have already succeeded; the repair sweep reconciles). content is the
-// new bytes already in scope at the call site — I1 derives only the etag from it,
-// but the signature carries content so I2/I3 derive bigrams/links here with no
-// change to the three call sites.
+// new bytes already in scope at the call site — I2 derives the file's full-text
+// bigram set from it here (in addition to the etag), with no change to the three
+// call sites (the signature already carried content from I1, decision 5).
 func (s *FSGitStorage) indexPut(namespace, projectName, rel string, content []byte, etag string) {
 	ix, err := s.indexFor(namespace, projectName)
 	if err != nil {
@@ -97,7 +97,7 @@ func (s *FSGitStorage) indexPut(namespace, projectName, rel string, content []by
 		s.idxUpdateFailedWrite.Add(1)
 		return
 	}
-	if perr := ix.PutRecord(rel, index.IndexRecord{Etag: etag}); perr != nil {
+	if perr := ix.PutRecord(rel, index.IndexRecord{Etag: etag, Bigrams: index.Bigrams(string(content))}); perr != nil {
 		s.log().Warn("index update failed for write",
 			"namespace", namespace, "project", projectName, "path", rel, "err", perr)
 		s.idxUpdateFailedWrite.Add(1)
