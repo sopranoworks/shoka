@@ -162,7 +162,8 @@ func (s *FSGitStorage) StartDriftScan(ctx context.Context, interval time.Duratio
 // project under the base directory.
 func (s *FSGitStorage) scanAllProjects() {
 	s.WaitForWAL(2 * time.Minute)
-	for _, p := range s.discoverProjects() {
+	projects, _ := s.discoverProjects() // leftovers are relocated post-startup, not re-scanned here
+	for _, p := range projects {
 		if _, err := s.DetectDrift(p.namespace, p.name); err != nil {
 			s.log().Error("drift scan failed", "project", projectKey(p.namespace, p.name), "error", err)
 		}

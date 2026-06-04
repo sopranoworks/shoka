@@ -82,7 +82,8 @@ func (s *FSGitStorage) StartLostFoundSweep(ctx context.Context, interval time.Du
 // for untracked content), then sweeps every project under the base directory.
 func (s *FSGitStorage) sweepAllProjects() {
 	s.WaitForWAL(2 * time.Minute)
-	for _, p := range s.discoverProjects() {
+	projects, _ := s.discoverProjects() // leftovers are relocated post-startup, not swept here
+	for _, p := range projects {
 		s.sweepProject(p.namespace, p.name)
 	}
 }

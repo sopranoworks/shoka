@@ -21,19 +21,45 @@ type projectRef struct {
 	name      string
 }
 
-// discoverProjects walks <base_dir>/<namespace>/<project>/ and returns every
-// project directory. Hidden namespace directories (e.g. ".shoka"), hidden
-// project-level directories (e.g. the ".shoka-lostfound" area), and the
-// per-project "<project>.db" catalog files (which are not directories) are
-// skipped — a dot-prefixed entry is Shoka-internal, never a project.
-func (s *FSGitStorage) discoverProjects() []projectRef {
+// leftover is a repo-less <namespace>/<project> directory surfaced (not dropped)
+// by discoverProjects: a directory with no .git is not a project but a remnant — a
+// pre-B-37 guard-less write half-created one (dir + per-project .db, no repo), or an
+// externally-created stray. It is never registered; the non-blocking
+// post-StartupInit relocation step (relocateLeftovers) quarantines it to lost+found
+// (D4 / B-38.1). treePath is the leftover directory; dbPath is its sibling
+// <project>.db when present, otherwise "".
+type leftover struct {
+	namespace string
+	name      string
+	treePath  string
+	dbPath    string
+}
+
+// discoverProjects walks <base_dir>/<namespace>/<project>/ and returns every real,
+// git-backed project (the primary result) plus every repo-less leftover directory
+// (the second result). Hidden namespace directories (e.g. ".shoka"), hidden
+// project-level directories (e.g. the ".shoka-lostfound" area), and the per-project
+// "<project>.db" catalog files (which are not directories) are skipped — a
+// dot-prefixed entry is Shoka-internal, never a project.
+//
+// A <project> directory with no .git is not a project; rather than being silently
+// dropped (the B-37 minimum: it must never be registered, or it re-adopts a phantom
+// every boot and loops the WAL worker) it is SURFACED on the leftovers list so the
+// post-startup relocation step (relocateLeftovers) can quarantine it to lost+found
+// (D4). The primary project result is unchanged, and the other two callers
+// (scanAllProjects, sweepAllProjects) ignore the leftovers. Discovery does NOT log
+// the leftover: it runs in three callers (incl. the default-on lost+found sweep), so
+// the operator-facing record is emitted once at the relocation step, not on every
+// scan.
+func (s *FSGitStorage) discoverProjects() ([]projectRef, []leftover) {
 	var out []projectRef
+	var leftovers []leftover
 	nsEntries, err := os.ReadDir(s.baseDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			s.log().Error("project discovery: cannot read base dir", "error", err)
 		}
-		return out
+		return out, leftovers
 	}
 	for _, ns := range nsEntries {
 		if !ns.IsDir() || strings.HasPrefix(ns.Name(), ".") {
@@ -49,22 +75,21 @@ func (s *FSGitStorage) discoverProjects() []projectRef {
 			}
 			projectPath := filepath.Join(s.baseDir, ns.Name(), pr.Name())
 			if !hasGitRepo(projectPath) {
-				// A directory with no .git is not a project — it is leftover (a pre-B-37
-				// guard-less write half-created one: dir + per-project .db, no repo).
-				// Registering it would re-adopt the phantom every boot and loop the WAL
-				// worker, so skip it: not registered, no state, never handed to the
-				// worker. The stray "<name>.db" is a non-dir (already skipped above) and
-				// is only opened for a registered project, so skipping the directory
-				// neutralises both. Surfaced for the operator; routing such leftovers to
-				// lost+found is a follow-up (B-38).
-				s.log().Warn("discovery: skipping non-project directory (no .git)",
-					"namespace", ns.Name(), "project", pr.Name(), "path", projectPath)
+				// Repo-less: not a project. Surface it (do not register it) so the
+				// post-startup step relocates it to lost+found. Include the sibling
+				// "<project>.db" when it is present so the two move together.
+				lf := leftover{namespace: ns.Name(), name: pr.Name(), treePath: projectPath}
+				dbPath := s.catalogPath(ns.Name(), pr.Name())
+				if _, statErr := os.Stat(dbPath); statErr == nil {
+					lf.dbPath = dbPath
+				}
+				leftovers = append(leftovers, lf)
 				continue
 			}
 			out = append(out, projectRef{namespace: ns.Name(), name: pr.Name()})
 		}
 	}
-	return out
+	return out, leftovers
 }
 
 // hasGitRepo reports whether projectPath is a real, git-backed project: it has a
@@ -92,7 +117,7 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 	// pending-but-uncommitted write. See the completion report.)
 	s.WaitForWAL(2 * time.Minute)
 
-	projects := s.discoverProjects()
+	projects, leftovers := s.discoverProjects()
 	var wg sync.WaitGroup
 	for _, p := range projects {
 		wg.Add(1)
@@ -121,6 +146,57 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 		"projects_corrupted", corrupted,
 		"projects_dangerous", dangerous,
 	)
+
+	// Non-blocking (D4 / B-38.1): quarantine repo-less leftovers to lost+found AFTER
+	// the blocking gate has done its work. This runs in a goroutine so a whole-tree
+	// move never delays server readiness — the synchronous body above (the latency
+	// path callers gate listeners on) performs no relocation. It is idempotent-safe:
+	// an interrupted relocation is simply retried on the next boot.
+	if len(leftovers) > 0 {
+		go s.relocateLeftovers(leftovers, time.Now())
+	}
+}
+
+// relocateLeftovers quarantines each repo-less leftover surfaced by discoverProjects
+// to lost+found (D4 / B-38.1). It is spawned as a goroutine by StartupInit so the
+// blocking startup gate's latency is unchanged. For each leftover it moves the whole
+// <namespace>/<project> tree and its sibling <project>.db (when present) into one
+// lost+found <ts> directory via D2's depositTree, then emits a lostfound.quarantined
+// NOTIFY (the single operator-facing record — discovery itself stays silent). It is
+// idempotent-safe: a leftover whose tree is already gone (relocated on a prior boot,
+// or a crash-interrupted move) is skipped, not errored; a missing .db is omitted. It
+// writes no git ref (Anchor 3 N/A) and touches only the namespace-root lost+found
+// area, never project history.
+func (s *FSGitStorage) relocateLeftovers(leftovers []leftover, now time.Time) {
+	for _, lf := range leftovers {
+		// Idempotency / interrupted-move guard: if the tree is already gone there is
+		// nothing to relocate (a prior boot moved it, or a crash landed mid-move).
+		if _, err := os.Stat(lf.treePath); err != nil {
+			if !os.IsNotExist(err) {
+				s.log().Error("leftover relocation: cannot stat leftover tree",
+					"namespace", lf.namespace, "project", lf.name, "path", lf.treePath, "error", err)
+			}
+			continue
+		}
+		// Re-confirm the sibling .db still exists (it was present at discovery); omit
+		// it gracefully if absent so depositTree never fails on a missing sibling.
+		var siblings []string
+		if lf.dbPath != "" {
+			if _, err := os.Stat(lf.dbPath); err == nil {
+				siblings = append(siblings, lf.dbPath)
+			}
+		}
+		dest, err := s.depositTree(lf.namespace, lf.name, lf.treePath, now, siblings...)
+		if err != nil {
+			s.log().Error("leftover relocation: move to lost+found failed",
+				"namespace", lf.namespace, "project", lf.name, "path", lf.treePath, "error", err)
+			continue
+		}
+		s.log().Warn("relocated repo-less leftover to lost+found",
+			"namespace", lf.namespace, "project", lf.name,
+			"tree", lf.treePath, "db", lf.dbPath, "dest", dest)
+		s.notifyQuarantined(lf.namespace, lf.name, lf.name)
+	}
 }
 
 // initProject opens a single project's catalog (rebuilding from git HEAD if it

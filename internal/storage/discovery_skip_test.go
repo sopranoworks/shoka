@@ -28,7 +28,7 @@ func TestDiscoverProjects_SkipsDotPrefixedProjectDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := s.discoverProjects()
+	got, _ := s.discoverProjects()
 	for _, p := range got {
 		if p.name == ".shoka-lostfound" {
 			t.Fatalf("discoverProjects must skip dot-prefixed project dirs, got %+v", got)
