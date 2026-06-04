@@ -67,7 +67,7 @@ func waitDrained(t *testing.T, l *wal.Log) {
 func TestPool_PreservesPerProjectOrder(t *testing.T) {
 	l := openWAL(t)
 	rec := newOrderRecorder()
-	p := NewPool(l, rec.commit, fastConfig())
+	p := NewPool(l, rec.commit, nil, fastConfig())
 	t.Cleanup(func() { _ = p.Shutdown(2 * time.Second) })
 
 	// Append: p1-A, p2-X, p1-B, p1-C, p2-Y.
@@ -93,7 +93,7 @@ func TestPool_DifferentProjectsCommitInParallel(t *testing.T) {
 		time.Sleep(commitTime)
 		return nil
 	}
-	p := NewPool(l, commit, fastConfig())
+	p := NewPool(l, commit, nil, fastConfig())
 	t.Cleanup(func() { _ = p.Shutdown(2 * time.Second) })
 
 	for i := 0; i < projects; i++ {
@@ -120,7 +120,7 @@ func TestPool_GrowsAndShrinks(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		return nil
 	}
-	p := NewPool(l, commit, cfg)
+	p := NewPool(l, commit, nil, cfg)
 	t.Cleanup(func() { _ = p.Shutdown(2 * time.Second) })
 
 	for i := 0; i < 4; i++ {
@@ -144,7 +144,12 @@ func TestPool_PersistentFailureKeepsEntry(t *testing.T) {
 	commit := func(_ context.Context, _ wal.Entry) error {
 		return fmt.Errorf("always fails")
 	}
-	p := NewPool(l, commit, fastConfig())
+	// High backstop so this exercises the pure retry path (an unclassified,
+	// non-permanent failure keeps retrying and keeps the entry) without hitting the
+	// MaxCommitAttempts quarantine backstop — that is covered separately.
+	cfg := fastConfig()
+	cfg.MaxCommitAttempts = 1_000_000
+	p := NewPool(l, commit, nil, cfg)
 	t.Cleanup(func() { _ = p.Shutdown(2 * time.Second) })
 
 	appendWrite(t, l, "ns", "p", "f.md")
@@ -154,6 +159,7 @@ func TestPool_PersistentFailureKeepsEntry(t *testing.T) {
 		"CommitsFailed should grow under persistent failure")
 	assert.Equal(t, 1, l.PendingCount(), "the entry must stay in the WAL")
 	assert.Equal(t, int64(0), p.Stats().CommitsTotal)
+	assert.Equal(t, int64(0), p.Stats().QuarantinedTotal, "no quarantine below the backstop")
 }
 
 func TestPool_FailThenSucceedRemovesEntry(t *testing.T) {
@@ -165,7 +171,7 @@ func TestPool_FailThenSucceedRemovesEntry(t *testing.T) {
 		}
 		return nil
 	}
-	p := NewPool(l, commit, fastConfig())
+	p := NewPool(l, commit, nil, fastConfig())
 	t.Cleanup(func() { _ = p.Shutdown(2 * time.Second) })
 
 	appendWrite(t, l, "ns", "p", "f.md")
@@ -185,7 +191,7 @@ func TestPool_ShutdownWaitsForInFlight(t *testing.T) {
 		time.Sleep(150 * time.Millisecond) // ignores ctx on purpose
 		return nil
 	}
-	p := NewPool(l, commit, fastConfig())
+	p := NewPool(l, commit, nil, fastConfig())
 
 	appendWrite(t, l, "ns", "p", "f.md")
 	p.Notify()
@@ -210,7 +216,7 @@ func TestPool_NotifyTriggersImmediateDispatch(t *testing.T) {
 		}
 		return nil
 	}
-	p := NewPool(l, commit, cfg)
+	p := NewPool(l, commit, nil, cfg)
 	t.Cleanup(func() { _ = p.Shutdown(2 * time.Second) })
 
 	appendWrite(t, l, "ns", "p", "f.md")

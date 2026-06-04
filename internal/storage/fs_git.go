@@ -209,7 +209,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		notify:           opts.NotifyCenter,
 		identityDefaults: withIdentityFallback(opts.Identity),
 	}
-	s.pool = walworker.NewPool(w, s.commitEntry, opts.WALWorker)
+	s.pool = walworker.NewPool(w, s.commitEntry, s.quarantineEntry, opts.WALWorker)
 	return s, nil
 }
 

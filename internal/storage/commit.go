@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/shoka/mcp-server/internal/identity"
 	"github.com/shoka/mcp-server/internal/storage/wal"
+	"github.com/shoka/mcp-server/internal/storage/walworker"
 )
 
 // emptyTreeHash is git's canonical empty-tree object hash.
@@ -36,6 +38,22 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 		s.setState(e.Namespace, e.Project, StateDangerous)
 		s.log().Error("walworker: cannot open git repository; project marked dangerous",
 			"project", projectKey(e.Namespace, e.Project), "error", err)
+		if errors.Is(err, git.ErrRepositoryNotExists) {
+			// Repo absent: this entry can NEVER commit (there is no repository to
+			// commit into). Signal permanence so the walworker quarantines it to
+			// lost+found and stops looping — instead of holding a worker slot
+			// forever (the B-38.2 pool-saturation hole). The cause stays in the
+			// chain (multi-%w), so errors.Is still finds git.ErrRepositoryNotExists
+			// for diagnostics while the walworker recognises ErrCommitPermanent
+			// without importing go-git.
+			//
+			// CLASSIFICATION SEAM (D3 is deliberately conservative): ONLY repo-absent
+			// is permanent today. The other deterministic failures below — storeBlob
+			// / applyToTree / buildMoveTree (a bad tree/path/encoding) — are also
+			// effectively permanent but rarer; to widen, wrap their returned errors
+			// with walworker.ErrCommitPermanent the same way. Left transient in D3.
+			return fmt.Errorf("open repo: %w: %w", err, walworker.ErrCommitPermanent)
+		}
 		return fmt.Errorf("open repo: %w", err)
 	}
 
@@ -138,6 +156,30 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 		CommitHash: commitHash.String(),
 		Timestamp:  now,
 	})
+	return nil
+}
+
+// quarantineEntry is the walworker QuarantineFunc — the deposit counterpart to
+// commitEntry (the CommitFunc). It preserves a WAL entry that can never commit: the
+// content comes from the WAL entry itself (e.Content), so depositBytes — which
+// writes into the lost+found area under the namespace root, OUTSIDE any project
+// repo — succeeds even when the project's git repo (or its whole directory) is
+// absent, which is exactly the repo-absent permanent case (ErrCommitPermanent). On
+// success it emits the lostfound.quarantined NOTIFY and returns nil; on a deposit
+// failure it returns the error so the walworker KEEPS the entry (its content is not
+// yet safely preserved) rather than removing it. It writes no git ref, and the
+// walworker — calling this injected func — touches no go-git and no storage
+// internals, staying policy-only (the Anchor-1 split).
+func (s *FSGitStorage) quarantineEntry(e wal.Entry) error {
+	dest, err := s.depositBytes(e.Namespace, e.Project, e.Path, e.Content, time.Now())
+	if err != nil {
+		s.log().Error("walworker: lost+found deposit failed; WAL entry kept for retry",
+			"project", projectKey(e.Namespace, e.Project), "path", e.Path, "error", err)
+		return err
+	}
+	s.log().Warn("walworker: quarantined uncommittable WAL entry to lost+found",
+		"project", projectKey(e.Namespace, e.Project), "path", e.Path, "deposited", dest)
+	s.notifyQuarantined(e.Namespace, e.Project, e.Path)
 	return nil
 }
 
