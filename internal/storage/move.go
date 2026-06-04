@@ -117,6 +117,10 @@ func (s *FSGitStorage) Move(ctx context.Context, sessionID, namespace, projectNa
 		// Catalog (best-effort, mirrors write/delete): disown source, adopt dest.
 		s.catalogDelete(namespace, projectName, srcRel)
 		s.catalogPut(namespace, projectName, dstRel, newEtag, len(movedContent), dstFull)
+		// Index update (I1): mirror the catalog move — disown source, adopt dest.
+		// Best-effort, under the locks, strictly after the catalog op.
+		s.indexDelete(namespace, projectName, srcRel)
+		s.indexPut(namespace, projectName, dstRel, movedContent, newEtag)
 
 		// One WAL entry → one atomic git commit (the rename only; no Aux).
 		id := identity.Resolve(ctx, s.identityDefaults)

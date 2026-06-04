@@ -21,6 +21,7 @@ import (
 	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/storage/catalog"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
+	"github.com/shoka/mcp-server/internal/storage/index"
 	"github.com/shoka/mcp-server/internal/storage/wal"
 	"github.com/shoka/mcp-server/internal/storage/walworker"
 	"github.com/shoka/mcp-server/internal/utils"
@@ -50,6 +51,22 @@ type FSGitStorage struct {
 	// handles are concurrency-safe; catMu guards only the map.
 	catMu    sync.Mutex
 	catalogs map[string]*catalog.Catalog
+
+	// indexes holds one open per-project derivative index (the 2026-06-04 I1
+	// directive) keyed by "<namespace>/<project>", at the sibling path
+	// <base>/<ns>/<project>.index.db. Like the catalog it is a disposable
+	// derivative of the truth, opened lazily and rebuilt by StartIndexSweep when
+	// missing/stale/corrupt. The bbolt handles are concurrency-safe; idxMu guards
+	// only the map. I1 keeps this store warm but no query reads it yet (the fast
+	// path is I2/I3).
+	idxMu   sync.Mutex
+	indexes map[string]*index.Index
+
+	// Index observability counters: best-effort incremental-update failures and
+	// repair-sweep rebuilds. Surfaced via IndexCounters().
+	idxUpdateFailedWrite  atomic.Int64
+	idxUpdateFailedDelete atomic.Int64
+	idxRebuilds           atomic.Int64
 
 	// Catalog observability counters, surfaced through the metrics Source (§10).
 	catUpdateFailedWrite   atomic.Int64
@@ -206,6 +223,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		maxWALEntries:    maxWAL,
 		states:           make(map[string]ProjectState),
 		catalogs:         make(map[string]*catalog.Catalog),
+		indexes:          make(map[string]*index.Index),
 		notify:           opts.NotifyCenter,
 		identityDefaults: withIdentityFallback(opts.Identity),
 	}
@@ -250,6 +268,16 @@ func (s *FSGitStorage) Close() error {
 		delete(s.catalogs, key)
 	}
 	s.catMu.Unlock()
+	s.idxMu.Lock()
+	for key, ix := range s.indexes {
+		if ix != nil {
+			if err := ix.Close(); err != nil {
+				s.log().Warn("index close failed", "project", key, "err", err)
+			}
+		}
+		delete(s.indexes, key)
+	}
+	s.idxMu.Unlock()
 	return nil
 }
 
@@ -430,6 +458,10 @@ func (s *FSGitStorage) writeTransformed(ctx context.Context, sessionID, namespac
 		// Catalog update (working tree → WAL → catalog, §5.1). Best-effort: it
 		// never fails the write, since the working tree and WAL already succeeded.
 		s.catalogPut(namespace, projectName, rel, newEtag, len(newContent), fullPath)
+		// Index update (I1): strictly after the authoritative catalog op, equally
+		// best-effort, under the same lock. A failure leaves the index stale for
+		// the repair sweep; it never fails the write.
+		s.indexPut(namespace, projectName, rel, newContent, newEtag)
 		return nil
 	})
 	if lockErr != nil {
@@ -574,6 +606,8 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 		// Disown before destroying, so the catalog never claims a path the working
 		// tree still lacks. The catalog delete is best-effort.
 		s.catalogDelete(namespace, projectName, rel)
+		// Index update (I1): mirror the catalog delete, best-effort, under the lock.
+		s.indexDelete(namespace, projectName, rel)
 		id := identity.Resolve(ctx, s.identityDefaults)
 		if _, err := s.wal.Append(wal.Entry{
 			Namespace:    namespace,
