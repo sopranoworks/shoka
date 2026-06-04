@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/utils/merkletrie"
+	"github.com/shoka/mcp-server/internal/storage/index"
 )
 
 // FileChange describes a file modified since a point in time/history.
@@ -161,14 +162,39 @@ func (s *FSGitStorage) SearchFiles(namespace, projectName, query, searchIn strin
 	q := strings.ToLower(query)
 	matches := []SearchMatch{}
 
+	// Full-text fast path (I2, decision A — gated-walk): when content is searched,
+	// the query has at least one bigram, and the project's derivative index is
+	// healthy, the index narrows which files have their content read. The walk,
+	// filename matching, order, and makeSnippet are the SAME code path as the
+	// fallback, so the result is byte-for-byte identical — only files whose indexed
+	// bigram set cannot contain the query skip the os.ReadFile. A file with no index
+	// record (unindexed / a failed best-effort update) is always read, so the gate
+	// never causes a false negative for a tracked file; truth-verify (the substring
+	// check below) removes every bigram false positive. A query shorter than 2 runes
+	// (no bigram) or an unhealthy/absent index falls through to reading every file.
+	searchesContent := searchIn == "content" || searchIn == "both"
+	var (
+		queryBigrams []string
+		ix           *index.Index
+	)
+	if searchesContent {
+		queryBigrams = index.Bigrams(query)
+		if len(queryBigrams) > 0 && s.IndexHealthy(namespace, projectName) {
+			ix = s.indexForRead(namespace, projectName)
+		}
+	}
+
 	walkErr := filepath.WalkDir(projectPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if p != projectPath && (d.Name() == ".git" || d.Name() == ".drafts") {
+			if p != projectPath && derivativeWalkSkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if derivativeWalkSkipFile(d.Name()) {
 			return nil
 		}
 
@@ -182,11 +208,24 @@ func (s *FSGitStorage) SearchFiles(namespace, projectName, query, searchIn strin
 
 		contentMatch := false
 		snippet := ""
-		if searchIn == "content" || searchIn == "both" {
-			data, readErr := os.ReadFile(p)
-			if readErr == nil && strings.Contains(strings.ToLower(string(data)), q) {
-				contentMatch = true
-				snippet = makeSnippet(string(data), q)
+		if searchesContent {
+			// Gate the content read on the index: skip only when it definitively
+			// knows this file cannot contain the query (record present AND its
+			// bigram set lacks one of the query's). Absent record / read error →
+			// read (safe). This is the only place the fast path diverges from the
+			// fallback's work, never from its result.
+			read := true
+			if ix != nil {
+				if rec, found, gerr := ix.GetRecord(rel); gerr == nil && found && !rec.ContainsAllBigrams(queryBigrams) {
+					read = false
+				}
+			}
+			if read {
+				data, readErr := os.ReadFile(p)
+				if readErr == nil && strings.Contains(strings.ToLower(string(data)), q) {
+					contentMatch = true
+					snippet = makeSnippet(string(data), q)
+				}
 			}
 		}
 
