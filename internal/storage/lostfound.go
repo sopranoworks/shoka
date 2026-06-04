@@ -43,6 +43,15 @@ const (
 	// disposable. Disposals are surfaced too, so an operator can notice if a
 	// pattern is matching files they did not expect.
 	kindLostFoundDisposed = "lostfound.disposed"
+	// kindLostFoundQuarantined is emitted when something that could NOT be processed
+	// is set aside in lost+found — a WAL entry that can never commit (D3) or a
+	// catalog-init leftover tree that was never a project (D4) — as distinct from
+	// lostfound.moved, which is the sweep tidying away a stray untracked file.
+	// "quarantined" means "a fault's remains, preserved for an operator"; "moved"
+	// means "routine housekeeping". The deposit primitive (depositBytes/depositTree)
+	// + notifyQuarantined live in lostfound_area.go; D2 defines the kind and helper,
+	// the callers (D3/D4) emit it.
+	kindLostFoundQuarantined = "lostfound.quarantined"
 )
 
 // StartLostFoundSweep runs an initial sweep, then re-sweeps every project every
