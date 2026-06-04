@@ -149,7 +149,11 @@ func (s *FSGitStorage) Move(ctx context.Context, sessionID, namespace, projectNa
 	// file.move carries both source and target (§1.5); the ctx-borne sender excludes
 	// the originating connection from its own event (2026-06-01 sender-exclusion).
 	s.notify.NotifyMoveFrom(notify.SenderFrom(ctx), namespace+"/"+projectName, srcRel, dstRel)
-	// linksRewritten is always 0: link auto-update on move is disabled (B-33).
+	// Post-move fix_links kick (I3): a non-blocking enqueue, so the move stays a
+	// pure rename and never blocks. The kick — not the move — carries the only
+	// write-to-truth link repair, performed asynchronously by the index sweep
+	// goroutine. linksRewritten is still 0: the move rewrites no referrer itself.
+	s.enqueueFixLinks(namespace, projectName, srcRel, dstRel)
 	return newEtag, 0, nil
 }
 

@@ -48,6 +48,12 @@ func (s *FSGitStorage) StartIndexSweep(ctx context.Context, interval time.Durati
 				return
 			case <-t.C:
 				s.reconcileAllIndexes()
+			case k := <-s.fixLinksKicks:
+				// Post-move fix_links (I3): drained immediately by this same
+				// goroutine (no new subsystem), delayed only while a reconcile pass
+				// above is mid-flight. fixLinks finds referrers via the index when
+				// healthy, else truth-scans; it never rewrites from a broken index.
+				s.fixLinks(ctx, k.namespace, k.project, k.src, k.dst)
 			}
 		}
 	}()

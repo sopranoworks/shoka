@@ -62,6 +62,13 @@ type FSGitStorage struct {
 	idxMu   sync.Mutex
 	indexes map[string]*index.Index
 
+	// fixLinksKicks carries post-move fix_links reconciliation requests (I3). A
+	// successful Move does a non-blocking send here (so a move never blocks on a
+	// full channel — it stays a pure rename); the StartIndexSweep goroutine drains
+	// it via its select loop and runs fixLinks. There is no periodic backstop: a
+	// dropped kick leaves a stale-but-recoverable link the tenets absorb.
+	fixLinksKicks chan fixLinksKick
+
 	// Index observability counters: best-effort incremental-update failures and
 	// repair-sweep rebuilds. Surfaced via IndexCounters().
 	idxUpdateFailedWrite  atomic.Int64
@@ -224,6 +231,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		states:           make(map[string]ProjectState),
 		catalogs:         make(map[string]*catalog.Catalog),
 		indexes:          make(map[string]*index.Index),
+		fixLinksKicks:    make(chan fixLinksKick, fixLinksKickBuffer),
 		notify:           opts.NotifyCenter,
 		identityDefaults: withIdentityFallback(opts.Identity),
 	}
