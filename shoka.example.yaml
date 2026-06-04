@@ -109,6 +109,15 @@ storage:
     enabled: true      # set false to disable the worker (dev/debug)
     interval: 5m       # sweep cadence
 
+  # Index repair worker (I1). A periodic sweep that reconciles each project's
+  # derivative index store (<base_dir>/<namespace>/<project>.index.db) with git
+  # HEAD, rebuilding it wholesale from working-tree bytes when stale, missing, or
+  # corrupt. The index is a disposable cache; no query reads it yet (the full-text
+  # and reverse-link fast paths arrive in later directives). Defaults shown.
+  index:
+    enabled: true      # set false to disable the worker (dev/debug)
+    interval: 5m       # sweep cadence
+
 # Per-file write lock manager. Reads take no lock; each write holds a per-file
 # lock only across the check-and-write critical section. Defaults shown.
 filelock:

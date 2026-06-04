@@ -132,6 +132,23 @@ func (l LostFoundConfig) IsEnabled() bool {
 	return l.Enabled == nil || *l.Enabled
 }
 
+// IndexConfig controls the per-project derivative index repair worker (the
+// 2026-06-04 I1 directive): a periodic sweep that reconciles each project's
+// index.db with HEAD, rebuilding it wholesale from working-tree bytes when stale,
+// missing, or corrupt. Enabled is a pointer so an absent block defaults to true
+// while an explicit false is kept; Interval defaults to 5m (applied in
+// applyDefaults), mirroring the lost+found cadence. Set enabled:false to disable
+// for dev/debug.
+type IndexConfig struct {
+	Enabled  *bool    `yaml:"enabled"`
+	Interval Duration `yaml:"interval"`
+}
+
+// IsEnabled reports the effective enabled value (default true).
+func (i IndexConfig) IsEnabled() bool {
+	return i.Enabled == nil || *i.Enabled
+}
+
 // FileLockConfig configures the per-file lock manager (internal/storage/filelock).
 type FileLockConfig struct {
 	MaxLeaseDuration Duration `yaml:"max_lease_duration"` // default 5m
@@ -204,6 +221,7 @@ type Config struct {
 		BaseDir   string          `yaml:"base_dir"`
 		DriftScan DriftScanConfig `yaml:"drift_scan"`
 		LostFound LostFoundConfig `yaml:"lost_found"`
+		Index     IndexConfig     `yaml:"index"`
 	} `yaml:"storage"`
 	Services struct {
 		GoogleCloud struct {
@@ -270,6 +288,11 @@ func (c *Config) applyDefaults() {
 	// default). Enabled defaults to true via LostFoundConfig.IsEnabled.
 	if c.Storage.LostFound.Interval == 0 {
 		c.Storage.LostFound.Interval = Duration(5 * time.Minute)
+	}
+	// Index repair worker (I1): default to a 5-minute sweep interval, mirroring
+	// lost+found. Enabled defaults to true via IndexConfig.IsEnabled.
+	if c.Storage.Index.Interval == 0 {
+		c.Storage.Index.Interval = Duration(5 * time.Minute)
 	}
 }
 

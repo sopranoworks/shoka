@@ -141,6 +141,15 @@ func main() {
 		s.StartLostFoundSweep(ctx, cfg.Storage.LostFound.Interval.Std())
 	}
 
+	// Index repair worker (the 2026-06-04 I1 directive): the fourth periodic sweep,
+	// reconciling each project's derivative index.db with HEAD and rebuilding it
+	// from working-tree bytes when stale/missing/corrupt. Runs after StartupInit
+	// alongside the other sweeps; disabled via config. No query reads the index yet
+	// (the fast path is I2/I3) — this only keeps the substrate warm.
+	if cfg.Storage.Index.IsEnabled() {
+		s.StartIndexSweep(ctx, cfg.Storage.Index.Interval.Std())
+	}
+
 	// Optional Prometheus metrics endpoint: default off, loopback-only (mirrors
 	// the pprof endpoint's defaults).
 	if cfg.Metrics.Addr != "" {
