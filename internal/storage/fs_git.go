@@ -79,6 +79,12 @@ type FSGitStorage struct {
 	idxRebuildsStale      atomic.Int64
 	idxRebuildsRecreated  atomic.Int64
 
+	// Index-line class-B: index repair-sweep passes (the 2026-06-05 M2 directive).
+	// A plain atomic incremented once per reconcile pass, read on scrape via
+	// IndexSweepRuns(). Distinct from rebuilds: a pass that rebuilds nothing still
+	// counts (the metric shows the worker is alive and how often it reconciles).
+	idxSweepRuns atomic.Int64
+
 	// Catalog observability counters, surfaced through the metrics Source (§10).
 	catUpdateFailedWrite   atomic.Int64
 	catUpdateFailedDelete  atomic.Int64

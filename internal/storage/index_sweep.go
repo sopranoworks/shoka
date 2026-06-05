@@ -62,6 +62,11 @@ func (s *FSGitStorage) StartIndexSweep(ctx context.Context, interval time.Durati
 // reconcileAllIndexes waits for the WAL to drain (so HEAD has caught up to the
 // working tree before the marker is set), then reconciles every project.
 func (s *FSGitStorage) reconcileAllIndexes() {
+	// One sweep-run per pass (shoka_index_sweep_runs_total). Distinct from
+	// rebuilds: a pass that finds every index current still counts as a run. The
+	// fix_links kick drain is a separate select case and does not call this, so
+	// kicks never inflate the sweep-run count.
+	s.idxSweepRuns.Add(1)
 	s.WaitForWAL(2 * time.Minute)
 	projects, _ := s.discoverProjects() // leftovers are relocated post-startup, not swept here
 	for _, p := range projects {

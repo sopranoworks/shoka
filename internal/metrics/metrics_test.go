@@ -38,6 +38,12 @@ func (fakeSource) IndexCounters() (int64, int64, int64) { return 8, 5, 13 } // f
 func (fakeSource) IndexRebuildCounters() (int64, int64) { return 10, 3 }    // stale, recreated
 func (fakeSource) LazyRescanCount() int64               { return 11 }
 
+// Class-B index-line sources (the 2026-06-05 M2 directive).
+func (fakeSource) IndexSweepRuns() int64 { return 14 }
+func (fakeSource) IndexHealthStates() map[string]bool {
+	return map[string]bool{"shoka/maintenance": true, "rohrpost/dev": false}
+}
+
 // fakeNotifyDrops satisfies the NotifyDropSource bridge capability.
 type fakeNotifyDrops struct{ n int64 }
 
@@ -93,6 +99,12 @@ func TestMetrics_Exposition(t *testing.T) {
 	assert.Contains(t, out, `shoka_index_rebuilds_total{reason="stale"} 10`)
 	assert.Contains(t, out, `shoka_index_rebuilds_total{reason="recreated"} 3`)
 	assert.Contains(t, out, "shoka_lazy_rescans_total 11")
+
+	// Class-B index-line families (M2).
+	assert.Contains(t, out, "shoka_index_sweep_runs_total 14")
+	// Per-project index health: exactly the project's current health is emitted.
+	assert.Contains(t, out, `shoka_index_healthy{namespace="shoka",project="maintenance"} 1`)
+	assert.Contains(t, out, `shoka_index_healthy{namespace="rohrpost",project="dev"} 0`)
 
 	// With no bridge extra, the notify-drop family is absent and the endpoint
 	// still serves the rest.

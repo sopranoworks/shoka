@@ -173,6 +173,28 @@ func (s *FSGitStorage) IndexRebuildCounters() (stale, recreated int64) {
 	return s.idxRebuildsStale.Load(), s.idxRebuildsRecreated.Load()
 }
 
+// IndexSweepRuns returns the cumulative number of index reconcile passes the
+// repair sweep has run, for shoka_index_sweep_runs_total. It is distinct from the
+// rebuild counts: a pass that finds every project's index already current still
+// counts as a run (the metric shows the worker is alive and how often it reconciles).
+func (s *FSGitStorage) IndexSweepRuns() int64 { return s.idxSweepRuns.Load() }
+
+// IndexHealthStates returns each tracked project ("namespace/project") mapped to
+// whether its derivative index is currently healthy (open and marker == HEAD), for
+// the per-project shoka_index_healthy gauge. Projects are enumerated from AllStates
+// (the same source ProjectStates uses); health is read at scrape time via
+// IndexHealthy — a bbolt meta read plus a HEAD ref read per project, never a full
+// scan, never blocking on a repair. No state is stored.
+func (s *FSGitStorage) IndexHealthStates() map[string]bool {
+	states := s.AllStates()
+	out := make(map[string]bool, len(states))
+	for key := range states {
+		ns, project := splitProjectKeyLocal(key)
+		out[key] = s.IndexHealthy(ns, project)
+	}
+	return out
+}
+
 // removeIndexFile deletes a project's on-disk index DB and drops any registered
 // handle. Used by the repair sweep to discard a corrupt store before recreating
 // it. Best-effort; a missing file is not an error.

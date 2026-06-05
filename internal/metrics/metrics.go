@@ -36,6 +36,11 @@ type Source interface {
 	IndexCounters() (updateFailedWrite, updateFailedDelete, rebuilds int64)
 	IndexRebuildCounters() (stale, recreated int64) // reason-split rebuilds (I1)
 	LazyRescanCount() int64                         // D1/B-25 self-extinguishing cost
+
+	// Class-B wiring (the 2026-06-05 M2 directive): the index line — subsystems
+	// that had no counter before. All storage-reachable (no bridge).
+	IndexSweepRuns() int64              // index repair-sweep passes (I1)
+	IndexHealthStates() map[string]bool // "namespace/project" -> index healthy (I1)
 }
 
 // NotifyDropSource is the bridge capability for the UI manager's slow-subscriber
@@ -82,6 +87,10 @@ type collector struct {
 	indexRebuilds       *prometheus.Desc
 	lazyRescans         *prometheus.Desc
 	notifyDrops         *prometheus.Desc // emitted only when notifyDropSrc != nil
+
+	// Class-B index-line families (the 2026-06-05 M2 directive).
+	indexSweepRuns *prometheus.Desc
+	indexHealthy   *prometheus.Desc
 }
 
 func newCollector(src Source, extras ...any) *collector {
@@ -108,6 +117,9 @@ func newCollector(src Source, extras ...any) *collector {
 		indexRebuilds:       prometheus.NewDesc("shoka_index_rebuilds_total", "Repair-sweep index rebuilds, by reason.", []string{"reason"}, nil),
 		lazyRescans:         prometheus.NewDesc("shoka_lazy_rescans_total", "D1 lazy-rescan-on-corrupted-hit invocations (self-extinguishing cost).", nil, nil),
 		notifyDrops:         prometheus.NewDesc("shoka_notify_subscriber_drops_total", "Notify events dropped because a subscriber's buffer was full.", nil, nil),
+
+		indexSweepRuns: prometheus.NewDesc("shoka_index_sweep_runs_total", "Index repair-sweep reconcile passes (a pass that rebuilds nothing still counts).", nil, nil),
+		indexHealthy:   prometheus.NewDesc("shoka_index_healthy", "1 when a project's derivative index is open and current with HEAD, else 0.", []string{"namespace", "project"}, nil),
 	}
 
 	// Resolve optional bridge extras by capability. An extra that satisfies a
@@ -145,6 +157,8 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.indexRebuilds
 	ch <- c.lazyRescans
 	ch <- c.notifyDrops
+	ch <- c.indexSweepRuns
+	ch <- c.indexHealthy
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
@@ -209,6 +223,13 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	cnt(c.indexRebuilds, rebuildRecreated, "recreated")
 
 	cnt(c.lazyRescans, c.src.LazyRescanCount())
+
+	// Class-B index-line families (the 2026-06-05 M2 directive).
+	cnt(c.indexSweepRuns, c.src.IndexSweepRuns())
+	for key, healthy := range c.src.IndexHealthStates() {
+		ns, project := splitProjectKey(key)
+		ch <- prometheus.MustNewConstMetric(c.indexHealthy, prometheus.GaugeValue, boolToFloat(healthy), ns, project)
+	}
 
 	// Bridge extra: emitted only when a notify-drop source was supplied.
 	if c.notifyDropSrc != nil {
