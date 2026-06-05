@@ -137,6 +137,69 @@ Controlled by config `server.auth` (Source: `internal/config/config.go:23-30`;
     POST to `/mcp`, the optional GET stream, and the DELETE that ends the session.
     (The Streamable HTTP client must attach the header to all requests.)
 
+### 3.1 OAuth 2.1 authorization server (capability — not enabled by default)
+
+> **Capability, not a running deployment.** OAuth is **supported but not enabled
+> by default**; it is code-complete and not stood up. This subsection describes
+> what the server *can* do and the configuration an operator must supply — it
+> names config fields and protocol roles only, never an address, endpoint URL,
+> token, or secret. When OAuth is off, the bearer-token rules of § 3 apply
+> unchanged.
+
+When enabled, Shoka acts as **its own built-in OAuth 2.1 authorization server**
+protecting the MCP resource, so a client can obtain a bearer access token instead
+of being handed a static one.
+
+- **Flow:** OAuth 2.1 **authorization-code** with **PKCE (`S256`) mandatory**;
+  the `/token` exchange returns an access token and a **rotating** refresh token,
+  and binds the audience to this server's MCP resource per RFC 8707. (Source:
+  `internal/oauth/server.go:134-227,338-408,433-439`.)
+- **Discovery — by role, not by address:** the server publishes an RFC 9728
+  **Protected Resource Metadata** document and an RFC 8414 **Authorization Server
+  Metadata** document; the latter advertises the authorization and token endpoints
+  and declares `response_types_supported: ["code"]`,
+  `code_challenge_methods_supported: ["S256"]`, and
+  `client_id_metadata_document_supported: true`. When a request is unauthorized,
+  the `401`'s `WWW-Authenticate: Bearer` challenge carries the **`resource_metadata`**
+  parameter (RFC 9728 § 5.1) pointing the client at the metadata document. A client
+  discovers every endpoint from these documents — **the contract names the documents
+  by role and never a literal URL.** (Source: `internal/oauth/discovery.go:27-97`;
+  `internal/auth/auth.go:43-49,141-152`.)
+- **Client identity — Client ID Metadata Document (CIMD), not dynamic registration:**
+  there is **no dynamic client registration endpoint** (`registration_endpoint` is
+  deliberately omitted — do not look for one). Instead the client's `client_id`
+  **is an https URL to its own client-metadata document**; the server fetches that
+  document and only trusts it when its domain is on the
+  **`server.auth.oauth.trusted_client_metadata_domains`** allowlist — which is
+  **default-deny** (empty ⇒ no client may connect, so the operator must list the
+  connector's metadata domain). The allowlist is referenced as a **config field
+  name**, never by its contents. (Source: `internal/oauth/discovery.go:9-10,37-38,84,96`;
+  `internal/oauth/cimd.go`; `internal/config/config.go:84-89`.)
+- **Consent:** approval at `/authorize` is gated by a server-side consent step
+  bound to the **`server.auth.oauth.consent_credential`** field (an empty value
+  denies all consent — a safe default). This is the single-operator seam; it is
+  named, never valued. (Source: `internal/oauth/server.go:41-63,189-222`;
+  `internal/config/config.go:78-83`.)
+- **Enablement prerequisites (operator-supplied, names only):** turning OAuth on
+  requires a **TLS-terminating reverse proxy** in front of Shoka,
+  **`server.mcp.external_url`** set to the public URL (the field name — the URL
+  value lives only in config), the **`server.auth.oauth.trusted_client_metadata_domains`**
+  allowlist populated, and **`server.auth.oauth.consent_credential`** set. The
+  enable switch itself is **`server.auth.oauth.enabled`**; token lifetimes are
+  `access_token_ttl` / `refresh_token_ttl` / `authorization_code_ttl`. (Source:
+  `internal/config/config.go:76-94`; `internal/oauth/server.go:86-99`.)
+- **What an MCP client does:**
+  - **OAuth enabled** — discover the AS from the metadata documents (above), run the
+    standard authorization-code + PKCE-`S256` handshake to obtain an access token,
+    then present it as `Authorization: Bearer <access token>` on every MCP request.
+    A request without a valid OAuth access token is refused with `401` and the
+    `resource_metadata` challenge. (Source: `internal/auth/auth.go:109-122`.)
+  - **OAuth disabled** — the OAuth token check is not installed and the **§ 3
+    static-bearer behaviour applies verbatim**: `server.auth.enabled: false` ⇒ no
+    auth; `server.auth.enabled: true` ⇒ `Authorization: Bearer <static token>` on
+    every request. (Source: `internal/auth/auth.go:85-122` — the OAuth validator
+    *supersedes* the static-bearer check only when injected; nil ⇒ prior behaviour.)
+
 ---
 
 ## 4. Tool catalog
@@ -577,10 +640,37 @@ storage redesign).
 - **History is preserved indefinitely.** Past content of deleted or overwritten
   files is retrievable with `read_file_at_version` against a commit from
   `get_history`.
-- **Metrics:** an optional Prometheus endpoint (off by default, loopback-only;
-  config `metrics.addr`) exposes WAL depth, write-disabled state, commit
-  counts, file-lock leases, and per-project state. The pprof endpoint
-  (`--profile-addr`) follows the same defaults.
+
+### 7.1 Observability — the `/metrics` endpoint
+
+An **optional Prometheus endpoint** for operators. It adds **no wire-visible
+behaviour** to the MCP protocol — it is a separate, out-of-band scrape surface.
+
+- **Off by default, loopback-only:** the endpoint is unregistered unless
+  `metrics.addr` is set; a non-empty `metrics.addr` is forced to a loopback host
+  (the pprof endpoint, `--profile-addr`, follows the same defaults). It is
+  pull-based Prometheus text exposition over a private registry (no default
+  Go/process collectors), so scraping it is opt-in and not exposed publicly.
+- **Coverage — 33 metric families across five subsystem groups:** **storage/WAL**
+  (WAL depth/bytes/age, write-disabled state, background-commit counts, file-lock
+  leases, per-project state, catalog and quarantine counters), the derivative
+  **index** (index health, repair-sweep rebuilds, content-search fast-path
+  outcomes, fix-links rewrites/conflicts), **lost+found** (sweep passes, per-file
+  dispose/move actions, skipped-project states), **OAuth** (active connections,
+  tokens issued, revocations — present only when OAuth is enabled), and **notify**
+  (slow-subscriber drops). The **live endpoint is the source of truth** for the
+  exact family list; this contract names the groups, not all 33 families.
+- **Privacy guarantee (contract-level):** **no metric label carries a secret,
+  token, id, path, or domain.** Labels are bounded enums (e.g. `result`, `reason`,
+  `operation`, `outcome`, `action`, `state`, `source`) and per-project dimensions
+  (`namespace`, `project`) only. The OAuth families in particular expose **counts
+  and one gauge only** — never a series id, token, refresh, code, PKCE value,
+  principal, or client domain (the source is type-constrained so a secret cannot
+  reach a label by construction). Scraping `/metrics` therefore cannot leak
+  document content, identities, or credentials.
+
+(Source: `internal/metrics/metrics.go:56-84,145-360`; `internal/config/config.go:186-191`;
+`cmd/server/main.go:269-274,524-543`.)
 
 ---
 
