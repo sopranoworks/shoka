@@ -47,7 +47,11 @@ func (s *FSGitStorage) enqueueFixLinks(namespace, projectName, src, dst string) 
 	}
 	select {
 	case s.fixLinksKicks <- fixLinksKick{namespace: namespace, project: projectName, src: src, dst: dst}:
+		s.fixLinksEnqueued.Add(1)
 	default:
+		// The dropped count is the key health signal: a saturated kick buffer means
+		// link repairs are being lost (there is no periodic backstop).
+		s.fixLinksDropped.Add(1)
 		s.log().Warn("fix_links: kick channel full, dropping post-move kick (a later move or manual reindex recovers)",
 			"project", projectKey(namespace, projectName), "src", src, "dst", dst)
 	}
@@ -88,9 +92,11 @@ func (s *FSGitStorage) fixLinks(ctx context.Context, namespace, projectName, src
 func (s *FSGitStorage) findReferrersForFix(namespace, projectName, projectPath, src, dst string) ([]string, error) {
 	if s.IndexHealthy(namespace, projectName) {
 		if ix := s.indexForRead(namespace, projectName); ix != nil {
+			s.fixLinksLookupIndex.Add(1)
 			return ix.Referrers(src)
 		}
 	}
+	s.fixLinksLookupTruthscan.Add(1)
 	return s.discoverReferrers(projectPath, src, dst)
 }
 
@@ -120,14 +126,42 @@ func (s *FSGitStorage) fixLinksRewriteReferrer(ctx context.Context, namespace, p
 			return out, nil
 		})
 	if werr == nil {
+		s.fixLinksRewrites.Add(1)
 		return
 	}
 	var conflict *VersionConflictError
 	if errors.As(werr, &conflict) {
 		// Concurrent edit: do not retry tightly, do not force. A later kick (or a
 		// future move) reconciles against the then-current bytes. Never clobbers.
+		s.fixLinksConflicts.Add(1)
 		return
 	}
 	s.log().Warn("fix_links: rewrite referrer failed",
 		"project", projectKey(namespace, projectName), "referrer", ref, "src", src, "dst", dst, "err", werr)
+}
+
+// FixLinksKickStats returns the cumulative count of post-move fix_links kicks that
+// were enqueued versus dropped on a full channel, for
+// shoka_fixlinks_kicks_total{outcome}. The dropped count is the key health signal:
+// a saturated kick buffer means link repairs are being lost. (The enqueue runs on
+// the Move/request path — one atomic per move; the drain and the other three
+// fix_links counters run on the sweep goroutine.)
+func (s *FSGitStorage) FixLinksKickStats() (enqueued, dropped int64) {
+	return s.fixLinksEnqueued.Load(), s.fixLinksDropped.Load()
+}
+
+// FixLinksWriteStats returns the cumulative count of successful referrer rewrites
+// and if_match conflict back-offs the fix_links worker performed, for
+// shoka_fixlinks_rewrites_total and shoka_fixlinks_conflicts_total. A conflict is a
+// rewrite that hit a concurrent edit and backed off (never clobbering it).
+func (s *FSGitStorage) FixLinksWriteStats() (rewrites, conflicts int64) {
+	return s.fixLinksRewrites.Load(), s.fixLinksConflicts.Load()
+}
+
+// FixLinksReferrerLookups returns how many fix_links referrer lookups were answered
+// by the reverse-link index versus the discoverReferrers truth-scan, for
+// shoka_fixlinks_referrer_lookups_total{source}. A high truthscan share means the
+// index was frequently unhealthy when a move's repair ran (the slow correct path).
+func (s *FSGitStorage) FixLinksReferrerLookups() (index, truthscan int64) {
+	return s.fixLinksLookupIndex.Load(), s.fixLinksLookupTruthscan.Load()
 }

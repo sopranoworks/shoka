@@ -167,6 +167,12 @@ func TestFixLinks_ConflictDoesNotClobberConcurrentEdit(t *testing.T) {
 
 	assert.Equal(t, concurrent, readBody(t, s, "ns", "proj", "ref.md"),
 		"a concurrent edit must survive: fix_links backs off on if_match conflict, never clobbers")
+
+	// The if_match back-off is counted (shoka_fixlinks_conflicts_total, M2) and the
+	// clobbered write is NOT counted as a rewrite.
+	rewrites, conflicts := s.FixLinksWriteStats()
+	assert.Equal(t, int64(1), conflicts, "the if_match back-off must be counted as a conflict")
+	assert.Equal(t, int64(0), rewrites, "a backed-off rewrite is not a successful rewrite")
 }
 
 // Termination on circular references: A links B and B links A; both are moved and

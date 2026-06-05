@@ -79,6 +79,74 @@ func TestSearchFastpathStats_CountsContentQueriesByOutcome(t *testing.T) {
 	assert.Equal(t, int64(2), fb)
 }
 
+func TestFixLinksKickStats_EnqueuedAndDropped(t *testing.T) {
+	s, _ := newStore(t, Options{})
+	require.NoError(t, s.CreateProject("ns", "proj"))
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "src.md", "body", nil)
+	require.NoError(t, err)
+
+	// A successful move enqueues exactly one kick.
+	_, _, err = s.Move(context.Background(), "sess", "ns", "proj", "src.md", "dst.md", nil)
+	require.NoError(t, err)
+	enq, drop := s.FixLinksKickStats()
+	assert.Equal(t, int64(1), enq)
+	assert.Equal(t, int64(0), drop)
+
+	// Saturate the kick channel; the next move's kick is dropped (the move still
+	// succeeds — it stays a pure rename). The dropped count is the health signal.
+	<-s.fixLinksKicks // drain the one from the first move
+	for i := 0; i < cap(s.fixLinksKicks); i++ {
+		s.fixLinksKicks <- fixLinksKick{}
+	}
+	_, _, err = s.Move(context.Background(), "sess", "ns", "proj", "dst.md", "dst2.md", nil)
+	require.NoError(t, err)
+	enq, drop = s.FixLinksKickStats()
+	assert.Equal(t, int64(1), enq, "the full-channel send did not succeed, so enqueued is unchanged")
+	assert.Equal(t, int64(1), drop)
+}
+
+func TestFixLinksRepairStats_RewritesAndIndexLookup(t *testing.T) {
+	s, _ := newStore(t, Options{})
+	require.NoError(t, s.CreateProject("ns", "proj"))
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "ref.md", "see [t](old.md)", nil)
+	require.NoError(t, err)
+	_, err = s.Write(context.Background(), "sess", "ns", "proj", "old.md", "# Old", nil)
+	require.NoError(t, err)
+	_, _, err = s.Move(context.Background(), "sess", "ns", "proj", "old.md", "new.md", nil)
+	require.NoError(t, err)
+	makeIndexHealthy(t, s, "ns", "proj")
+
+	s.fixLinks(context.Background(), "ns", "proj", "old.md", "new.md")
+
+	rewrites, conflicts := s.FixLinksWriteStats()
+	assert.Equal(t, int64(1), rewrites, "the one referrer was rewritten")
+	assert.Equal(t, int64(0), conflicts)
+	idx, truth := s.FixLinksReferrerLookups()
+	assert.Equal(t, int64(1), idx, "a healthy index answered the referrer lookup")
+	assert.Equal(t, int64(0), truth)
+}
+
+func TestFixLinksRepairStats_TruthscanLookupWhenUnhealthy(t *testing.T) {
+	s, _ := newStore(t, Options{})
+	require.NoError(t, s.CreateProject("ns", "proj"))
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "ref.md", "see [t](old.md)", nil)
+	require.NoError(t, err)
+	_, err = s.Write(context.Background(), "sess", "ns", "proj", "old.md", "# Old", nil)
+	require.NoError(t, err)
+	_, _, err = s.Move(context.Background(), "sess", "ns", "proj", "old.md", "new.md", nil)
+	require.NoError(t, err)
+
+	// Index never reconciled -> unhealthy -> referrers come from the truth-scan.
+	require.False(t, s.IndexHealthy("ns", "proj"))
+	s.fixLinks(context.Background(), "ns", "proj", "old.md", "new.md")
+
+	rewrites, _ := s.FixLinksWriteStats()
+	assert.Equal(t, int64(1), rewrites, "the referrer is still repaired via truth-scan")
+	idx, truth := s.FixLinksReferrerLookups()
+	assert.Equal(t, int64(0), idx)
+	assert.Equal(t, int64(1), truth, "an unhealthy index falls to the truth-scan lookup")
+}
+
 func TestIndexHealthStates_ReflectsPerProjectHealth(t *testing.T) {
 	s, _ := newStore(t, Options{})
 	require.NoError(t, s.CreateProject("ns", "proj"))

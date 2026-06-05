@@ -94,6 +94,21 @@ type FSGitStorage struct {
 	searchFastpath atomic.Int64
 	searchFallback atomic.Int64
 
+	// I3 fix_links worker counters (the 2026-06-05 M2 directive). enqueued/dropped
+	// split the post-move kick at enqueueFixLinks (a full cap-256 channel drops —
+	// the dropped count is the key health signal that link repairs are being lost);
+	// this one pair is incremented on the Move (request) path, one atomic per move.
+	// The remaining four run on the sweep goroutine that drains the kick: rewrites
+	// (successful if_match referrer rewrites), conflicts (VersionConflictError
+	// back-offs), and lookupIndex/lookupTruthscan (referrers answered by the index
+	// vs the discoverReferrers truth-scan). Read via FixLinks* Source methods.
+	fixLinksEnqueued        atomic.Int64
+	fixLinksDropped         atomic.Int64
+	fixLinksRewrites        atomic.Int64
+	fixLinksConflicts       atomic.Int64
+	fixLinksLookupIndex     atomic.Int64
+	fixLinksLookupTruthscan atomic.Int64
+
 	// Catalog observability counters, surfaced through the metrics Source (§10).
 	catUpdateFailedWrite   atomic.Int64
 	catUpdateFailedDelete  atomic.Int64

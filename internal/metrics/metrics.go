@@ -39,9 +39,12 @@ type Source interface {
 
 	// Class-B wiring (the 2026-06-05 M2 directive): the index line — subsystems
 	// that had no counter before. All storage-reachable (no bridge).
-	IndexSweepRuns() int64                           // index repair-sweep passes (I1)
-	IndexHealthStates() map[string]bool              // "namespace/project" -> index healthy (I1)
-	SearchFastpathStats() (fastpath, fallback int64) // I2 content-search engage/fallback
+	IndexSweepRuns() int64                             // index repair-sweep passes (I1)
+	IndexHealthStates() map[string]bool                // "namespace/project" -> index healthy (I1)
+	SearchFastpathStats() (fastpath, fallback int64)   // I2 content-search engage/fallback
+	FixLinksKickStats() (enqueued, dropped int64)      // I3 post-move kick enqueue vs full-channel drop
+	FixLinksWriteStats() (rewrites, conflicts int64)   // I3 referrer rewrites vs if_match conflicts
+	FixLinksReferrerLookups() (index, truthscan int64) // I3 referrer source: index vs truth-scan
 }
 
 // NotifyDropSource is the bridge capability for the UI manager's slow-subscriber
@@ -90,9 +93,13 @@ type collector struct {
 	notifyDrops         *prometheus.Desc // emitted only when notifyDropSrc != nil
 
 	// Class-B index-line families (the 2026-06-05 M2 directive).
-	indexSweepRuns *prometheus.Desc
-	indexHealthy   *prometheus.Desc
-	searchFastpath *prometheus.Desc
+	indexSweepRuns         *prometheus.Desc
+	indexHealthy           *prometheus.Desc
+	searchFastpath         *prometheus.Desc
+	fixlinksKicks          *prometheus.Desc
+	fixlinksRewrites       *prometheus.Desc
+	fixlinksConflicts      *prometheus.Desc
+	fixlinksReferrerLookup *prometheus.Desc
 }
 
 func newCollector(src Source, extras ...any) *collector {
@@ -123,6 +130,11 @@ func newCollector(src Source, extras ...any) *collector {
 		indexSweepRuns: prometheus.NewDesc("shoka_index_sweep_runs_total", "Index repair-sweep reconcile passes (a pass that rebuilds nothing still counts).", nil, nil),
 		indexHealthy:   prometheus.NewDesc("shoka_index_healthy", "1 when a project's derivative index is open and current with HEAD, else 0.", []string{"namespace", "project"}, nil),
 		searchFastpath: prometheus.NewDesc("shoka_search_fastpath_total", "Content-search queries by index outcome: fastpath narrowed reads, fallback read every file.", []string{"outcome"}, nil),
+
+		fixlinksKicks:          prometheus.NewDesc("shoka_fixlinks_kicks_total", "Post-move fix_links kicks by outcome: enqueued, or dropped on a full channel (repairs lost).", []string{"outcome"}, nil),
+		fixlinksRewrites:       prometheus.NewDesc("shoka_fixlinks_rewrites_total", "Successful fix_links referrer rewrites (if_match writes that repaired a link).", nil, nil),
+		fixlinksConflicts:      prometheus.NewDesc("shoka_fixlinks_conflicts_total", "fix_links rewrites that hit an if_match conflict and backed off (never clobbered).", nil, nil),
+		fixlinksReferrerLookup: prometheus.NewDesc("shoka_fixlinks_referrer_lookups_total", "fix_links referrer lookups by source: index (healthy) or truthscan (fallback).", []string{"source"}, nil),
 	}
 
 	// Resolve optional bridge extras by capability. An extra that satisfies a
@@ -163,6 +175,10 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.indexSweepRuns
 	ch <- c.indexHealthy
 	ch <- c.searchFastpath
+	ch <- c.fixlinksKicks
+	ch <- c.fixlinksRewrites
+	ch <- c.fixlinksConflicts
+	ch <- c.fixlinksReferrerLookup
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
@@ -237,6 +253,16 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	searchFast, searchFall := c.src.SearchFastpathStats()
 	cnt(c.searchFastpath, searchFast, "fastpath")
 	cnt(c.searchFastpath, searchFall, "fallback")
+
+	fixEnqueued, fixDropped := c.src.FixLinksKickStats()
+	cnt(c.fixlinksKicks, fixEnqueued, "enqueued")
+	cnt(c.fixlinksKicks, fixDropped, "dropped")
+	fixRewrites, fixConflicts := c.src.FixLinksWriteStats()
+	cnt(c.fixlinksRewrites, fixRewrites)
+	cnt(c.fixlinksConflicts, fixConflicts)
+	fixLookupIndex, fixLookupTruthscan := c.src.FixLinksReferrerLookups()
+	cnt(c.fixlinksReferrerLookup, fixLookupIndex, "index")
+	cnt(c.fixlinksReferrerLookup, fixLookupTruthscan, "truthscan")
 
 	// Bridge extra: emitted only when a notify-drop source was supplied.
 	if c.notifyDropSrc != nil {
