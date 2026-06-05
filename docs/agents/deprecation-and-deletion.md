@@ -38,7 +38,8 @@ disk, and `delete_file` is not involved.
 Before any `delete_file` call, present the user a short summary containing:
 
 - the file path (and namespace/project),
-- its **current version** hash (from `read_file`/`list_files include_versions`),
+- its **current `etag`** (from `read_file`, or from `list_files include_summaries`
+  where each summary carries the `etag`),
 - a reminder that **Git history retains the content** and it can be restored.
 
 Proceed only after the user confirms. (Deletion is a `git rm` + commit; see

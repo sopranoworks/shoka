@@ -388,7 +388,7 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "move_file",
-		Description: "Rename or move a file within a project as a single atomic Git commit (history-preserving), rewriting inbound internal Markdown links so the project stays consistent",
+		Description: "Rename or move a file within a project as a single atomic Git commit: a pure, history-preserving rename. It does not rewrite Markdown links that point at the file (links_rewritten is always 0)",
 	}, tools.LoggedTool(logger, "move_file", tools.MoveFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
