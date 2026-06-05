@@ -100,6 +100,9 @@ func TestStartup_GitlessDirectoryNotRegistered(t *testing.T) {
 
 	s := freshStore(t, dir)
 	s.StartupInit(context.Background())
+	// Await the non-blocking relocation goroutine before the test returns, so
+	// t.TempDir() cleanup never races a mid-deposit lost+found dir (B-42).
+	s.relocWG.Wait()
 
 	assert.Equal(t, StateHealthy, s.State("ns", "p1"), "the real project is unaffected")
 	_, registered := s.AllStates()["ns/p2"]

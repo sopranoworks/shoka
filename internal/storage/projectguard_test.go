@@ -83,6 +83,9 @@ func TestProjectGuard_CatalogInitSkipsGitlessLeftover(t *testing.T) {
 
 	s2 := freshStore(t, dir)
 	s2.StartupInit(context.Background())
+	// Await the non-blocking relocation goroutine before the test returns, so
+	// t.TempDir() cleanup never races a mid-deposit lost+found dir (B-42).
+	s2.relocWG.Wait()
 
 	// The real project is registered and healthy.
 	assert.Equal(t, StateHealthy, s2.State("shoka", "maintenance"))

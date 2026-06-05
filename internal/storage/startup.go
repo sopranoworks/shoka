@@ -153,7 +153,14 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 	// path callers gate listeners on) performs no relocation. It is idempotent-safe:
 	// an interrupted relocation is simply retried on the next boot.
 	if len(leftovers) > 0 {
-		go s.relocateLeftovers(leftovers, time.Now())
+		// relocWG lets Close (and in-package tests) await this goroutine's
+		// completion (B-42). The wait happens off this synchronous body — never
+		// here — so the readiness gate's latency stays free of the tree move.
+		s.relocWG.Add(1)
+		go func() {
+			defer s.relocWG.Done()
+			s.relocateLeftovers(leftovers, time.Now())
+		}()
 	}
 }
 

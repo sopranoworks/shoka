@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/shoka/mcp-server/internal/notify"
 )
@@ -199,14 +198,13 @@ func TestStartupInit_RelocatesLeftover(t *testing.T) {
 		t.Fatalf("leftover ns/stray was adopted and marked dangerous (state=%v); it must be relocated, not registered", st)
 	}
 
-	// Bounded poll for the asynchronous relocation to complete (signalled by the
-	// quarantine NOTIFY, emitted last, after depositTree fully returns).
-	deadline := time.Now().Add(3 * time.Second)
-	for quarantineEventFor(center, "ns", "stray") == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the leftover to be relocated to lost+found")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Deterministically await the non-blocking relocation goroutine (B-42): once
+	// relocWG drains, depositTree has fully returned and the quarantine NOTIFY has
+	// been emitted. Replaces the former bounded poll — no timing, no t.TempDir()
+	// teardown race.
+	s.relocWG.Wait()
+	if quarantineEventFor(center, "ns", "stray") == nil {
+		t.Fatal("leftover was not relocated to lost+found (no quarantine NOTIFY)")
 	}
 
 	// Source tree and .db are gone after relocation.

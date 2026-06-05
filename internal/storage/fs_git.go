@@ -109,6 +109,16 @@ type FSGitStorage struct {
 
 	changeHandler ChangeHandler
 	logger        *slog.Logger
+
+	// relocWG tracks the non-blocking leftover-relocation goroutine StartupInit
+	// spawns (D4 / B-38.1). It is deliberately NOT awaited on the synchronous
+	// startup gate — that would undo the D4 §4 property (listener-startup latency
+	// must not include a whole-tree move). It is awaited only by Close (clean
+	// shutdown: an object awaits its own in-flight goroutine before tearing down)
+	// and by in-package tests, which use it to wait for the relocation deposit to
+	// finish before t.TempDir() cleanup runs (B-42 — closes the teardown race
+	// where RemoveAll caught a mid-deposit lost+found directory non-empty).
+	relocWG sync.WaitGroup
 }
 
 // Options carries the storage-redesign tunables (§12). Zero values take the
@@ -261,6 +271,12 @@ func withIdentityFallback(d identity.Defaults) identity.Defaults {
 
 // Close stops the worker pool and lock reaper. WAL files on disk are preserved.
 func (s *FSGitStorage) Close() error {
+	// Await the non-blocking leftover-relocation goroutine (B-42) before tearing
+	// anything down: an object's Close should not return while a goroutine it
+	// spawned is still depositing into lost+found. This is the shutdown side of
+	// relocWG — production gains a clean shutdown (it rides cmd/server/main.go's
+	// existing `defer s.Close()`); the startup gate is unaffected.
+	s.relocWG.Wait()
 	if s.pool != nil {
 		_ = s.pool.Shutdown(30 * time.Second)
 	}
