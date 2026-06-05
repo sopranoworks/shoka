@@ -19,8 +19,34 @@ The `--config` flag defaults to `shoka.yaml`. On startup Shoka creates
 
 A devcontainer is provided at `.devcontainer/` (base image
 `mcr.microsoft.com/devcontainers/go:1-bookworm`; Go's toolchain management fetches
-the exact patch from `go.mod` at build time). Inside it, `go build ./...`,
-`go vet ./...`, and `go test ./...` all pass. (Source: `.devcontainer/Dockerfile`.)
+the exact patch from `go.mod` at build time). `go build ./...`, `go vet ./...`,
+and `go test ./...` are expected to pass inside it; the suite is currently
+verified on the host, while the devcontainer test leg has not yet been run on a
+Docker-capable environment (maintenance backlog B-12 remains open). (Source:
+`.devcontainer/Dockerfile`.)
+
+## Connecting clients
+
+Shoka serves MCP over **Streamable HTTP** at the `/mcp` path of the
+`server.mcp.listen` address. How a client registers depends on whether it speaks
+Streamable HTTP directly:
+
+- **Claude Code** (CLI) registers Shoka directly:
+
+  ```sh
+  claude mcp add --transport http shoka http://localhost:8081/mcp
+  ```
+
+- **A non-CLI client such as Claude Desktop**, which cannot add a Streamable-HTTP
+  server directly, connects through the **`mcp-remote`** bridge. Add an
+  `mcpServers` entry to the client's config (`claude_desktop_config.json`) that
+  runs `npx mcp-remote http://localhost:8081/mcp` — a direct
+  `{"type": "http", "url": ...}` entry is rejected by such clients, but routing
+  through `mcp-remote` works.
+
+The `http://localhost:8081/mcp` shown is a **placeholder** matching
+`shoka.example.yaml`'s default `server.mcp.listen` (`:8081`); substitute your own
+address. (Source: maintenance backlog B-01; `shoka.example.yaml`.)
 
 ## Configuration reference
 
