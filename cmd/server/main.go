@@ -408,7 +408,7 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "read_summary",
-		Description: "Get a context-efficient summary of a Markdown file (frontmatter, first heading, short excerpt, size, version) without its full body",
+		Description: "Get a context-efficient summary of a Markdown file (frontmatter, first heading, short excerpt, size, etag, modified_at) without its full body",
 	}, tools.LoggedTool(logger, "read_summary", tools.ReadSummaryHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
