@@ -153,12 +153,24 @@ func (s *FSGitStorage) IndexHealthy(namespace, projectName string) bool {
 	return marker == head
 }
 
-// IndexCounters returns the index observability counters, for a future metrics
-// Source (no caller wires them in I1).
+// IndexCounters returns the index observability counters. updateFailedWrite /
+// updateFailedDelete feed shoka_index_update_failed_total{operation}; rebuilds is
+// the aggregate repair-sweep rebuild total (the sum of the reason-split counts —
+// see IndexRebuildCounters for the per-reason values the metric exports).
 func (s *FSGitStorage) IndexCounters() (updateFailedWrite, updateFailedDelete, rebuilds int64) {
 	return s.idxUpdateFailedWrite.Load(),
 		s.idxUpdateFailedDelete.Load(),
-		s.idxRebuilds.Load()
+		s.idxRebuildsStale.Load() + s.idxRebuildsRecreated.Load()
+}
+
+// IndexRebuildCounters returns the repair-sweep rebuild counts split by reason,
+// for shoka_index_rebuilds_total{reason}. "stale" is a marker-mismatch rebuild
+// of a still-usable index handle; "recreated" is a rebuild after the handle was
+// nil (the store was missing or corrupt and had to be discarded and recreated) —
+// the index code does not distinguish missing from corrupt, so the two collapse
+// to a single "recreated" reason here.
+func (s *FSGitStorage) IndexRebuildCounters() (stale, recreated int64) {
+	return s.idxRebuildsStale.Load(), s.idxRebuildsRecreated.Load()
 }
 
 // removeIndexFile deletes a project's on-disk index DB and drops any registered

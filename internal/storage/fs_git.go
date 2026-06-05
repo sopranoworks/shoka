@@ -70,10 +70,14 @@ type FSGitStorage struct {
 	fixLinksKicks chan fixLinksKick
 
 	// Index observability counters: best-effort incremental-update failures and
-	// repair-sweep rebuilds. Surfaced via IndexCounters().
+	// repair-sweep rebuilds. Update failures are surfaced via IndexCounters();
+	// rebuilds are split by reason (stale marker vs recreated nil-handle) and
+	// surfaced reason-labelled via IndexRebuildCounters(). IndexCounters() still
+	// returns their sum as the rebuild total for callers that want the aggregate.
 	idxUpdateFailedWrite  atomic.Int64
 	idxUpdateFailedDelete atomic.Int64
-	idxRebuilds           atomic.Int64
+	idxRebuildsStale      atomic.Int64
+	idxRebuildsRecreated  atomic.Int64
 
 	// Catalog observability counters, surfaced through the metrics Source (§10).
 	catUpdateFailedWrite   atomic.Int64
@@ -931,6 +935,16 @@ func (s *FSGitStorage) WorkerStats() walworker.Stats { return s.pool.Stats() }
 func (s *FSGitStorage) CommitStats() (success, failure int64) {
 	st := s.pool.Stats()
 	return st.CommitsTotal, st.CommitsFailed
+}
+
+// QuarantineStats returns the cumulative count of WAL entries quarantined to
+// lost+found (and removed from the WAL) and the count of quarantine attempts
+// whose deposit failed, for the shoka_wal_quarantined_total /
+// shoka_wal_quarantine_failed_total metrics. It reads the same pool stats as
+// CommitStats; no walworker behaviour changes.
+func (s *FSGitStorage) QuarantineStats() (quarantined, failed int64) {
+	st := s.pool.Stats()
+	return st.QuarantinedTotal, st.QuarantineFailed
 }
 
 // ProjectStates returns each tracked project ("namespace/project") mapped to its

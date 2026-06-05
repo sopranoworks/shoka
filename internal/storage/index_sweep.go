@@ -91,11 +91,14 @@ func (s *FSGitStorage) reconcileIndex(namespace, projectName string) {
 		if merr == nil && marker == head {
 			return // up to date — the cheap no-op fast check
 		}
-		s.rebuildIndexInto(namespace, projectName, projectPath, head, ix)
+		// A usable handle whose marker lags HEAD: a stale rebuild.
+		s.rebuildIndexInto(namespace, projectName, projectPath, head, ix, rebuildStale)
 		return
 	}
 
 	// Missing or corrupt: discard whatever is on disk, recreate empty, rebuild.
+	// indexForRead returns nil for both missing and corrupt, so these collapse to
+	// the single "recreated" reason — the index code cannot tell them apart today.
 	s.removeIndexFile(namespace, projectName)
 	ix, cerr := index.Create(s.indexPath(namespace, projectName), namespace, projectName)
 	if cerr != nil {
@@ -104,15 +107,25 @@ func (s *FSGitStorage) reconcileIndex(namespace, projectName string) {
 		return
 	}
 	s.registerIndex(namespace, projectName, ix)
-	s.rebuildIndexInto(namespace, projectName, projectPath, head, ix)
+	s.rebuildIndexInto(namespace, projectName, projectPath, head, ix, rebuildRecreated)
 }
+
+// indexRebuildReason labels a repair-sweep rebuild for the
+// shoka_index_rebuilds_total{reason} metric. It reflects the branch the rebuild
+// was reached through, which is the only reason distinction the index code makes.
+type indexRebuildReason int
+
+const (
+	rebuildStale     indexRebuildReason = iota // usable handle, marker lagged HEAD
+	rebuildRecreated                           // nil handle (missing or corrupt), store recreated
+)
 
 // rebuildIndexInto rebuilds the forward map wholesale from working-tree bytes and
 // advances the marker to head, atomically (one bbolt transaction via ReplaceAll).
 // workingTreeIndexRecords walks the same managed-file corpus as the catalog/drift
 // (the shared derivativeWalkSkip* predicates) and SearchFiles, so the rebuilt index
 // reflects exactly the set the fast path's fallback would scan.
-func (s *FSGitStorage) rebuildIndexInto(namespace, projectName, projectPath, head string, ix *index.Index) {
+func (s *FSGitStorage) rebuildIndexInto(namespace, projectName, projectPath, head string, ix *index.Index, reason indexRebuildReason) {
 	records, werr := workingTreeIndexRecords(projectPath)
 	if werr != nil {
 		s.log().Error("index reconcile: walk working tree failed",
@@ -124,7 +137,12 @@ func (s *FSGitStorage) rebuildIndexInto(namespace, projectName, projectPath, hea
 			"project", projectKey(namespace, projectName), "error", rerr)
 		return
 	}
-	s.idxRebuilds.Add(1)
+	switch reason {
+	case rebuildRecreated:
+		s.idxRebuildsRecreated.Add(1)
+	default:
+		s.idxRebuildsStale.Add(1)
+	}
 }
 
 // workingTreeIndexRecords walks a project's working tree and derives the full
