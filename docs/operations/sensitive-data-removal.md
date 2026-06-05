@@ -19,16 +19,21 @@ committed and must not remain recoverable. For ordinary removal of a current fil
 
 ## Why this is not an MCP tool
 
-History rewriting is deliberately **not** exposed through MCP. It is destructive in
-ways that break Shoka's core contract:
+History rewriting is deliberately **not** exposed through MCP. It is a repository-wide,
+irreversible operation that falls outside Shoka's per-document CRUD contract:
 
-- It **invalidates every cached `expected_version`** — version hashes change for
-  rewritten commits, so every client holding a hash gets spurious conflicts
-  (optimistic locking is built on commit hashes; see
-  `docs/contracts/mcp-v1.md` § Optimistic locking).
-- It **breaks every existing clone** — collaborators and backups must re-clone.
+- It **rewrites shared Git history** — commit hashes change and **every existing
+  clone, backup, and mirror is invalidated**; collaborators must re-clone. This is
+  not a per-document edit.
 - It requires human judgment (which commits, which paths, which replacement
   text) that should not be delegated to an automated client.
+
+Note that this does **not** disturb optimistic locking. The lock token is a file's
+`etag` — the SHA-256 of its **content** — not a commit hash (see
+`docs/contracts/mcp-v1.md` § Optimistic locking). A history rewrite changes commit
+hashes but not file content, so cached etags remain valid. The only stale references
+are cached **commit hashes** used for historical reads (`read_file_at_version`,
+`get_history`), which point at commits that no longer exist.
 
 Agents must **not** attempt history rewriting through `bash` or any other channel
 (see `docs/agents/deprecation-and-deletion.md`).
@@ -46,21 +51,25 @@ tools apply.
    `git filter-branch` (legacy) per its documented procedure. This document does
    not reproduce those tools' manuals; follow upstream documentation.
 3. **Restart Shoka.**
-4. **Notify external clients.** Any client holding cached version hashes
-   (Orchestrator, Cloud Run workers, an open window) must discard them: their
-   `expected_version` values now refer to commits that no longer exist. Have them
-   re-`read_file` to obtain fresh versions.
+4. **Refresh cached commit references.** Optimistic-locking tokens are unaffected —
+   an `etag` is a content hash and survives the rewrite. But any client holding a
+   **commit hash** for historical reads (`read_file_at_version`, `get_history`) —
+   Orchestrator, Cloud Run workers, an open window — now references a commit that no
+   longer exists; have it obtain fresh hashes via `get_history`.
 
 ## Also rotate the secret
 
-Removing a secret from history does not un-leak it. If a credential was exposed,
-**rotate it** regardless of the rewrite.
+Removing a secret from history does not un-leak it. The sensitive objects may still
+exist in **clones, forks, backups, mirrors, and caches** beyond the repository you
+rewrote. If a credential was exposed, **rotate it** regardless of the rewrite — this,
+not any locking concern, is why rotation is mandatory.
 
 ## Sources
 
-- Source: `internal/storage/fs_git.go:64-118` (each project is its own
-  `git.PlainInit` repository under `<base_dir>/<namespace>/<project>`),
-  `internal/storage/fs_git.go:493-516` (version = commit hash, the basis of
-  optimistic locking).
+- Source: `internal/storage/fs_git.go` (each project is its own `git.PlainInit`
+  repository under `<base_dir>/<namespace>/<project>`; the `etag` returned by
+  `read_file`/`write_file` is the SHA-256 of file content — the optimistic-locking
+  token — while a Git commit hash is a separate identifier used only by
+  `read_file_at_version`/`get_history`).
 - External: `git filter-repo` and `git filter-branch` upstream documentation.
 - Related: `docs/contracts/mcp-v1.md`, `docs/conventions/document-lifecycle.md`.
