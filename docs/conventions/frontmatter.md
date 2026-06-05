@@ -28,7 +28,7 @@ A frontmatter block is delimited by `---` fences at the very top of the file:
 ```markdown
 ---
 title: Phase 3 Concurrency Plan
-summary: Optimistic locking via expected_version on write_file/delete_file.
+summary: Optimistic locking via if_match on write_file/delete_file.
 status: active
 tags: [concurrency, storage]
 related:
@@ -56,8 +56,9 @@ The first paragraph becomes the excerpt...
 ## How Shoka uses it
 
 - **`read_summary`** returns the parsed frontmatter, the first heading, a capped
-  excerpt (≤200 runes) of the first paragraph, the file size, and the last commit
-  hash/timestamp — never the full body.
+  excerpt (≤200 runes) of the first paragraph, the file size, the content `etag`
+  (SHA-256), and `modified_at` (the working-tree filesystem mtime) — never the full
+  body, and never a Git commit hash.
 - **`list_files(include_summaries=true)`** returns each file's frontmatter and
   first heading, so an overview can be assembled with a single call.
 

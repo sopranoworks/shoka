@@ -28,8 +28,10 @@ and write documents; Shoka tracks history. You do not manage Git directly.
 ## Three things to know up front
 
 1. `namespace` is optional and defaults to `"default"`.
-2. On `write_file`/`delete_file`, `expected_version=""` (or omitted) skips the
-   optimistic-locking check; pass a real hash to enforce it.
+2. On a mutating call (`write_file`/`delete_file`/`move_file`/`append_to_file`/
+   `patch_file`), omitting `if_match` skips the optimistic-concurrency check; pass
+   the `etag` from `read_file` to enforce it. (`etag` is the SHA-256 of the file's
+   content, not a Git commit hash.)
 3. Webhook deliveries are asynchronous — a successful write returns immediately and
    does not wait for (or fail on) webhook delivery.
 

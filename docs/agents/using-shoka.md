@@ -16,11 +16,11 @@ Practical guidance. For exact schemas and semantics, see `docs/contracts/mcp-v1.
 
 ## Idiomatic patterns
 
-1. **Safe write (read-modify-write):** `read_file` to get `version` → make your
-   change → `write_file` with `expected_version=<that version>`. On conflict,
-   re-read and retry (see § 5 of the contract).
+1. **Safe write (read-modify-write):** `read_file` to get its `etag` → make your
+   change → `write_file` with `if_match=<that etag>`. On conflict, re-read and
+   retry (see § 5 of the contract).
 2. **Blind write (create or intentional overwrite):** `write_file` with no
-   `expected_version` (or `""`). Use only when you know you are authoritative.
+   `if_match`. Use only when you know you are authoritative.
 3. **Cheap overview:** `list_files(include_summaries=true)` to assemble titles +
    frontmatter for many files in one call, then `read_file` only what you need.
    Use `read_summary` for a single file when you want metadata + excerpt, not body.
@@ -28,6 +28,17 @@ Practical guidance. For exact schemas and semantics, see `docs/contracts/mcp-v1.
    This reaches retired and `status: failed` documents.
 5. **Recover lost content:** `get_history(path=…)` to find a commit, then
    `read_file_at_version(path=…, commit_hash=…)`, then `write_file` to restore.
+6. **Small edit without resending the file:** `patch_file(old_string=…,
+   new_string=…)` replaces **one unique** occurrence — zero or multiple matches is
+   an error, so include enough surrounding context to make `old_string` unique.
+   Ideal for flipping a `status:` line or fixing one paragraph in a large file.
+7. **Append / insert without resending the file:** `append_to_file(content=…)`
+   adds at end by default, or `position=before|after` with a **unique** `anchor`
+   to insert at a spot. `content` is inserted verbatim — you own the newlines.
+   Both 6 and 7 take an optional `if_match`, like `write_file`.
+8. **Rename or move a file:** `move_file(source_path=…, target_path=…)` is a pure,
+   history-preserving rename. It does **not** rewrite links that point at the moved
+   file (`links_rewritten` is always 0) — fix any inbound links yourself.
 
 ## Pitfalls
 
@@ -35,7 +46,7 @@ Practical guidance. For exact schemas and semantics, see `docs/contracts/mcp-v1.
    `docs/conventions/failure-records.md`) instead of `delete_file`.
 2. **Do not force-overwrite on conflict without asking.** A conflict means
    someone/something else wrote since you read. Re-read; ask the user before a
-   blind overwrite (`expected_version=""`).
+   blind overwrite (a `write_file` with no `if_match`).
 3. **Do not assume webhook side effects happened before your call returned.**
    Delivery is async and best-effort; the write succeeds even if every webhook
    target is down.
@@ -50,8 +61,10 @@ Practical guidance. For exact schemas and semantics, see `docs/contracts/mcp-v1.
    `docs/operations/sensitive-data-removal.md`.
 8. **Do not invent a `namespace` when you mean the default.** Omit it; it defaults
    to `"default"`. Names must be `[A-Za-z0-9_-]+`.
-9. **Treat `version` as opaque.** It is a Git commit hash; compare for equality,
-   do not parse it.
+9. **Treat `etag` as opaque.** It is the SHA-256 of the file's content (returned by
+   `read_file`); compare for equality, do not parse it. It is **not** a Git commit
+   hash — the commit hash is a separate token from `get_history`, used only by
+   `read_file_at_version`.
 10. **`read_summary` never returns the body.** If you need full content, call
     `read_file`.
 
@@ -60,8 +73,8 @@ Practical guidance. For exact schemas and semantics, see `docs/contracts/mcp-v1.
 - **Proceed:** reads; first-time creates; safe read-modify-write that does not
   conflict.
 - **Ask first:** any `delete_file` (summarize what will be deleted and its current
-  version first — see `docs/agents/deprecation-and-deletion.md`); any blind
-  overwrite (`expected_version=""`) of a file you did not just create; anything
+  `etag` first — see `docs/agents/deprecation-and-deletion.md`); any blind overwrite
+  (a `write_file` with no `if_match`) of a file you did not just create; anything
   that would discard another writer's change after a conflict.
 
 ## Sources

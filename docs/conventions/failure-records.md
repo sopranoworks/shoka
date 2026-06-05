@@ -69,10 +69,13 @@ search them deliberately:
 ## Coalescing recurring failures
 
 If a new failure closely matches an existing record, **append an `## Occurrence`
-section to the existing file** (via `read_file` → edit → `write_file` with
-`expected_version`) rather than creating a near-duplicate. Each occurrence section
-notes its own `attempted_at` and any new detail. This keeps one searchable record
-per failure mode instead of many partial ones.
+section to the existing file** rather than creating a near-duplicate. The direct way
+is `append_to_file` (`content="\n## Occurrence …"`, `position="end"`, or
+`position="after"` with a unique `anchor`), which adds the section without resending
+the whole file; if you instead read-modify-write the file, pass the `etag` from
+`read_file` as `if_match` on the `write_file`. Each occurrence section notes its own
+`attempted_at` and any new detail. This keeps one searchable record per failure mode
+instead of many partial ones.
 
 ## Sources
 
