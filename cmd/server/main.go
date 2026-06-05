@@ -150,12 +150,6 @@ func main() {
 		s.StartIndexSweep(ctx, cfg.Storage.Index.Interval.Std())
 	}
 
-	// Optional Prometheus metrics endpoint: default off, loopback-only (mirrors
-	// the pprof endpoint's defaults).
-	if cfg.Metrics.Addr != "" {
-		startMetricsServer(ctx, cfg.Metrics.Addr, s, logger)
-	}
-
 	notifier := webhooks.New(toWebhookConfigs(cfg.Webhooks))
 	notifier.SetLogger(logger)
 	s.SetChangeHandler(func(ev storage.ChangeEvent) {
@@ -261,6 +255,15 @@ func main() {
 	authenticator := auth.New(authConfig)
 	dm.SetOriginChecker(authenticator.OriginAllowed)
 	uim.SetOriginChecker(authenticator.OriginAllowed)
+
+	// Optional Prometheus metrics endpoint: default off, loopback-only (mirrors
+	// the pprof endpoint's defaults). Started here — after the UI manager (the
+	// notify-drop source) and the oauth store exist — so the collector bridge can
+	// see beyond storage. uim is passed as the notify-drop extra; the oauth store
+	// joins as a second extra in M3. A nil extra is safe.
+	if cfg.Metrics.Addr != "" {
+		startMetricsServer(ctx, cfg.Metrics.Addr, s, logger, uim)
+	}
 
 	var ts translation.TranslationService
 	if cfg.Services.GoogleCloud.ProjectID != "" {
@@ -512,8 +515,10 @@ func startProfileServer(ctx context.Context, addr string, logger *slog.Logger) {
 // startMetricsServer starts a dedicated http.Server exposing /metrics in
 // Prometheus format. Like the pprof endpoint, it is loopback-only (a non-loopback
 // host is rewritten to localhost with a WARN) and is only started when the
-// metrics.addr config is non-empty. The server shuts down when ctx is done.
-func startMetricsServer(ctx context.Context, addr string, src metrics.Source, logger *slog.Logger) {
+// metrics.addr config is non-empty. The server shuts down when ctx is done. The
+// variadic extras are optional bridge sources (e.g. the UI manager for the
+// notify-drop counter) passed through to metrics.Handler; a nil extra is safe.
+func startMetricsServer(ctx context.Context, addr string, src metrics.Source, logger *slog.Logger, extras ...any) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		logger.Error("invalid metrics.addr; metrics endpoint not started", "addr", addr, "error", err)
@@ -526,7 +531,7 @@ func startMetricsServer(ctx context.Context, addr string, src metrics.Source, lo
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.Handler(src))
+	mux.Handle("/metrics", metrics.Handler(src, extras...))
 	srv := &http.Server{Addr: addr, Handler: mux}
 	logger.Info("metrics endpoint enabled", "addr", addr)
 

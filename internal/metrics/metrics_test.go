@@ -32,6 +32,17 @@ func (fakeSource) CatalogFileCounts() map[string][2]int {
 	return map[string][2]int{"shoka/maintenance": {12, 4}}
 }
 
+// Class-A sources (the 2026-06-05 M1 directive).
+func (fakeSource) QuarantineStats() (int64, int64)      { return 6, 2 }
+func (fakeSource) IndexCounters() (int64, int64, int64) { return 8, 5, 13 } // failW, failD, rebuilds total
+func (fakeSource) IndexRebuildCounters() (int64, int64) { return 10, 3 }    // stale, recreated
+func (fakeSource) LazyRescanCount() int64               { return 11 }
+
+// fakeNotifyDrops satisfies the NotifyDropSource bridge capability.
+type fakeNotifyDrops struct{ n int64 }
+
+func (f fakeNotifyDrops) NotifyDrops() int64 { return f.n }
+
 func TestMetrics_Exposition(t *testing.T) {
 	srv := httptest.NewServer(Handler(fakeSource{}))
 	defer srv.Close()
@@ -73,4 +84,53 @@ func TestMetrics_Exposition(t *testing.T) {
 	// Catalog per-project gauges (§10).
 	assert.Contains(t, out, `shoka_catalog_files{namespace="shoka",project="maintenance"} 12`)
 	assert.Contains(t, out, `shoka_catalog_dirs{namespace="shoka",project="maintenance"} 4`)
+
+	// Class-A families (M1).
+	assert.Contains(t, out, "shoka_wal_quarantined_total 6")
+	assert.Contains(t, out, "shoka_wal_quarantine_failed_total 2")
+	assert.Contains(t, out, `shoka_index_update_failed_total{operation="write"} 8`)
+	assert.Contains(t, out, `shoka_index_update_failed_total{operation="delete"} 5`)
+	assert.Contains(t, out, `shoka_index_rebuilds_total{reason="stale"} 10`)
+	assert.Contains(t, out, `shoka_index_rebuilds_total{reason="recreated"} 3`)
+	assert.Contains(t, out, "shoka_lazy_rescans_total 11")
+
+	// With no bridge extra, the notify-drop family is absent and the endpoint
+	// still serves the rest.
+	assert.NotContains(t, out, "shoka_notify_subscriber_drops_total")
+}
+
+// TestMetrics_Bridge_NotifyDrops asserts the collector bridge: a supplied
+// NotifyDropSource extra surfaces shoka_notify_subscriber_drops_total, while the
+// storage families continue to serve.
+func TestMetrics_Bridge_NotifyDrops(t *testing.T) {
+	srv := httptest.NewServer(Handler(fakeSource{}, fakeNotifyDrops{n: 17}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := string(body)
+
+	assert.Contains(t, out, "shoka_notify_subscriber_drops_total 17")
+	// Storage families still present alongside the bridge family.
+	assert.Contains(t, out, "shoka_wal_quarantined_total 6")
+}
+
+// TestMetrics_Bridge_NilExtraSafe asserts a nil extra is ignored and the endpoint
+// serves the primary families without the notify-drop family.
+func TestMetrics_Bridge_NilExtraSafe(t *testing.T) {
+	srv := httptest.NewServer(Handler(fakeSource{}, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := string(body)
+
+	assert.Contains(t, out, "shoka_wal_pending_entries 3")
+	assert.NotContains(t, out, "shoka_notify_subscriber_drops_total")
 }

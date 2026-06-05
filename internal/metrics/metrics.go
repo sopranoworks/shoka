@@ -29,12 +29,35 @@ type Source interface {
 	// Catalog metrics (the 2026-05-30 catalog directive §10).
 	CatalogCounters() (updateFailedWrite, updateFailedDelete, invariantViolations, rebuildMissing, rebuildCorrupt, rebuildSchema, rebuildUnreadable int64)
 	CatalogFileCounts() map[string][2]int // "namespace/project" -> {files, dirs}
+
+	// Class-A wiring (the 2026-06-05 M1 directive): counters that already exist on
+	// the storage layer, now exported.
+	QuarantineStats() (quarantined, failed int64) // WAL-entry quarantine (D3)
+	IndexCounters() (updateFailedWrite, updateFailedDelete, rebuilds int64)
+	IndexRebuildCounters() (stale, recreated int64) // reason-split rebuilds (I1)
+	LazyRescanCount() int64                         // D1/B-25 self-extinguishing cost
+}
+
+// NotifyDropSource is the bridge capability for the UI manager's slow-subscriber
+// drop counter. ui.Manager satisfies it via NotifyDrops() with no change. It is
+// one of the optional "extra" sources Handler accepts beyond the storage Source;
+// the collector type-asserts each extra to the capabilities it knows. Every
+// bridge capability returns counts only — never an identity, token, or secret —
+// so no secret can reach a metric label by construction (the 2026-06-05 M1
+// directive's structural protection, carried into M3's OAuth extra).
+type NotifyDropSource interface {
+	NotifyDrops() int64
 }
 
 var projectStateLabels = []string{"healthy", "corrupted", "dangerous"}
 
 type collector struct {
 	src Source
+
+	// notifyDropSrc is the optional bridge extra for the notify slow-subscriber
+	// drop counter (nil when no such extra was supplied — e.g. tests or a build
+	// that wires only storage). Resolved from Handler's variadic extras.
+	notifyDropSrc NotifyDropSource
 
 	walPending       *prometheus.Desc
 	walPendingBytes  *prometheus.Desc
@@ -51,10 +74,18 @@ type collector struct {
 	catalogUpdateFailed *prometheus.Desc
 	catalogFiles        *prometheus.Desc
 	catalogDirs         *prometheus.Desc
+
+	// Class-A families (the 2026-06-05 M1 directive).
+	walQuarantined      *prometheus.Desc
+	walQuarantineFailed *prometheus.Desc
+	indexUpdateFailed   *prometheus.Desc
+	indexRebuilds       *prometheus.Desc
+	lazyRescans         *prometheus.Desc
+	notifyDrops         *prometheus.Desc // emitted only when notifyDropSrc != nil
 }
 
-func newCollector(src Source) *collector {
-	return &collector{
+func newCollector(src Source, extras ...any) *collector {
+	c := &collector{
 		src:                 src,
 		walPending:          prometheus.NewDesc("shoka_wal_pending_entries", "WAL entries awaiting a background git commit.", nil, nil),
 		walPendingBytes:     prometheus.NewDesc("shoka_wal_pending_bytes", "Summed content size of pending WAL entries.", nil, nil),
@@ -70,7 +101,27 @@ func newCollector(src Source) *collector {
 		catalogUpdateFailed: prometheus.NewDesc("shoka_catalog_update_failed_total", "Catalog updates that failed on an otherwise-successful operation, by operation.", []string{"operation"}, nil),
 		catalogFiles:        prometheus.NewDesc("shoka_catalog_files", "Files recorded in each project's catalog.", []string{"namespace", "project"}, nil),
 		catalogDirs:         prometheus.NewDesc("shoka_catalog_dirs", "Directory buckets in each project's catalog.", []string{"namespace", "project"}, nil),
+
+		walQuarantined:      prometheus.NewDesc("shoka_wal_quarantined_total", "WAL entries quarantined to lost+found and removed from the WAL.", nil, nil),
+		walQuarantineFailed: prometheus.NewDesc("shoka_wal_quarantine_failed_total", "Quarantine attempts whose lost+found deposit failed (entry kept).", nil, nil),
+		indexUpdateFailed:   prometheus.NewDesc("shoka_index_update_failed_total", "Best-effort incremental index updates that failed, by operation.", []string{"operation"}, nil),
+		indexRebuilds:       prometheus.NewDesc("shoka_index_rebuilds_total", "Repair-sweep index rebuilds, by reason.", []string{"reason"}, nil),
+		lazyRescans:         prometheus.NewDesc("shoka_lazy_rescans_total", "D1 lazy-rescan-on-corrupted-hit invocations (self-extinguishing cost).", nil, nil),
+		notifyDrops:         prometheus.NewDesc("shoka_notify_subscriber_drops_total", "Notify events dropped because a subscriber's buffer was full.", nil, nil),
 	}
+
+	// Resolve optional bridge extras by capability. An extra that satisfies a
+	// capability interface is wired; anything else is ignored. nil/absent extras
+	// are safe — the corresponding family is simply not emitted (see Collect).
+	for _, e := range extras {
+		if e == nil {
+			continue
+		}
+		if nd, ok := e.(NotifyDropSource); ok {
+			c.notifyDropSrc = nd
+		}
+	}
+	return c
 }
 
 func (c *collector) Describe(ch chan<- *prometheus.Desc) {
@@ -88,6 +139,12 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.catalogUpdateFailed
 	ch <- c.catalogFiles
 	ch <- c.catalogDirs
+	ch <- c.walQuarantined
+	ch <- c.walQuarantineFailed
+	ch <- c.indexUpdateFailed
+	ch <- c.indexRebuilds
+	ch <- c.lazyRescans
+	ch <- c.notifyDrops
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
@@ -135,13 +192,41 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.catalogFiles, prometheus.GaugeValue, float64(fd[0]), ns, project)
 		ch <- prometheus.MustNewConstMetric(c.catalogDirs, prometheus.GaugeValue, float64(fd[1]), ns, project)
 	}
+
+	// Class-A families (the 2026-06-05 M1 directive).
+	quarantined, quarantineFailed := c.src.QuarantineStats()
+	cnt(c.walQuarantined, quarantined)
+	cnt(c.walQuarantineFailed, quarantineFailed)
+
+	idxFailWrite, idxFailDelete, _ := c.src.IndexCounters()
+	cnt(c.indexUpdateFailed, idxFailWrite, "write")
+	cnt(c.indexUpdateFailed, idxFailDelete, "delete")
+
+	// One reason-labelled rebuild family at the single increment site; the bare
+	// aggregate from IndexCounters() is deliberately not exported (no double-count).
+	rebuildStale, rebuildRecreated := c.src.IndexRebuildCounters()
+	cnt(c.indexRebuilds, rebuildStale, "stale")
+	cnt(c.indexRebuilds, rebuildRecreated, "recreated")
+
+	cnt(c.lazyRescans, c.src.LazyRescanCount())
+
+	// Bridge extra: emitted only when a notify-drop source was supplied.
+	if c.notifyDropSrc != nil {
+		cnt(c.notifyDrops, c.notifyDropSrc.NotifyDrops())
+	}
 }
 
-// Handler returns an http.Handler serving /metrics for the given source, backed
-// by a private registry (no default Go/process collectors).
-func Handler(src Source) http.Handler {
+// Handler returns an http.Handler serving /metrics for the given storage source,
+// backed by a private registry (no default Go/process collectors). The variadic
+// extras are optional secondary sources beyond storage (the collector bridge):
+// each is type-asserted to the capability interfaces the collector knows (e.g.
+// NotifyDropSource), and anything that matches none is ignored. A nil or absent
+// extra is safe — the corresponding family is simply not emitted. This is the one
+// bridge the storage-only Source needs to see beyond itself; M3 adds OAuth by
+// passing the oauth store as another extra, with no change to this signature.
+func Handler(src Source, extras ...any) http.Handler {
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(newCollector(src))
+	reg.MustRegister(newCollector(src, extras...))
 	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 }
 
