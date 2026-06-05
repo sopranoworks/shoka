@@ -10,6 +10,30 @@ and a full audit trail.
 Projects are isolated on the filesystem as `<base_dir>/<namespace>/<project>` —
 each its own Git repository. There is no database and there are no UUIDs.
 
+## Features
+
+Beyond basic file CRUD, Shoka provides — see the linked docs for the detail:
+
+- **Rich editing tools** — partial edits (`append_to_file`, `patch_file`) and
+  `move_file` alongside read/write/delete. (Contract
+  [§ 4](docs/contracts/mcp-v1.md).)
+- **Indexed search & link tracking** — full-text search (`search_files`) over a
+  project's documents, plus an internal reverse-link index that keeps
+  inter-document Markdown links consistent. (Contract § 4.12;
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).)
+- **OAuth 2.1 authorization server** — a built-in AS (discovery, `/authorize`,
+  `/token`) an operator can enable so remote MCP clients connect securely; **off
+  by default**. (Contract [§ 3.1](docs/contracts/mcp-v1.md);
+  [`docs/OPERATIONS.md`](docs/OPERATIONS.md).)
+- **Prometheus `/metrics`** — an opt-in, loopback-only observability endpoint.
+  (Contract § 7.1; [`docs/OPERATIONS.md`](docs/OPERATIONS.md).)
+- **Self-healing storage** — a lost+found worker restores a tracked-only working
+  tree (`shoka.disposable` marks files safe to delete).
+  ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).)
+- **Durable writes** — every change is appended to a write-ahead log and
+  committed to Git asynchronously by a background worker pool.
+  ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).)
+
 ## Quick start
 
 Shoka is a Go program. Build it and run it against a config file:
@@ -37,6 +61,11 @@ Point an MCP client at the `/mcp` path on the MCP listener, e.g.:
 ```sh
 claude mcp add --transport http shoka http://localhost:8081/mcp
 ```
+
+A non-CLI client that cannot register a Streamable-HTTP server directly (e.g.
+Claude Desktop) connects through the `mcp-remote` bridge — add an `mcpServers`
+entry that runs `npx mcp-remote http://localhost:8081/mcp`. See
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Connecting clients*) for the detail.
 
 Authentication is **off** by default (single-operator local mode). See
 `shoka.example.yaml` for the full annotated configuration (auth, TLS, translation,
