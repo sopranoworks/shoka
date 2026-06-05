@@ -12,10 +12,10 @@ entry links to where its implementation is now documented.
 | **META-01** | Filesystem project isolation under `<base_dir>/<namespace>/<projectName>`, enforced by name validation + path-traversal guards; no UUIDs. | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (design choices); [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 7 |
 | **META-02** | Project identity is the `namespace/projectName` path itself; no metadata database (the planned SQLite UUID map was dropped — final). | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | **FILE-01** | Project creation, file management, and translation exposed as MCP tools. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4 |
-| **FILE-02** | CRUD for Markdown files within a project. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.4–4.8 |
+| **FILE-02** | CRUD for Markdown files within a project. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.4–4.8, and the move + partial-edit tools § 4.13–4.15 |
 | **VER-01** | Every write is an atomic Git commit (`go-git`). | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 7 |
 | **VER-02** | Git history exposed to agents as tools. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.9 (`get_history`), § 4.6 (`read_file_at_version`) |
-| **TRANS-01** | Manual, human-triggered Japanese→English translation via Google Cloud Translation. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.13 (`translate_file`) |
+| **TRANS-01** | Manual, human-triggered Japanese→English translation via Google Cloud Translation. | [`docs/contracts/mcp-v1.md`](docs/contracts/mcp-v1.md) § 4.16 (`translate_file`) |
 | **DRAFT-01** | WebSocket `/drafts/{namespace}/{projectName}` real-time draft persistence with replay on reconnect. | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Web UI component); [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
 
 ## v2 Requirements (deferred)
