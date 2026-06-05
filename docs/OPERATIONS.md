@@ -185,6 +185,51 @@ because Shoka restarted). The client should re-initialize automatically; see § 
 of `docs/contracts/mcp-v1.md`. Comparing these events against the Streamable HTTP
 flow in that section pinpoints where a session diverges.
 
+## Enabling OAuth
+
+Shoka includes a built-in **OAuth 2.1 authorization server** (maintenance backlog
+B-39). It is **code-complete but off by default and not stood up in this
+deployment** — while it is disabled, the static `Authorization: Bearer` path of
+`server.auth` applies unchanged. Turning it on is an operator task with
+prerequisites, named here by **config field and role only** — no endpoint,
+domain, or address is given:
+
+- A **TLS-terminating reverse proxy** in front of Shoka (OAuth requires HTTPS).
+- **`server.mcp.external_url`** set to the public origin — the field; the URL
+  value lives only in your config, never in the docs.
+- The **`server.auth.oauth.trusted_client_metadata_domains`** allowlist populated.
+  It is **default-deny**: an empty list admits no client, so list the legitimate
+  connector domain(s) for your deployment.
+- **`server.auth.oauth.consent_credential`** set — an empty value denies all
+  consent, so consent cannot be granted until it is configured.
+- Toggled on with **`server.auth.oauth.enabled`**.
+
+When enabled, Shoka enforces OAuth access tokens on the MCP path, **superseding
+the static `tokens` set on that path**; clients are identified via CIMD (no
+dynamic client registration). For the protocol detail — discovery, `/authorize`,
+`/token`, PKCE, the disabled-mode fallback — see
+[`docs/contracts/mcp-v1.md`](contracts/mcp-v1.md) § 3.1. Enabling OAuth means
+configuring these fields; it does not point at a running, reachable service.
+(Source: `internal/config/config.go:67-94`, `internal/oauth/`.)
+
+## Scraping `/metrics`
+
+Shoka can expose a Prometheus **`/metrics`** endpoint. It is **off by default**
+and binds **loopback-only**:
+
+- Enable it by setting **`metrics.addr`** (empty = off). A non-empty address is
+  forced to a loopback host, mirroring the pprof endpoint.
+- It exposes **33 metric families** across five groups — storage/WAL, derivative
+  index, lost+found, OAuth, and notify. **No metric label carries a secret,
+  token, id, path, or domain**: labels are bounded enums and per-project
+  `namespace`/`project` dimensions only. For the family-by-family detail, see
+  [`docs/contracts/mcp-v1.md`](contracts/mcp-v1.md) § 7.1 — this guide does not
+  re-enumerate it.
+- Posture: opt-in, **loopback-only** — scrape locally, or via your own collector
+  reaching the loopback bind. "Loopback-only" is a posture, not an address.
+
+(Source: `internal/metrics/`, `cmd/server/main.go:259-274,524-543`.)
+
 ## Backup
 
 A project is an ordinary Git repository under `base_dir`. Back up `base_dir` as you
