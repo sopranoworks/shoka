@@ -81,6 +81,7 @@ func (s *FSGitStorage) StartLostFoundSweep(ctx context.Context, interval time.Du
 // sweepAllProjects waits for the WAL to drain (so no in-flight write is mistaken
 // for untracked content), then sweeps every project under the base directory.
 func (s *FSGitStorage) sweepAllProjects() {
+	s.lostFoundSweeps.Add(1) // one per pass: initial + each tick, distinct from per-file actions
 	s.WaitForWAL(2 * time.Minute)
 	projects, _ := s.discoverProjects() // leftovers are relocated post-startup, not swept here
 	for _, p := range projects {
@@ -103,6 +104,16 @@ func (s *FSGitStorage) sweepProject(namespace, projectName string) {
 		return
 	}
 	if sum.State != StateHealthy {
+		// Healthy-only gate: a dangerous project's git/catalog is unreliable, a
+		// corrupted project is left for recovery. Count the skip by state — the only
+		// two non-healthy ProjectStates (state.go) — so the metric shows the sweep is
+		// declining to act and why.
+		switch sum.State {
+		case StateCorrupted:
+			s.lostFoundSkippedCorrupted.Add(1)
+		case StateDangerous:
+			s.lostFoundSkippedDangerous.Add(1)
+		}
 		return // skip dangerous/corrupted projects
 	}
 	if len(sum.Added) == 0 {
@@ -130,6 +141,7 @@ func (s *FSGitStorage) sweepProject(namespace, projectName string) {
 					"project", target, "path", rel, "error", rerr)
 				continue
 			}
+			s.lostFoundDisposed.Add(1)
 			s.notify.NotifyFrom(lostFoundSender, kindLostFoundDisposed, target, rel)
 			continue
 		}
@@ -138,6 +150,30 @@ func (s *FSGitStorage) sweepProject(namespace, projectName string) {
 				"project", target, "path", rel, "error", merr)
 			continue
 		}
+		s.lostFoundMoved.Add(1)
 		s.notify.NotifyFrom(lostFoundSender, kindLostFoundMoved, target, rel)
 	}
+}
+
+// LostFoundSweeps returns the cumulative number of lost+found sweep passes the
+// worker has run, for shoka_lostfound_sweeps_total. A pass that disposes/moves
+// nothing still counts (the metric shows the worker is alive and how often it
+// sweeps), so it is distinct from the per-file action counts.
+func (s *FSGitStorage) LostFoundSweeps() int64 { return s.lostFoundSweeps.Load() }
+
+// LostFoundActions returns the per-file action counts for
+// shoka_lostfound_actions_total{action}: disposed (an untracked file matching
+// shoka.disposable was deleted) and moved (an untracked non-matching file was
+// relocated to lost+found). There is deliberately no "quarantined" action — the
+// sweep never quarantines; that count is the walworker's shoka_wal_quarantined_total.
+func (s *FSGitStorage) LostFoundActions() (disposed, moved int64) {
+	return s.lostFoundDisposed.Load(), s.lostFoundMoved.Load()
+}
+
+// LostFoundProjectsSkipped returns the healthy-only-gate skip counts for
+// shoka_lostfound_projects_skipped_total{state}: corrupted (tracked-file drift,
+// left for recovery) and dangerous (git/catalog unreliable) — the two non-healthy
+// ProjectStates on which the sweep declines to act.
+func (s *FSGitStorage) LostFoundProjectsSkipped() (corrupted, dangerous int64) {
+	return s.lostFoundSkippedCorrupted.Load(), s.lostFoundSkippedDangerous.Load()
 }

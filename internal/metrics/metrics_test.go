@@ -48,10 +48,22 @@ func (fakeSource) FixLinksKickStats() (int64, int64)       { return 20, 1 } // e
 func (fakeSource) FixLinksWriteStats() (int64, int64)      { return 18, 2 } // rewrites, conflicts
 func (fakeSource) FixLinksReferrerLookups() (int64, int64) { return 16, 3 } // index, truthscan
 
+// lost+found worker sources (the 2026-06-05 M3 directive).
+func (fakeSource) LostFoundSweeps() int64                   { return 21 }
+func (fakeSource) LostFoundActions() (int64, int64)         { return 19, 7 } // disposed, moved
+func (fakeSource) LostFoundProjectsSkipped() (int64, int64) { return 5, 2 }  // corrupted, dangerous
+
 // fakeNotifyDrops satisfies the NotifyDropSource bridge capability.
 type fakeNotifyDrops struct{ n int64 }
 
 func (f fakeNotifyDrops) NotifyDrops() int64 { return f.n }
+
+// fakeOAuth satisfies the OAuthSource bridge capability (counts/gauge only).
+type fakeOAuth struct{ active, issued, revoked int64 }
+
+func (f fakeOAuth) OAuthActiveConnections() int64 { return f.active }
+func (f fakeOAuth) OAuthTokensIssued() int64      { return f.issued }
+func (f fakeOAuth) OAuthRevocations() int64       { return f.revoked }
 
 func TestMetrics_Exposition(t *testing.T) {
 	srv := httptest.NewServer(Handler(fakeSource{}))
@@ -118,9 +130,19 @@ func TestMetrics_Exposition(t *testing.T) {
 	assert.Contains(t, out, `shoka_fixlinks_referrer_lookups_total{source="index"} 16`)
 	assert.Contains(t, out, `shoka_fixlinks_referrer_lookups_total{source="truthscan"} 3`)
 
-	// With no bridge extra, the notify-drop family is absent and the endpoint
-	// still serves the rest.
+	// lost+found worker families (M3). Storage-reachable, always emitted.
+	assert.Contains(t, out, "shoka_lostfound_sweeps_total 21")
+	assert.Contains(t, out, `shoka_lostfound_actions_total{action="disposed"} 19`)
+	assert.Contains(t, out, `shoka_lostfound_actions_total{action="moved"} 7`)
+	assert.Contains(t, out, `shoka_lostfound_projects_skipped_total{state="corrupted"} 5`)
+	assert.Contains(t, out, `shoka_lostfound_projects_skipped_total{state="dangerous"} 2`)
+
+	// With no bridge extra, the notify-drop AND OAuth families are absent and the
+	// endpoint still serves the rest.
 	assert.NotContains(t, out, "shoka_notify_subscriber_drops_total")
+	assert.NotContains(t, out, "shoka_oauth_active_connections")
+	assert.NotContains(t, out, "shoka_oauth_tokens_issued_total")
+	assert.NotContains(t, out, "shoka_oauth_revocations_total")
 }
 
 // TestMetrics_Bridge_NotifyDrops asserts the collector bridge: a supplied
@@ -157,4 +179,53 @@ func TestMetrics_Bridge_NilExtraSafe(t *testing.T) {
 
 	assert.Contains(t, out, "shoka_wal_pending_entries 3")
 	assert.NotContains(t, out, "shoka_notify_subscriber_drops_total")
+}
+
+// TestMetrics_Bridge_OAuth asserts the OAuth half of the bridge: a supplied
+// OAuthSource extra surfaces the three OAuth families (counts + the active gauge),
+// alongside the notify-drop extra and the storage families — the both-extras-present
+// case (M3). The collector resolves each extra independently by capability.
+func TestMetrics_Bridge_OAuth(t *testing.T) {
+	srv := httptest.NewServer(Handler(fakeSource{},
+		fakeNotifyDrops{n: 17},
+		fakeOAuth{active: 4, issued: 9, revoked: 2}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := string(body)
+
+	// Both bridge extras emit.
+	assert.Contains(t, out, "shoka_notify_subscriber_drops_total 17")
+	assert.Contains(t, out, "shoka_oauth_active_connections 4")
+	assert.Contains(t, out, "shoka_oauth_tokens_issued_total 9")
+	assert.Contains(t, out, "shoka_oauth_revocations_total 2")
+	// Storage families still serve alongside the bridge families.
+	assert.Contains(t, out, "shoka_wal_quarantined_total 6")
+	assert.Contains(t, out, "shoka_lostfound_sweeps_total 21")
+}
+
+// TestMetrics_Bridge_OAuthDisabledNoEmit asserts the OAuth-disabled case: with no
+// OAuth extra supplied (the shape cmd/server produces when oauthStore is nil — it
+// drops the typed-nil before boxing rather than passing it), no OAuth family is
+// emitted, while the notify-drop extra and the storage families still serve.
+func TestMetrics_Bridge_OAuthDisabledNoEmit(t *testing.T) {
+	srv := httptest.NewServer(Handler(fakeSource{}, fakeNotifyDrops{n: 17}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := string(body)
+
+	assert.Contains(t, out, "shoka_notify_subscriber_drops_total 17")
+	assert.Contains(t, out, "shoka_wal_pending_entries 3")
+	assert.NotContains(t, out, "shoka_oauth_active_connections")
+	assert.NotContains(t, out, "shoka_oauth_tokens_issued_total")
+	assert.NotContains(t, out, "shoka_oauth_revocations_total")
 }

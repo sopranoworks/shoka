@@ -109,6 +109,24 @@ type FSGitStorage struct {
 	fixLinksLookupIndex     atomic.Int64
 	fixLinksLookupTruthscan atomic.Int64
 
+	// lost+found worker counters (the 2026-06-05 M3 directive). sweeps is
+	// incremented once per sweepAllProjects pass (initial + each ticker tick),
+	// distinct from actions (a pass that acts on nothing still counts) — the
+	// sweep-pass analogue of idxSweepRuns. disposed/moved split the two action
+	// arms in sweepProject (an untracked file matching shoka.disposable is deleted;
+	// otherwise it is relocated to lost+found); the third arm (tracked → untouched)
+	// is not an action and is not counted. There is deliberately NO "quarantined"
+	// action: the sweep never quarantines — that is the D3 walworker's deposit,
+	// already counted as shoka_wal_quarantined_total (M1). skippedCorrupted/
+	// skippedDangerous split the healthy-only gate (sweepProject returns without
+	// acting on a non-healthy project), labelled by the two non-healthy
+	// ProjectStates. Read via LostFound* Source methods.
+	lostFoundSweeps           atomic.Int64
+	lostFoundDisposed         atomic.Int64
+	lostFoundMoved            atomic.Int64
+	lostFoundSkippedCorrupted atomic.Int64
+	lostFoundSkippedDangerous atomic.Int64
+
 	// Catalog observability counters, surfaced through the metrics Source (§10).
 	catUpdateFailedWrite   atomic.Int64
 	catUpdateFailedDelete  atomic.Int64

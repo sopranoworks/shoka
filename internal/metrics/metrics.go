@@ -45,6 +45,11 @@ type Source interface {
 	FixLinksKickStats() (enqueued, dropped int64)      // I3 post-move kick enqueue vs full-channel drop
 	FixLinksWriteStats() (rewrites, conflicts int64)   // I3 referrer rewrites vs if_match conflicts
 	FixLinksReferrerLookups() (index, truthscan int64) // I3 referrer source: index vs truth-scan
+
+	// lost+found worker (the 2026-06-05 M3 directive): storage-reachable (no bridge).
+	LostFoundSweeps() int64                                 // sweep passes (initial + each tick)
+	LostFoundActions() (disposed, moved int64)              // per-file action: disposed vs moved
+	LostFoundProjectsSkipped() (corrupted, dangerous int64) // healthy-only-gate skips by state
 }
 
 // NotifyDropSource is the bridge capability for the UI manager's slow-subscriber
@@ -58,6 +63,26 @@ type NotifyDropSource interface {
 	NotifyDrops() int64
 }
 
+// OAuthSource is the bridge capability for the OAuth authorization server's
+// connection/token counts (the 2026-06-05 M3 directive). oauthstore.Store
+// satisfies it. Like NotifyDropSource it is an optional "extra" Handler accepts
+// beyond the storage Source, type-asserted by the collector. Every method returns
+// a COUNT or the active-connection gauge ONLY — never a series id, token, refresh,
+// code, PKCE verifier, principal, or client domain — so no OAuth secret or
+// identity can reach a metric label by construction (the M1 structural protection,
+// here type-enforcing the directive's OAuth HARD RULE).
+//
+// Nil-safety note: the oauth store is nil when OAuth is disabled. A nil
+// *oauthstore.Store must NOT be boxed into an extra — a typed-nil interface is
+// non-nil and would slip past the extras-loop nil guard, then panic in Collect.
+// cmd/server appends the store to the extras slice only when it is non-nil, so a
+// disabled server simply emits no OAuth families (see Handler's callers).
+type OAuthSource interface {
+	OAuthActiveConnections() int64 // gauge: len(Store.List()), live series
+	OAuthTokensIssued() int64      // counter: first-issue token pairs (new connections)
+	OAuthRevocations() int64       // counter: series revoked
+}
+
 var projectStateLabels = []string{"healthy", "corrupted", "dangerous"}
 
 type collector struct {
@@ -67,6 +92,11 @@ type collector struct {
 	// drop counter (nil when no such extra was supplied — e.g. tests or a build
 	// that wires only storage). Resolved from Handler's variadic extras.
 	notifyDropSrc NotifyDropSource
+
+	// oauthSrc is the optional bridge extra for the OAuth authorization server's
+	// connection/token counts (nil when OAuth is disabled or not wired). Resolved
+	// from Handler's variadic extras; the OAuth families are emitted only when set.
+	oauthSrc OAuthSource
 
 	walPending       *prometheus.Desc
 	walPendingBytes  *prometheus.Desc
@@ -100,6 +130,16 @@ type collector struct {
 	fixlinksRewrites       *prometheus.Desc
 	fixlinksConflicts      *prometheus.Desc
 	fixlinksReferrerLookup *prometheus.Desc
+
+	// lost+found worker families (the 2026-06-05 M3 directive).
+	lostfoundSweeps          *prometheus.Desc
+	lostfoundActions         *prometheus.Desc
+	lostfoundProjectsSkipped *prometheus.Desc
+
+	// OAuth families (the 2026-06-05 M3 directive), emitted only when oauthSrc != nil.
+	oauthActiveConnections *prometheus.Desc
+	oauthTokensIssued      *prometheus.Desc
+	oauthRevocations       *prometheus.Desc
 }
 
 func newCollector(src Source, extras ...any) *collector {
@@ -135,6 +175,14 @@ func newCollector(src Source, extras ...any) *collector {
 		fixlinksRewrites:       prometheus.NewDesc("shoka_fixlinks_rewrites_total", "Successful fix_links referrer rewrites (if_match writes that repaired a link).", nil, nil),
 		fixlinksConflicts:      prometheus.NewDesc("shoka_fixlinks_conflicts_total", "fix_links rewrites that hit an if_match conflict and backed off (never clobbered).", nil, nil),
 		fixlinksReferrerLookup: prometheus.NewDesc("shoka_fixlinks_referrer_lookups_total", "fix_links referrer lookups by source: index (healthy) or truthscan (fallback).", []string{"source"}, nil),
+
+		lostfoundSweeps:          prometheus.NewDesc("shoka_lostfound_sweeps_total", "lost+found worker sweep passes (a pass that disposes/moves nothing still counts).", nil, nil),
+		lostfoundActions:         prometheus.NewDesc("shoka_lostfound_actions_total", "Untracked files acted on by the lost+found sweep, by action: disposed (matched shoka.disposable) or moved (relocated to lost+found).", []string{"action"}, nil),
+		lostfoundProjectsSkipped: prometheus.NewDesc("shoka_lostfound_projects_skipped_total", "Projects the lost+found sweep declined to act on, by non-healthy state: corrupted or dangerous.", []string{"state"}, nil),
+
+		oauthActiveConnections: prometheus.NewDesc("shoka_oauth_active_connections", "Live OAuth token series (active connections) in the authorization-server store.", nil, nil),
+		oauthTokensIssued:      prometheus.NewDesc("shoka_oauth_tokens_issued_total", "OAuth access+refresh pairs first-issued to new connections (rotations are not counted).", nil, nil),
+		oauthRevocations:       prometheus.NewDesc("shoka_oauth_revocations_total", "OAuth token series revoked.", nil, nil),
 	}
 
 	// Resolve optional bridge extras by capability. An extra that satisfies a
@@ -146,6 +194,9 @@ func newCollector(src Source, extras ...any) *collector {
 		}
 		if nd, ok := e.(NotifyDropSource); ok {
 			c.notifyDropSrc = nd
+		}
+		if os, ok := e.(OAuthSource); ok {
+			c.oauthSrc = os
 		}
 	}
 	return c
@@ -179,6 +230,12 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fixlinksRewrites
 	ch <- c.fixlinksConflicts
 	ch <- c.fixlinksReferrerLookup
+	ch <- c.lostfoundSweeps
+	ch <- c.lostfoundActions
+	ch <- c.lostfoundProjectsSkipped
+	ch <- c.oauthActiveConnections
+	ch <- c.oauthTokensIssued
+	ch <- c.oauthRevocations
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
@@ -264,9 +321,27 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	cnt(c.fixlinksReferrerLookup, fixLookupIndex, "index")
 	cnt(c.fixlinksReferrerLookup, fixLookupTruthscan, "truthscan")
 
+	// lost+found worker families (the 2026-06-05 M3 directive). Storage-reachable.
+	cnt(c.lostfoundSweeps, c.src.LostFoundSweeps())
+	lfDisposed, lfMoved := c.src.LostFoundActions()
+	cnt(c.lostfoundActions, lfDisposed, "disposed")
+	cnt(c.lostfoundActions, lfMoved, "moved")
+	lfCorrupted, lfDangerous := c.src.LostFoundProjectsSkipped()
+	cnt(c.lostfoundProjectsSkipped, lfCorrupted, "corrupted")
+	cnt(c.lostfoundProjectsSkipped, lfDangerous, "dangerous")
+
 	// Bridge extra: emitted only when a notify-drop source was supplied.
 	if c.notifyDropSrc != nil {
 		cnt(c.notifyDrops, c.notifyDropSrc.NotifyDrops())
+	}
+
+	// Bridge extra: OAuth families, emitted only when an OAuth source was supplied
+	// (OAuth disabled → nil extra → no OAuth families). Counts/gauge only — no
+	// secret or identity reaches a label by construction (OAuthSource type-enforced).
+	if c.oauthSrc != nil {
+		g(c.oauthActiveConnections, float64(c.oauthSrc.OAuthActiveConnections()))
+		cnt(c.oauthTokensIssued, c.oauthSrc.OAuthTokensIssued())
+		cnt(c.oauthRevocations, c.oauthSrc.OAuthRevocations())
 	}
 }
 

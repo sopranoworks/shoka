@@ -259,10 +259,19 @@ func main() {
 	// Optional Prometheus metrics endpoint: default off, loopback-only (mirrors
 	// the pprof endpoint's defaults). Started here — after the UI manager (the
 	// notify-drop source) and the oauth store exist — so the collector bridge can
-	// see beyond storage. uim is passed as the notify-drop extra; the oauth store
-	// joins as a second extra in M3. A nil extra is safe.
+	// see beyond storage. uim is the notify-drop extra; the oauth store joins as a
+	// second extra (M3). oauthStore is nil when OAuth is disabled, and a typed-nil
+	// *oauthstore.Store boxed into an `any` would NOT be caught by the collector's
+	// untyped-nil guard (the interface carries a type, so it is non-nil) — it would
+	// wire a non-nil OAuthSource over a nil pointer and panic in Collect. So we drop
+	// the nil BEFORE boxing: append the store only when non-nil, leaving the
+	// collector's extras loop unchanged. OAuth disabled → no OAuth families.
 	if cfg.Metrics.Addr != "" {
-		startMetricsServer(ctx, cfg.Metrics.Addr, s, logger, uim)
+		extras := []any{uim}
+		if oauthStore != nil {
+			extras = append(extras, oauthStore)
+		}
+		startMetricsServer(ctx, cfg.Metrics.Addr, s, logger, extras...)
 	}
 
 	var ts translation.TranslationService

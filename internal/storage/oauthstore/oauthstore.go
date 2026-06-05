@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -108,6 +109,16 @@ type SeriesInfo struct {
 type Store struct {
 	db   *bolt.DB
 	path string
+
+	// Process-lifetime observability counters (the 2026-06-05 M3 metrics directive).
+	// tokensIssued counts first-issue token pairs (NewSeries) — NOT rotations, since
+	// Rotate mints inline and never calls NewSeries, so this is the "new connections"
+	// signal. revocations counts actual series deletions (Revoke past its idempotent
+	// no-op). Both are counts only — never a token, series id, or principal — surfaced
+	// through the metrics OAuthSource bridge. Counter resets on restart are fine
+	// (Prometheus tolerates them); a durable bbolt tally is deliberately out of scope.
+	tokensIssued atomic.Int64
+	revocations  atomic.Int64
 }
 
 // Open opens (creating if absent) the OAuth store at path and ensures its
@@ -228,6 +239,7 @@ func (s *Store) NewSeries(clientID string, p Principal, resource string, now tim
 	if err := s.putSeries(rec, "", ""); err != nil {
 		return SeriesRecord{}, err
 	}
+	s.tokensIssued.Add(1) // first-issue only; Rotate mints inline and is not counted here
 	return rec, nil
 }
 
@@ -361,12 +373,14 @@ func (s *Store) List() ([]SeriesInfo, error) {
 // Revoke deletes one series and its access+refresh handles. Idempotent: revoking
 // an unknown series is a no-op (nil). Revoking one series never affects another.
 func (s *Store) Revoke(seriesID string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
+	var revoked bool // a series actually existed and was removed (vs. the idempotent no-op)
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		sb := tx.Bucket([]byte(seriesBucket))
 		sraw := sb.Get([]byte(seriesID))
 		if sraw == nil {
 			return nil
 		}
+		revoked = true
 		var rec SeriesRecord
 		if err := json.Unmarshal(sraw, &rec); err != nil {
 			// Even if undecodable, drop the series row so it cannot linger.
@@ -374,6 +388,54 @@ func (s *Store) Revoke(seriesID string) error {
 		}
 		return deleteSeries(tx, rec)
 	})
+	// Count only a committed, real revocation — increment after Update returns so a
+	// rolled-back tx (non-nil err) never over-counts, and a no-op revoke is not counted.
+	if err == nil && revoked {
+		s.revocations.Add(1)
+	}
+	return err
+}
+
+// --- metrics (the 2026-06-05 M3 directive) ----------------------------------
+//
+// These three methods satisfy the metrics OAuthSource bridge capability. They
+// return counts/gauge ONLY — no series id, token, principal, or client domain —
+// so no OAuth secret or identity can reach a metric label. The store is passed as
+// a metrics "extra" only when non-nil (OAuth enabled), so these are never called
+// on a nil receiver in production; the nil guards are defence-in-depth.
+
+// OAuthActiveConnections returns the number of live token series (active
+// connections) for the shoka_oauth_active_connections gauge — len(List()), read
+// at scrape time. One bbolt read tx, bounded by the live series count. A read
+// error yields 0 (the gauge degrades to absent-data rather than reporting a stale
+// or invented value).
+func (s *Store) OAuthActiveConnections() int64 {
+	if s == nil || s.db == nil {
+		return 0
+	}
+	infos, err := s.List()
+	if err != nil {
+		return 0
+	}
+	return int64(len(infos))
+}
+
+// OAuthTokensIssued returns the process-lifetime count of first-issued token pairs
+// (new connections) for shoka_oauth_tokens_issued_total. Rotations are not counted.
+func (s *Store) OAuthTokensIssued() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.tokensIssued.Load()
+}
+
+// OAuthRevocations returns the process-lifetime count of revoked series for
+// shoka_oauth_revocations_total.
+func (s *Store) OAuthRevocations() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.revocations.Load()
 }
 
 // --- internal helpers -------------------------------------------------------
