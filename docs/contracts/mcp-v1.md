@@ -4,8 +4,6 @@ summary: "Authoritative wire-level contract for Shoka's MCP tools, authenticatio
 status: active
 tags: [contract, mcp, interface, shoka]
 related:
-  - meta/reports/2026-05-27-shoka-verification.md
-  - meta/reports/2026-05-28-shoka-schema-fixes-complete.md
   - docs/conventions/frontmatter.md
   - docs/conventions/document-lifecycle.md
   - docs/operations/sensitive-data-removal.md
@@ -14,9 +12,9 @@ related:
 # Shoka MCP Interface Contract v1
 
 This is the single source of truth for Shoka's MCP interface. A client can build
-against Shoka using only this document and the reports it cites. Every claim is
-sourced (code `file:line`, or a verified report section). Where code and an older
-directive disagreed, **the code wins**; such cases are flagged inline.
+against Shoka using only this document. Every claim is sourced to code
+(`file:line`). Where code and an older directive disagreed, **the code wins**;
+such cases are flagged inline.
 
 ---
 
@@ -47,8 +45,7 @@ directive disagreed, **the code wins**; such cases are flagged inline.
 > Note (code vs. history): the post-remediation verification found that all
 > "optional" tool fields were in fact *required* at the wire schema (finding F2).
 > This was fixed — optional fields now carry `,omitempty` and are genuinely
-> optional. This contract describes the **fixed** behavior. See
-> `meta/reports/2026-05-28-shoka-schema-fixes-complete.md`.
+> optional. This contract describes the **fixed** behavior.
 
 ---
 
@@ -91,9 +88,7 @@ directive disagreed, **the code wins**; such cases are flagged inline.
   makes a client survive a server restart. (Spec: *"The server MAY terminate the
   session at any time, after which it MUST respond to requests containing that
   session ID with HTTP 404 Not Found."* — [§ Transports][st]; SDK
-  `streamable.go:295-301`, `transport.go:35-37`. Verified live —
-  `meta/reports/2026-05-29-shoka-http-transport-complete.md`, the server-restart
-  test.)
+  `streamable.go:295-301`, `transport.go:35-37`.)
 - **Resumption (`Last-Event-ID`):** the transport supports resuming a dropped
   SSE stream by replaying events after the `Last-Event-ID` the client last saw
   ([spec][st]; SDK `streamable.go:920-934`). Replay requires a server-side
@@ -115,8 +110,7 @@ directive disagreed, **the code wins**; such cases are flagged inline.
 
 [st]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
 
-(Source: `cmd/server/main.go:103-121`; SDK `go-sdk@v1.6.0/mcp/streamable.go`;
-live verification `meta/reports/2026-05-29-shoka-http-transport-complete.md`.)
+(Source: `cmd/server/main.go:103-121`; SDK `go-sdk@v1.6.0/mcp/streamable.go`.)
 
 ---
 
@@ -134,13 +128,11 @@ Controlled by config `server.auth` (Source: `internal/config/config.go:23-30`;
     `internal/auth/auth.go:39-75` header-only `Authenticate`/`Middleware` vs.
     query-allowing `AuthenticateWebSocket`/`MiddlewareAllowQueryToken`; wired at
     `cmd/server/main.go:121` (MCP, header-only) and the WS handlers
-    (query-allowing). This was finding **F1**, fixed:
-    `meta/reports/2026-05-28-shoka-schema-fixes-complete.md`.)
+    (query-allowing). This was finding **F1**, fixed.)
   - Tokens are compared in **constant time** against the configured set. (Source:
     `internal/auth/auth.go:80-89`.)
   - **Failure response:** HTTP **401** with header `WWW-Authenticate: Bearer` and
-    body `unauthorized`. (Source: `internal/auth/auth.go` middleware; verification
-    report § 6 Task A.)
+    body `unauthorized`. (Source: `internal/auth/auth.go` middleware.)
   - The credential must be present on **every** request of the session — each
     POST to `/mcp`, the optional GET stream, and the DELETE that ends the session.
     (The Streamable HTTP client must attach the header to all requests.)
@@ -528,14 +520,13 @@ triggers them. (Source: `internal/storage/fs_git.go:27-51,110-116,194-201,325-33
 `cmd/server/main.go:47-57`.)
 
 - **HTTP method/target:** `POST` to each subscribed `url`.
-- **Headers** (verification report § 2.4):
+- **Headers:**
   - `Content-Type: application/json`
   - `X-Shoka-Signature: <lowercase hex HMAC-SHA256>` — present **only** when the
     hook has a `secret`.
   - Go HTTP client defaults: `User-Agent: Go-http-client/1.1`,
     `Accept-Encoding: gzip`, `Content-Length`.
-- **Body schemas** (verification report § 2.4; Source:
-  `internal/webhooks/webhooks.go:26-33`):
+- **Body schemas** (Source: `internal/webhooks/webhooks.go:26-33`):
   - `file_written` / `file_deleted`:
     ```json
     {"event":"file_written","namespace":"…","project":"…","path":"…","commit_hash":"…","timestamp":"<RFC3339Nano>"}
@@ -546,21 +537,20 @@ triggers them. (Source: `internal/storage/fs_git.go:27-51,110-116,194-201,325-33
     ```
 - **Event types (exactly three):** `file_written`, `file_deleted`,
   `project_created`. A hook receives only the events listed in its `events`.
-- **HMAC recipe** (verification report § 2.5): `X-Shoka-Signature =
+- **HMAC recipe:** `X-Shoka-Signature =
   lowercasehex(HMAC_SHA256(key=<hook secret>, msg=<exact raw request body bytes>))`.
   No canonicalization — sign/verify the exact bytes. Shell:
   `printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex`.
 - **Delivery semantics:** asynchronous and best-effort; the originating MCP call
   never blocks on or fails because of delivery. **2 attempts**, **200 ms** backoff
   (doubling), failures are logged and never propagated. In-flight deliveries are
-  drained on graceful shutdown. (Source: `internal/webhooks/webhooks.go:62-123`;
-  verification report § 6 Task E.)
+  drained on graceful shutdown. (Source: `internal/webhooks/webhooks.go:62-123`.)
 
 ---
 
 ## 7. Storage model
 
-(Source: `internal/storage/`; design log `meta/design/2026-05-30-storage-redesign.md`.)
+(Source: `internal/storage/`.)
 
 **The file system is the ground truth; git is a background audit log** (2026-05-30
 storage redesign).
@@ -611,10 +601,6 @@ storage redesign).
 
 ## Sources
 
-- **Reports:** `meta/reports/2026-05-27-shoka-verification.md` (§ 2.1 transport,
-  § 2.2 conflict shape, § 2.4 webhook shape, § 2.5 HMAC, § 6 raw observations);
-  `meta/reports/2026-05-28-shoka-schema-fixes-complete.md` (F1 auth scope, F2
-  optional fields).
 - **Source files:** `cmd/server/main.go:75-216` (transport, tool registration,
   auth/webhook wiring); `internal/auth/auth.go:39-89`; `internal/config/config.go:11-56`;
   `internal/storage/fs_git.go` (storage, locking, commits, events);

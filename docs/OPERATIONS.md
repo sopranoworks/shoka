@@ -20,8 +20,7 @@ The `--config` flag defaults to `shoka.yaml`. On startup Shoka creates
 A devcontainer is provided at `.devcontainer/` (base image
 `mcr.microsoft.com/devcontainers/go:1-bookworm`; Go's toolchain management fetches
 the exact patch from `go.mod` at build time). Inside it, `go build ./...`,
-`go vet ./...`, and `go test ./...` all pass. (Source: `.devcontainer/Dockerfile`;
-`meta/reports/2026-05-28-shoka-schema-fixes-complete.md` § Build/test status.)
+`go vet ./...`, and `go test ./...` all pass. (Source: `.devcontainer/Dockerfile`.)
 
 ## Configuration reference
 
@@ -166,5 +165,4 @@ upgrade compatibility policy.
   auth wiring), `internal/storage/fs_git.go:64-118` (base_dir creation, project
   repos), `.devcontainer/Dockerfile`.
 - Documents: `shoka.example.yaml` (annotated config), `docs/contracts/mcp-v1.md`
-  (§ 1 versioning, § 3 auth, § 6 webhooks),
-  `meta/reports/2026-05-28-shoka-schema-fixes-complete.md` (build/test status).
+  (§ 1 versioning, § 3 auth, § 6 webhooks).
