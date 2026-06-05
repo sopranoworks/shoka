@@ -182,6 +182,16 @@ func (s *FSGitStorage) SearchFiles(namespace, projectName, query, searchIn strin
 		if len(queryBigrams) > 0 && s.IndexHealthy(namespace, projectName) {
 			ix = s.indexForRead(namespace, projectName)
 		}
+		// One atomic add per content query (M2): fastpath when the index engaged
+		// (narrowing reads), fallback when no query bigram or an unhealthy/absent
+		// index means every file is read. Filename-only searches never reach here,
+		// so they are counted in neither bucket. This is the only metric touch on
+		// the search path and it is once per query, never per file.
+		if ix != nil {
+			s.searchFastpath.Add(1)
+		} else {
+			s.searchFallback.Add(1)
+		}
 	}
 
 	walkErr := filepath.WalkDir(projectPath, func(p string, d fs.DirEntry, err error) error {
@@ -250,6 +260,15 @@ func (s *FSGitStorage) SearchFiles(namespace, projectName, query, searchIn strin
 	}
 
 	return matches, nil
+}
+
+// SearchFastpathStats returns the cumulative count of content-searching queries
+// that engaged the index fast path versus those that fell back to reading every
+// file, for shoka_search_fastpath_total{outcome}. It counts once per content query
+// (filename-only searches reach neither bucket). It tells the present->fast /
+// absent->slow story: a healthy, populated index pushes the ratio toward fastpath.
+func (s *FSGitStorage) SearchFastpathStats() (fastpath, fallback int64) {
+	return s.searchFastpath.Load(), s.searchFallback.Load()
 }
 
 // makeSnippet returns up to snippetRunes runes of context on each side of the

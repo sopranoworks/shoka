@@ -43,6 +43,7 @@ func (fakeSource) IndexSweepRuns() int64 { return 14 }
 func (fakeSource) IndexHealthStates() map[string]bool {
 	return map[string]bool{"shoka/maintenance": true, "rohrpost/dev": false}
 }
+func (fakeSource) SearchFastpathStats() (int64, int64) { return 15, 4 } // fastpath, fallback
 
 // fakeNotifyDrops satisfies the NotifyDropSource bridge capability.
 type fakeNotifyDrops struct{ n int64 }
@@ -105,6 +106,8 @@ func TestMetrics_Exposition(t *testing.T) {
 	// Per-project index health: exactly the project's current health is emitted.
 	assert.Contains(t, out, `shoka_index_healthy{namespace="shoka",project="maintenance"} 1`)
 	assert.Contains(t, out, `shoka_index_healthy{namespace="rohrpost",project="dev"} 0`)
+	assert.Contains(t, out, `shoka_search_fastpath_total{outcome="fastpath"} 15`)
+	assert.Contains(t, out, `shoka_search_fastpath_total{outcome="fallback"} 4`)
 
 	// With no bridge extra, the notify-drop family is absent and the endpoint
 	// still serves the rest.

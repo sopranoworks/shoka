@@ -39,8 +39,9 @@ type Source interface {
 
 	// Class-B wiring (the 2026-06-05 M2 directive): the index line — subsystems
 	// that had no counter before. All storage-reachable (no bridge).
-	IndexSweepRuns() int64              // index repair-sweep passes (I1)
-	IndexHealthStates() map[string]bool // "namespace/project" -> index healthy (I1)
+	IndexSweepRuns() int64                           // index repair-sweep passes (I1)
+	IndexHealthStates() map[string]bool              // "namespace/project" -> index healthy (I1)
+	SearchFastpathStats() (fastpath, fallback int64) // I2 content-search engage/fallback
 }
 
 // NotifyDropSource is the bridge capability for the UI manager's slow-subscriber
@@ -91,6 +92,7 @@ type collector struct {
 	// Class-B index-line families (the 2026-06-05 M2 directive).
 	indexSweepRuns *prometheus.Desc
 	indexHealthy   *prometheus.Desc
+	searchFastpath *prometheus.Desc
 }
 
 func newCollector(src Source, extras ...any) *collector {
@@ -120,6 +122,7 @@ func newCollector(src Source, extras ...any) *collector {
 
 		indexSweepRuns: prometheus.NewDesc("shoka_index_sweep_runs_total", "Index repair-sweep reconcile passes (a pass that rebuilds nothing still counts).", nil, nil),
 		indexHealthy:   prometheus.NewDesc("shoka_index_healthy", "1 when a project's derivative index is open and current with HEAD, else 0.", []string{"namespace", "project"}, nil),
+		searchFastpath: prometheus.NewDesc("shoka_search_fastpath_total", "Content-search queries by index outcome: fastpath narrowed reads, fallback read every file.", []string{"outcome"}, nil),
 	}
 
 	// Resolve optional bridge extras by capability. An extra that satisfies a
@@ -159,6 +162,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.notifyDrops
 	ch <- c.indexSweepRuns
 	ch <- c.indexHealthy
+	ch <- c.searchFastpath
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
@@ -230,6 +234,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ns, project := splitProjectKey(key)
 		ch <- prometheus.MustNewConstMetric(c.indexHealthy, prometheus.GaugeValue, boolToFloat(healthy), ns, project)
 	}
+	searchFast, searchFall := c.src.SearchFastpathStats()
+	cnt(c.searchFastpath, searchFast, "fastpath")
+	cnt(c.searchFastpath, searchFall, "fallback")
 
 	// Bridge extra: emitted only when a notify-drop source was supplied.
 	if c.notifyDropSrc != nil {

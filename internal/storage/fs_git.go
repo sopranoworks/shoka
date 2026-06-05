@@ -85,6 +85,15 @@ type FSGitStorage struct {
 	// counts (the metric shows the worker is alive and how often it reconciles).
 	idxSweepRuns atomic.Int64
 
+	// I2 content-search fast-path outcome (the 2026-06-05 M2 directive). One add
+	// per content-searching query at the engage/fallback decision in SearchFiles —
+	// fastpath when the healthy index narrows reads, fallback when no query bigram
+	// or an unhealthy/absent index means every file is read. One atomic per query,
+	// never per file (the WalkDir loop is untouched). Filename-only searches never
+	// reach the decision and are counted in neither. Read via SearchFastpathStats().
+	searchFastpath atomic.Int64
+	searchFallback atomic.Int64
+
 	// Catalog observability counters, surfaced through the metrics Source (§10).
 	catUpdateFailedWrite   atomic.Int64
 	catUpdateFailedDelete  atomic.Int64
