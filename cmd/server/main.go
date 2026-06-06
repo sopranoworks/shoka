@@ -285,7 +285,7 @@ func main() {
 		}
 	}
 
-	mcpServer := setupMCPServer(cfg, s, ts, logger)
+	mcpServer := setupMCPServer(ctx, cfg, s, ts, logger, notifyCenter)
 	// MCP is served over the Streamable HTTP transport (single endpoint on the
 	// dedicated MCP listener; see docs/contracts/mcp-v1.md § Transport). The
 	// handler is path-agnostic, so the documented endpoint is the MCP listener's
@@ -337,7 +337,7 @@ func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
 	return out
 }
 
-func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.TranslationService, logger *slog.Logger) *mcp.Server {
+func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitStorage, ts translation.TranslationService, logger *slog.Logger, notifyCenter *notify.Center) *mcp.Server {
 	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "shoka",
@@ -345,6 +345,13 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 		},
 		&mcp.ServerOptions{Logger: logger},
 	)
+
+	// Scoped MCP change notifications (B-45b): the subscribe/unsubscribe tools let
+	// an MCP client (e.g. an automation watcher) receive notifications/message for
+	// external file changes under a subscribed namespace/project/path pattern,
+	// reusing notifyCenter and its built-in sender-exclusion. Registered alongside
+	// the file tools; the reaper drops subscriptions for sessions that disconnect.
+	subMgr := tools.NewSubscriptionManager(notifyCenter, s, logger)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "get_server_info",
@@ -427,6 +434,21 @@ func setupMCPServer(cfg *config.Config, s *storage.FSGitStorage, ts translation.
 			Description: "Translate a Markdown file to a target language (Japanese to English by default)",
 		}, tools.LoggedTool(logger, "translate_file", tools.TranslateFileHandler(s, ts)))
 	}
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "subscribe",
+		Description: "Subscribe to scoped file-change notifications. Pass a pattern '<namespace>/<project>/<path>' where namespace and project are required and literal (no wildcards) and the path part is a prefix (e.g. 'directives/') or a single-segment glob (e.g. 'directives/2026-*'); recursive '**' is not supported. The session then receives a notifications/message for each external file.write/file.move/file.delete under a matching pattern — never its own writes. Additive: call again to watch more patterns (Redis SUBSCRIBE semantics). Requires the client to issue logging/setLevel to receive the messages",
+	}, tools.LoggedTool(logger, "subscribe", subMgr.SubscribeHandler()))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "unsubscribe",
+		Description: "Remove a change-notification pattern previously registered with subscribe; omit the pattern to clear ALL of this session's subscriptions (Redis UNSUBSCRIBE semantics)",
+	}, tools.LoggedTool(logger, "unsubscribe", subMgr.UnsubscribeHandler()))
+
+	// Wire the reaper to the live session set and start it (drops subscriptions for
+	// disconnected sessions; the SDK exposes no tool-session close hook).
+	subMgr.SetServer(mcpServer)
+	subMgr.StartReaper(ctx)
 
 	return mcpServer
 }
