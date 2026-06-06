@@ -2,8 +2,10 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -122,6 +124,66 @@ type WriteFileInput struct {
 	Path        string  `json:"path" jsonschema:"required, the path to the file to write"`
 	Content     string  `json:"content" jsonschema:"required, the content to write to the file"`
 	IfMatch     *string `json:"if_match,omitempty" jsonschema:"optional, the etag the file is expected to be at (from read_file); if set and stale, the write is rejected with a conflict and no change is made"`
+	// ContentEncoding selects how 'content' is interpreted. Empty or "utf8" (the
+	// default) treats 'content' as the literal file text, unchanged. "base64"
+	// decodes 'content' from standard base64 to raw bytes before writing — use it
+	// for byte-faithful ingest of an existing file (e.g. shoka-cli file add), since
+	// base64 is pure ASCII and survives the JSON wire intact where genuinely
+	// non-UTF-8 bytes would otherwise be silently mangled. When "base64", the
+	// destination path's format is restricted to markdown/json/yaml.
+	ContentEncoding string `json:"content_encoding,omitempty" jsonschema:"optional, the encoding of 'content': 'utf8' (default) is literal text; 'base64' decodes content from base64 to raw bytes before writing (byte-faithful ingest). When 'base64', the path must be a markdown/json/yaml file (.md/.markdown/.json/.yaml/.yml)."`
+}
+
+// ingestAllowedExts is the CLOSED set of file extensions accepted on the base64
+// ingest path (content_encoding="base64"). It admits only the formats a coding
+// agent can actually consume — markdown / json / yaml — and rejects everything
+// else, including extensionless paths, so a binary "foreign object" an agent
+// cannot use is refused at the boundary. Extension-based and case-insensitive; no
+// content sniffing (predictable, no guessing). The restriction is scoped to the
+// ingest path only — a plain (utf8) write_file is unaffected (operator-confirmed
+// 2026-06-05, B-46c).
+var ingestAllowedExts = map[string]bool{
+	".md":       true,
+	".markdown": true,
+	".json":     true,
+	".yaml":     true,
+	".yml":      true,
+}
+
+// allowedIngestFormats is the human-facing list for error messages, in a stable
+// order (derived once from ingestAllowedExts' intent, kept in sync by hand — the
+// set is tiny and closed).
+const allowedIngestFormats = ".md, .markdown, .json, .yaml, .yml"
+
+// isAllowedIngestFormat reports whether path carries an extension in the closed
+// ingest allowlist (case-insensitive). An extensionless path returns false.
+func isAllowedIngestFormat(path string) bool {
+	return ingestAllowedExts[strings.ToLower(filepath.Ext(path))]
+}
+
+// decodeWriteContent resolves WriteFileInput.Content to the raw bytes to store,
+// honouring ContentEncoding. For the base64 ingest path it first enforces the
+// format allowlist (so the restriction binds every client server-side), then
+// decodes. It returns the bytes to write, or a user-facing message + structured
+// reason when the input is rejected (caller turns these into an IsError result).
+// ok is false on rejection.
+func decodeWriteContent(path, content, encoding string) (out string, msg, reason string, ok bool) {
+	switch encoding {
+	case "", "utf8":
+		// Literal text — today's behaviour, unchanged.
+		return content, "", "", true
+	case "base64":
+		if !isAllowedIngestFormat(path) {
+			return "", fmt.Sprintf("unsupported file format for ingest: %q; allowed formats are %s", path, allowedIngestFormats), "format_rejected", false
+		}
+		decoded, err := base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			return "", fmt.Sprintf("invalid base64 content: %v", err), "invalid_encoding", false
+		}
+		return string(decoded), "", "", true
+	default:
+		return "", fmt.Sprintf("unsupported content_encoding %q; use \"utf8\" or \"base64\"", encoding), "invalid_encoding", false
+	}
 }
 
 type WriteFileOutput struct {
@@ -132,7 +194,11 @@ type WriteFileOutput struct {
 	// file's actual current etag.
 	Conflict    bool   `json:"conflict,omitempty"`
 	CurrentETag string `json:"current_etag,omitempty"`
-	// Reason is set on a project-state refusal: "corrupted" | "dangerous" | "write_disabled".
+	// Reason is set on a refusal: a project-state refusal ("corrupted" |
+	// "dangerous" | "write_disabled"), or a base64-ingest refusal
+	// ("format_rejected" when the path is outside the markdown/json/yaml
+	// allowlist | "invalid_encoding" when content_encoding or the base64 content
+	// is malformed).
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -155,9 +221,17 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, WriteFileOutput{}, nil
 		}
 
+		content, msg, reason, ok := decodeWriteContent(input.Path, input.Content, input.ContentEncoding)
+		if !ok {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: msg}},
+				IsError: true,
+			}, WriteFileOutput{Reason: reason}, nil
+		}
+
 		ctx = withWriteIdentity(ctx, req)
 		ctx = notify.WithSender(ctx, mcpSender(req))
-		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, input.Path, input.Content, input.IfMatch)
+		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, input.Path, content, input.IfMatch)
 		if err != nil {
 			if text, conflict, reason, ok := classifyWriteErr(err); ok {
 				return &mcp.CallToolResult{
