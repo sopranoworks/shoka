@@ -152,6 +152,79 @@
   cursor: default;
 }
 
+/* The "generate CLI token" control + its display-once panel (B-46b §2.2). */
+.issue {
+  flex: none;
+  background: var(--c-bg-inset);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.issue:hover:not(:disabled) {
+  border-color: var(--c-accent);
+}
+.issue:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.tokenPanel {
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-3);
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius-sm);
+  background: var(--c-bg-elev);
+}
+.tokenWarn {
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-2);
+}
+.tokenWarn strong {
+  color: var(--c-accent);
+}
+.tokenRow {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: stretch;
+}
+.tokenValue {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  background: var(--c-bg-inset);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.tokenExpiry {
+  color: var(--c-text-faint);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-2);
+}
+.copy,
+.dismiss {
+  flex: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  border: 1px solid var(--c-border-strong);
+  background: var(--c-bg-inset);
+  color: var(--c-text);
+}
+.copy:hover,
+.dismiss:hover {
+  border-color: var(--c-accent);
+}
+
 @media (max-width: 640px) {
   .toolbar {
     padding: var(--sp-2) var(--sp-3);

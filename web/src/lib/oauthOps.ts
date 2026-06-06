@@ -1,5 +1,10 @@
 import { wsClient } from './wsClient'
-import type { OAuthConnection, OAuthListPayload, OAuthDenied } from './types'
+import type {
+  OAuthConnection,
+  OAuthListPayload,
+  OAuthDenied,
+  OAuthIssueSelfPayload,
+} from './types'
 
 // The single imperative /ws/ui ops for the OAuth connection management surface
 // (the 2026-06-03 MCP OAuth (c) directive). No component touches wsClient
@@ -45,6 +50,19 @@ export async function revokeConnection(seriesId: string): Promise<void> {
     throw new OAuthDeniedError(p.reason, p.message)
   }
   // OAUTH_REVOKE ack: the revoke succeeded. Nothing else to read.
+}
+
+// issueSelfToken mints a fresh access token for the operator (the "token to self"
+// path) and returns it ONCE. This is the only op that receives a secret — the
+// caller must show it once for copy and never persist it. Throws OAuthDeniedError
+// on an admin/oauth-disabled refusal.
+export async function issueSelfToken(): Promise<OAuthIssueSelfPayload> {
+  const frame = await wsClient().requestFrame('OAUTH_ISSUE_SELF', {})
+  if (frame.type === 'OAUTH_DENIED') {
+    const p = frame.payload as OAuthDenied
+    throw new OAuthDeniedError(p.reason, p.message)
+  }
+  return frame.payload as OAuthIssueSelfPayload
 }
 
 // clientDomain extracts the display host from a connecting client's CIMD

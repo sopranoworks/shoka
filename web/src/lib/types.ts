@@ -84,6 +84,15 @@ export interface OAuthListPayload {
   connections: OAuthConnection[]
 }
 
+// The OAUTH_ISSUE_SELF response payload (mirrors Go's ui.OAuthIssueSelfPayload):
+// the freshly minted access token for the operator and its expiry. THIS IS THE ONE
+// SECRET that crosses /ws/ui — shown once so the operator can copy it into their
+// CLI client config; it is never stored client-side beyond the transient display.
+export interface OAuthIssueSelfPayload {
+  access_token: string
+  access_expiry: string
+}
+
 // The OAUTH_DENIED frame (mirrors Go's ui.OAuthDeniedPayload): a typed refusal of
 // an admin-only OAuth request. reason is "forbidden" (caller is not an
 // administrator) or "oauth_disabled" (OAuth is off on this server). Distinct from

@@ -4,11 +4,12 @@ import { useIsAdmin } from '../lib/admin'
 import { useConnectionsQuery, OAUTH_CONNECTIONS_KEY } from '../lib/queries'
 import {
   revokeConnection,
+  issueSelfToken,
   clientDomain,
   OAuthDeniedError,
 } from '../lib/oauthOps'
 import { useToast } from '../lib/toast'
-import type { OAuthConnection } from '../lib/types'
+import type { OAuthConnection, OAuthIssueSelfPayload } from '../lib/types'
 import styles from './ConnectionsPage.module.css'
 
 // The administrator-only OAuth connection management view (the 2026-06-03 MCP
@@ -22,6 +23,7 @@ import styles from './ConnectionsPage.module.css'
 // button), not live.
 export function ConnectionsPage() {
   const isAdmin = useIsAdmin()
+  const [issued, setIssued] = useState<OAuthIssueSelfPayload | null>(null)
   const {
     data: connections,
     isLoading,
@@ -54,6 +56,7 @@ export function ConnectionsPage() {
           <strong>OAuth connections</strong>
           <span className={styles.sub}> · active MCP authorizations</span>
         </span>
+        <IssueTokenButton disabled={oauthDisabled} onIssued={setIssued} />
         <button
           className={styles.refresh}
           onClick={() => void refetch()}
@@ -63,6 +66,10 @@ export function ConnectionsPage() {
           {isFetching ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
+
+      {issued && (
+        <IssuedTokenPanel token={issued} onDismiss={() => setIssued(null)} />
+      )}
 
       <div className={styles.body} data-scroll-restoration-id="connections-body">
         {isLoading ? (
@@ -109,6 +116,87 @@ export function ConnectionsPage() {
 function fmtTime(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
+}
+
+// IssueTokenButton mints a "token to self" for the CLI (B-46b §2.2). The minted
+// token is the one secret that crosses /ws/ui; on success it is handed up to the
+// page (onIssued) for a display-once panel, never stored or toasted.
+function IssueTokenButton({
+  disabled,
+  onIssued,
+}: {
+  disabled: boolean
+  onIssued: (t: OAuthIssueSelfPayload) => void
+}) {
+  const { add: addToast } = useToast()
+  const issue = useMutation({
+    mutationFn: () => issueSelfToken(),
+    onSuccess: (t) => onIssued(t),
+    onError: (e) => {
+      const text =
+        e instanceof OAuthDeniedError
+          ? e.message
+          : 'Failed to generate a CLI token.'
+      addToast({ level: 'warn', text })
+    },
+  })
+  return (
+    <button
+      className={styles.issue}
+      onClick={() => issue.mutate()}
+      disabled={disabled || issue.isPending}
+      aria-label="Generate a token for the CLI"
+    >
+      {issue.isPending ? 'Generating…' : 'Generate CLI token'}
+    </button>
+  )
+}
+
+// IssuedTokenPanel shows the freshly minted token ONCE with a copy button and a
+// warning that it will not be shown again. The operator pastes it into their CLI
+// client config (`shoka-cli auth`). Dismissing clears it from the page state.
+function IssuedTokenPanel({
+  token,
+  onDismiss,
+}: {
+  token: OAuthIssueSelfPayload
+  onDismiss: () => void
+}) {
+  const { add: addToast } = useToast()
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    void navigator.clipboard
+      ?.writeText(token.access_token)
+      .then(() => setCopied(true))
+      .catch(() =>
+        addToast({
+          level: 'warn',
+          text: 'Could not copy — select and copy manually.',
+        }),
+      )
+  }
+  return (
+    <div className={styles.tokenPanel} role="status">
+      <div className={styles.tokenWarn}>
+        <strong>Copy this token now.</strong> It is shown once. Paste it into your
+        CLI config with <code>shoka-cli auth</code>.
+      </div>
+      <div className={styles.tokenRow}>
+        <code className={styles.tokenValue}>{token.access_token}</code>
+        <button className={styles.copy} onClick={copy} aria-label="Copy token">
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <button
+          className={styles.dismiss}
+          onClick={onDismiss}
+          aria-label="Dismiss token"
+        >
+          Done
+        </button>
+      </div>
+      <div className={styles.tokenExpiry}>Expires {fmtTime(token.access_expiry)}</div>
+    </div>
+  )
 }
 
 function ConnectionRow({ conn }: { conn: OAuthConnection }) {

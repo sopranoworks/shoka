@@ -11,13 +11,14 @@ import { AdminProvider } from '../lib/admin'
 // fns are defined via vi.hoisted so the hoisted vi.mock factory can reference
 // them without hitting the temporal-dead-zone (the factory builds its object
 // eagerly during import).
-const { listConnections, revokeConnection } = vi.hoisted(() => ({
+const { listConnections, revokeConnection, issueSelfToken } = vi.hoisted(() => ({
   listConnections: vi.fn(),
   revokeConnection: vi.fn(),
+  issueSelfToken: vi.fn(),
 }))
 vi.mock('../lib/oauthOps', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/oauthOps')>()
-  return { ...actual, listConnections, revokeConnection }
+  return { ...actual, listConnections, revokeConnection, issueSelfToken }
 })
 
 import { ConnectionsPage } from './ConnectionsPage'
@@ -51,6 +52,7 @@ describe('ConnectionsPage', () => {
   beforeEach(() => {
     listConnections.mockReset()
     revokeConnection.mockReset()
+    issueSelfToken.mockReset()
   })
 
   it('lists connections by client domain, principal, and short series id (no secrets)', async () => {
@@ -61,9 +63,11 @@ describe('ConnectionsPage', () => {
     expect(await screen.findByText('connector.example.com')).toBeInTheDocument()
     expect(screen.getByText('Op Erator')).toBeInTheDocument()
     expect(screen.getByText('series-a')).toBeInTheDocument()
-    // No secret value anywhere in the rendered DOM: no token text, and the full
-    // (long) series id is never shown — only its short prefix.
-    expect(container.textContent).not.toMatch(/token/i)
+    // No secret value anywhere in the rendered DOM: no secret-bearing field, and
+    // the full (long) series id is never shown — only its short prefix. (The
+    // "Generate CLI token" affordance is chrome, not a secret, so the guard
+    // targets actual secret fields/values rather than the bare word "token".)
+    expect(container.textContent).not.toMatch(/access_token|refresh_token/i)
     expect(container.textContent).not.toContain('series-aaaa-1111')
   })
 
@@ -92,6 +96,52 @@ describe('ConnectionsPage', () => {
     expect(
       await screen.findByText(/OAuth is not enabled on this server/i),
     ).toBeInTheDocument()
+  })
+
+  it('generates a CLI token and shows it once with a copy control', async () => {
+    const user = userEvent.setup()
+    listConnections.mockResolvedValue([])
+    issueSelfToken.mockResolvedValue({
+      access_token: 'minted-secret-value',
+      access_expiry: '2026-06-06T13:00:00Z',
+    })
+
+    renderPage()
+    await screen.findByText('No active OAuth connections.')
+
+    // The token is not shown until generated.
+    expect(screen.queryByText('minted-secret-value')).toBeNull()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Generate a token for the CLI' }),
+    )
+
+    // The minted token appears once, with copy + done controls.
+    expect(await screen.findByText('minted-secret-value')).toBeInTheDocument()
+    expect(issueSelfToken).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Copy token' })).toBeInTheDocument()
+
+    // Dismissing clears it from the page.
+    await user.click(screen.getByRole('button', { name: 'Dismiss token' }))
+    expect(screen.queryByText('minted-secret-value')).toBeNull()
+  })
+
+  it('reports a denied token mint without showing a token', async () => {
+    const user = userEvent.setup()
+    listConnections.mockResolvedValue([])
+    issueSelfToken.mockRejectedValue(
+      new OAuthDeniedError('forbidden', 'admin only'),
+    )
+
+    renderPage()
+    await screen.findByText('No active OAuth connections.')
+    await user.click(
+      screen.getByRole('button', { name: 'Generate a token for the CLI' }),
+    )
+
+    // The denial surfaces (as a toast); no token panel appears.
+    await waitFor(() => expect(issueSelfToken).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: 'Copy token' })).toBeNull()
   })
 
   it('revoke is inline-confirm gated, targets one series, and drops the row on success', async () => {
