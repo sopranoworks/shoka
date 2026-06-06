@@ -45,6 +45,8 @@ func run(args []string) error {
 		return cmdAuth(args[1:])
 	case "projects":
 		return cmdProjects(args[1:])
+	case "file":
+		return cmdFile(args[1:])
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return nil
@@ -61,9 +63,15 @@ Usage:
   shoka-cli auth      [--env NAME] [--endpoint URL] [--token-file PATH] \
                       [--default-namespace NS] [--default-project PROJ]
   shoka-cli projects  [--env NAME]
+  shoka-cli file add  [--env NAME] [--namespace NS] [--project PROJ] \
+                      <local-path> <dest>
 
 The access token is read from --token-file or stdin (never from the command line,
 which would leak it into shell history) and stored at
   <user-config-dir>/shoka/<env>/config.yaml  (file 0600, dir 0700).
+
+A <dest> is a Shoka address: a relative in-project path (e.g. notes/foo.md) uses
+the namespace/project from --namespace/--project or the config defaults; an
+absolute /namespace/project/path names the project explicitly.
 `)
 }
