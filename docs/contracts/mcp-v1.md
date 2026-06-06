@@ -340,13 +340,25 @@ Apply to every tool unless noted:
   synchronously; the git commit is performed in the background (§ 7).
 - **Input:** `namespace` (opt), `project_name` (**required**), `path`
   (**required**), `content` (string, **required**), `if_match` (string, optional
-  — the etag the file is expected to be at; omit to skip the check; see § 5).
+  — the etag the file is expected to be at; omit to skip the check; see § 5),
+  `content_encoding` (string, optional — `"utf8"` (default, or omitted) treats
+  `content` as literal text; `"base64"` decodes `content` from standard base64 to
+  raw bytes before writing, for byte-faithful ingest of an existing file whose
+  bytes may not be valid UTF-8). The decode happens server-side, before the
+  ordinary guarded write path — there is no separate ingest path.
 - **Output (success):** `message` (string), `etag` (string — the new content
   etag).
 - **Output (conflict):** `isError: true`; structured `conflict: true`,
   `current_etag: <etag>` (see § 5).
 - **Output (project-state refusal):** `isError: true`; structured
   `reason: "corrupted" | "dangerous" | "write_disabled"` (no etag; see § 7).
+- **Output (ingest refusal, `content_encoding: "base64"` only):** `isError: true`;
+  structured `reason: "format_rejected"` when `path` is outside the ingest
+  allowlist — the closed set `.md`/`.markdown`/`.json`/`.yaml`/`.yml`
+  (case-insensitive; an extensionless path is rejected) — or
+  `reason: "invalid_encoding"` when `content_encoding` is unrecognised or
+  `content` is not valid base64. The allowlist is enforced **only** on the base64
+  ingest path; a plain (`utf8`) write is unrestricted.
 - **Side effects:** synchronous atomic file write + WAL append; a background
   git commit (`Update <path>`) and a **`file_written`** webhook with `commit_hash`
   follow asynchronously. (Source: `internal/tools/file.go`;
