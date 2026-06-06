@@ -9,16 +9,20 @@
 // Shoka-specific judgement — all ingest/format/catalog logic lives in the
 // server-side tools; the client only invokes them.
 //
-// Subcommands (this foundation):
+// Subcommands:
 //
 //	shoka-cli auth      Store the display-once access token into the client config.
 //	shoka-cli projects  Connect with the stored token and list projects (a
 //	                    read-only credential check / smoke test).
+//	shoka-cli file      Byte-faithful ingest of a local file (file add).
+//	shoka-cli skill     apt-model skill distribution: update/install/upgrade/
+//	                    outdated. git + filesystem only; no connection, no data
+//	                    path.
 //
-// `shoka file add` and `shoka skill install` are later steps and are NOT here. The
-// subcommand surface is small, so it stays on the repo's stdlib `flag` convention
-// (cmd/server uses it too) with hand-rolled dispatch — no subcommand-library
-// dependency until the tree is deep enough to actually need one.
+// The subcommand surface is small, so it stays on the repo's stdlib `flag`
+// convention (cmd/server uses it too) with hand-rolled dispatch — no
+// subcommand-library dependency until the tree is deep enough to actually need
+// one.
 package main
 
 import (
@@ -47,6 +51,8 @@ func run(args []string) error {
 		return cmdProjects(args[1:])
 	case "file":
 		return cmdFile(args[1:])
+	case "skill":
+		return cmdSkill(args[1:])
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return nil
@@ -65,6 +71,10 @@ Usage:
   shoka-cli projects  [--env NAME]
   shoka-cli file add  [--env NAME] [--namespace NS] [--project PROJ] \
                       <local-path> <dest>
+  shoka-cli skill update    --repo URL-OR-PATH [--ref REF]
+  shoka-cli skill install   [--runtime claude|gemini] [--global] <name>
+  shoka-cli skill upgrade   [--runtime claude|gemini] [--global]
+  shoka-cli skill outdated  [--runtime claude|gemini] [--global]
 
 The access token is read from --token-file or stdin (never from the command line,
 which would leak it into shell history) and stored at
@@ -73,5 +83,12 @@ which would leak it into shell history) and stored at
 A <dest> is a Shoka address: a relative in-project path (e.g. notes/foo.md) uses
 the namespace/project from --namespace/--project or the config defaults; an
 absolute /namespace/project/path names the project explicitly.
+
+skill distribution follows the apt model: "skill update" (the one network op)
+git-fetches the --repo skills repository into a local cache
+(<user-cache-dir>/shoka/skills); "skill install"/"upgrade" copy from that cache
+into the runtime convention dir (.claude/skills or .gemini/skills, or the
+user-level dir with --global) and work offline. Skills are not Shoka data and
+install never writes the workspace JSON.
 `)
 }
