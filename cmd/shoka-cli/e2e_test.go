@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,127 @@ func TestEndToEndCredentialPath(t *testing.T) {
 	// (4) A bad token is rejected by the same enforcement (connect fails).
 	if _, err := mcpclient.Connect(ctx, mcpTS.URL, "not-a-valid-token"); err == nil {
 		t.Fatal("connect with a bad token unexpectedly succeeded; enforcement is not gating")
+	}
+}
+
+// TestEndToEndFileAdd proves `shoka-cli file add` end to end against a real
+// auth-enforced MCP server (the B-45b/B-46b real-client lineage): the actual
+// cmdFileAdd subcommand reads a local file, base64-encodes it, resolves the B-47
+// destination, and calls the real write_file tool over a Bearer-authenticated
+// Streamable-HTTP connection. It exercises the five directive cases:
+//
+//	(a) a UTF-8 markdown file lands byte-faithful at the resolved dest;
+//	(b) a file with genuinely non-UTF-8 bytes survives intact via base64
+//	    (the B-46a failure case, closed);
+//	(c) a disallowed format is rejected server-side (the client surfaces it);
+//	(d) a relative dest uses the config default namespace/project;
+//	(e) an absolute /namespace/project/path dest is split and honoured.
+func TestEndToEndFileAdd(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	s, err := storage.NewFSGitStorageWithOptions(dir, storage.Options{
+		Identity: identity.Defaults{
+			UserName:  "Osamu Takahashi",
+			UserEmail: "forte.nit@gmail.com",
+			AgentName: "shoka-agent",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.CreateProject("ns", "proj"); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := oauthstore.Open(dir + "/oauth.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// The auth-enforced MCP server exposing the real write_file tool.
+	mcpSrv := mcp.NewServer(&mcp.Implementation{Name: "shoka-test", Version: "0.0.0"}, nil)
+	mcp.AddTool(mcpSrv, &mcp.Tool{Name: "write_file", Description: "write a file"}, tools.WriteFileHandler(s))
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
+	validate := func(token string) (auth.Principal, bool) {
+		if token == "" {
+			return auth.Principal{}, false
+		}
+		rec, lerr := store.Lookup(token, time.Now())
+		if lerr != nil {
+			return auth.Principal{}, false
+		}
+		return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, true
+	}
+	authn := auth.New(auth.Config{Enabled: true, ValidateToken: validate})
+	mcpTS := httptest.NewServer(authn.Middleware(mcpHandler))
+	t.Cleanup(mcpTS.Close)
+
+	// A real token in the shared store; stored via the same client-config writer.
+	rec, err := store.NewSeries(
+		"shoka-cli",
+		oauthstore.Principal{Name: "Osamu Takahashi", Email: "forte.nit@gmail.com"},
+		"https://example.invalid/mcp",
+		time.Now(), time.Hour, 24*time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clientconfig.Save(clientconfig.DefaultEnvironment, &clientconfig.Config{
+		Endpoint:         mcpTS.URL,
+		Token:            rec.AccessToken,
+		DefaultNamespace: "ns",
+		DefaultProject:   "proj",
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	writeLocal := func(name string, data []byte) string {
+		p := dir + "/" + name
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			t.Fatalf("write local fixture %s: %v", name, err)
+		}
+		return p
+	}
+
+	// (a)+(d) UTF-8 markdown, relative dest via config default ns/project.
+	utf8Doc := []byte("# 見出し\n\nByte-faithful 本文。\n")
+	if err := cmdFileAdd([]string{writeLocal("doc.md", utf8Doc), "notes/doc.md"}); err != nil {
+		t.Fatalf("(a/d) file add UTF-8 relative: %v", err)
+	}
+	if got, _, _ := s.ReadFileWithETag("ns", "proj", "notes/doc.md"); got != string(utf8Doc) {
+		t.Fatalf("(a/d) round-trip mismatch:\n got %q\nwant %q", got, utf8Doc)
+	}
+
+	// (b) Non-UTF-8 bytes survive intact via base64 — a .md path keeps it on the
+	// allowed ingest list.
+	rawBytes := []byte{0xff, 0xfe, 0x00, 0xe9, 0x41, 0x42}
+	if err := cmdFileAdd([]string{writeLocal("raw.bin", rawBytes), "raw.md"}); err != nil {
+		t.Fatalf("(b) file add non-UTF-8: %v", err)
+	}
+	if got, _, _ := s.ReadFileWithETag("ns", "proj", "raw.md"); got != string(rawBytes) {
+		t.Fatalf("(b) non-UTF-8 round-trip mismatch:\n got %x\nwant %x", got, rawBytes)
+	}
+
+	// (e) Absolute /namespace/project/path dest.
+	absDoc := []byte("absolute dest\n")
+	if err := cmdFileAdd([]string{writeLocal("abs.md", absDoc), "/ns/proj/sub/abs.md"}); err != nil {
+		t.Fatalf("(e) file add absolute: %v", err)
+	}
+	if got, _, _ := s.ReadFileWithETag("ns", "proj", "sub/abs.md"); got != string(absDoc) {
+		t.Fatalf("(e) absolute dest mismatch:\n got %q\nwant %q", got, absDoc)
+	}
+
+	// (c) A disallowed format is rejected server-side; the client surfaces an error
+	// and nothing is written.
+	if err := cmdFileAdd([]string{writeLocal("foreign.pdf", []byte("%PDF-1.7")), "foreign.pdf"}); err == nil {
+		t.Fatal("(c) disallowed format must be rejected, but file add succeeded")
+	}
+	if _, _, rerr := s.ReadFileWithETag("ns", "proj", "foreign.pdf"); rerr == nil {
+		t.Fatal("(c) rejected ingest must not write the file")
 	}
 }
 
