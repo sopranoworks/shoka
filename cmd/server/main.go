@@ -239,6 +239,33 @@ func main() {
 			CodeTTL:    oc.AuthorizationCodeTTL.Std(),
 		})
 
+		// Token-to-self (B-46b §2.2): the admin-gated OAUTH_ISSUE_SELF action mints
+		// a fresh access token for the current-mode operator and shows it once in the
+		// Web UI so it can be pasted into the CLI client config. It wraps the same
+		// NewSeries primitive /token uses — with the operator principal, the
+		// configured TTLs, and the RFC 8707 resource derived per-request exactly as
+		// /authorize does — so a CLI token is indistinguishable from any other. All
+		// oauth/serverurl/identity wiring stays here in main; the manager only
+		// admin-gates and calls. The minted token is never logged on this path.
+		uim.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(r *http.Request) (string, time.Time, error) {
+			base, berr := serverurl.Base(cfg.Server.MCP.ExternalURL, r)
+			if berr != nil {
+				return "", time.Time{}, berr
+			}
+			rec, nerr := oauthStore.NewSeries(
+				"shoka-cli",
+				oauthstore.Principal{Name: cfg.Identity.User.Name, Email: cfg.Identity.User.Email},
+				serverurl.ResourceURL(base),
+				time.Now(),
+				oc.AccessTokenTTL.Std(),
+				oc.RefreshTokenTTL.Std(),
+			)
+			if nerr != nil {
+				return "", time.Time{}, nerr
+			}
+			return rec.AccessToken, rec.AccessExpiry, nil
+		}))
+
 		// Token enforcement: a valid OAuth access token is required on the MCP path
 		// and its bound principal is attached to the request (→ commit Committer).
 		authConfig.ValidateToken = func(token string) (auth.Principal, bool) {

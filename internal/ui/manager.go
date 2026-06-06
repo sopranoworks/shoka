@@ -69,6 +69,13 @@ const (
 	// enabled (no store). See AdminAuthorizer and the §2.1a seam below.
 	MsgOAuthList   MessageType = "OAUTH_LIST"
 	MsgOAuthRevoke MessageType = "OAUTH_REVOKE"
+	// MsgOAuthIssueSelf mints a fresh access token for the current-mode operator
+	// (the "token to self" path, B-46b §2.2) and returns it ONCE in the response.
+	// This is the single deliberate exception to "no secret crosses /ws/ui": the
+	// operator copies the displayed token into their CLI client config. It is
+	// admin-gated (the same adminGate as List/Revoke) and the token is never logged
+	// or persisted anywhere on the server beyond the normal token store.
+	MsgOAuthIssueSelf MessageType = "OAUTH_ISSUE_SELF"
 	// MsgOAuthDenied is the typed refusal frame for the admin-only OAuth requests:
 	// reason "forbidden" (the caller is not an administrator) or "oauth_disabled"
 	// (OAuth is off, so there is no connection store). It is distinct from the
@@ -212,6 +219,15 @@ type OAuthDeniedPayload struct {
 	Message string `json:"message"`
 }
 
+// OAuthIssueSelfPayload is the OAUTH_ISSUE_SELF response body: the freshly minted
+// access token (display-once — the operator copies it into their CLI config) and
+// its expiry, so the UI can warn how long it lasts. The token is the one secret
+// that crosses /ws/ui; it is never logged or stored beyond the token store.
+type OAuthIssueSelfPayload struct {
+	AccessToken  string    `json:"access_token"`
+	AccessExpiry time.Time `json:"access_expiry"`
+}
+
 // SearchResultPayload is the SEARCH_RESULT frame's body: the matches, each a
 // {path, snippet}. The slice is always non-nil so the client receives [] rather
 // than null on a no-match query.
@@ -239,6 +255,10 @@ type wsClient struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 	id      string
+	// req is the upgraded connection's HTTP request, retained so the admin-gated
+	// OAUTH_ISSUE_SELF handler can derive the RFC 8707 resource (forwarded-header
+	// aware) the same way /authorize does. It is read-only after the upgrade.
+	req *http.Request
 }
 
 func (c *wsClient) writeMessage(msgType MessageType, payload interface{}) error {
@@ -284,6 +304,25 @@ type OAuthConnectionStore interface {
 	Revoke(seriesID string) error
 }
 
+// OAuthSelfIssuer mints a fresh access token bound to the current-mode operator
+// (the "token to self" path, B-46b §2.2). It is a SEPARATE capability from
+// OAuthConnectionStore so the manager stays free of oauth/serverurl/identity
+// wiring: the concrete issuer is built in cmd/server (it holds the store, the
+// operator principal, the TTLs, and the resource deriver) and injected via
+// SetOAuthSelfIssuer. The request is passed so the issuer can derive the RFC 8707
+// resource exactly as /authorize does (forwarded-header aware). It returns the
+// access token and its expiry; the manager never sees how it is minted. nil when
+// OAuth is disabled.
+type OAuthSelfIssuer interface {
+	IssueSelf(r *http.Request) (accessToken string, accessExpiry time.Time, err error)
+}
+
+// OAuthSelfIssuerFunc adapts a function to OAuthSelfIssuer.
+type OAuthSelfIssuerFunc func(r *http.Request) (string, time.Time, error)
+
+// IssueSelf calls f.
+func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request) (string, time.Time, error) { return f(r) }
+
 // AdminAuthorizer is the administrator-only authorization seam for the OAuth
 // management requests (the 2026-06-03 MCP OAuth (c) directive §2.1a). It gates
 // OAUTH_LIST/OAUTH_REVOKE on the SERVER side — the authoritative gate — because
@@ -322,6 +361,10 @@ type Manager struct {
 	// wiring), in which case OAUTH_LIST/OAUTH_REVOKE return MsgOAuthDenied with
 	// reason "oauth_disabled" rather than nil-panicking.
 	oauth OAuthConnectionStore
+	// selfIssuer mints the operator's "token to self" (B-46b §2.2). nil when OAuth
+	// is disabled (wired via SetOAuthSelfIssuer in the oauth-enabled startup path),
+	// in which case OAUTH_ISSUE_SELF returns MsgOAuthDenied ("oauth_disabled").
+	selfIssuer OAuthSelfIssuer
 	// admin gates the administrator-only OAuth requests (§2.1a). Never nil:
 	// NewManager defaults it to singleUserAdmin (trivially true).
 	admin AdminAuthorizer
@@ -363,6 +406,13 @@ func (m *Manager) SetOAuthStore(s OAuthConnectionStore) {
 	m.oauth = s
 }
 
+// SetOAuthSelfIssuer wires the token-to-self minter for OAUTH_ISSUE_SELF. Called
+// only in the oauth-enabled startup path; when unset the issuer is nil and
+// OAUTH_ISSUE_SELF returns MsgOAuthDenied ("oauth_disabled").
+func (m *Manager) SetOAuthSelfIssuer(i OAuthSelfIssuer) {
+	m.selfIssuer = i
+}
+
 // SetAdminAuthorizer overrides the administrator-only authorization seam for the
 // OAuth management requests (§2.1a). The default is singleUserAdmin (trivially
 // true). This is the B-28 attach point: a real admin-role check replaces the
@@ -384,7 +434,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-	client := &wsClient{conn: conn, id: fmt.Sprintf("ws-%d", m.connSeq.Add(1))}
+	client := &wsClient{conn: conn, id: fmt.Sprintf("ws-%d", m.connSeq.Add(1)), req: r}
 
 	// Subscribe to the notification center and forward events to this browser as
 	// NOTIFY messages. The callback is non-blocking: it pushes onto a bounded
@@ -450,6 +500,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleOAuthList(client)
 		case MsgOAuthRevoke:
 			m.handleOAuthRevoke(client, wsMsg.Payload)
+		case MsgOAuthIssueSelf:
+			m.handleOAuthIssueSelf(client)
 		default:
 			client.sendError("Unknown message type")
 		}
@@ -739,6 +791,37 @@ func (m *Manager) handleOAuthRevoke(client *wsClient, payload json.RawMessage) {
 		return
 	}
 	client.sendResponse(MsgOAuthRevoke, OAuthRevokePayload{SeriesID: p.SeriesID, Status: "ok"})
+}
+
+// handleOAuthIssueSelf mints a fresh access token bound to the current-mode
+// operator (the "token to self" path, B-46b §2.2) and returns it ONCE. It is the
+// only place a secret token crosses /ws/ui — a deliberate, admin-gated exception
+// so the operator can paste the token into their CLI client config. The token is
+// NOT logged (no log statement carries it) and is persisted only in the normal
+// token store. Administrator-only via the same adminGate as List/Revoke; the
+// issuer being nil (OAuth disabled) is reported as oauth_disabled.
+func (m *Manager) handleOAuthIssueSelf(client *wsClient) {
+	if !m.adminGate(client) {
+		return
+	}
+	if m.selfIssuer == nil {
+		client.sendResponse(MsgOAuthDenied, OAuthDeniedPayload{
+			Reason:  "oauth_disabled",
+			Message: "token issuance is not available on this server",
+		})
+		return
+	}
+	token, expiry, err := m.selfIssuer.IssueSelf(client.req)
+	if err != nil {
+		// The error is generic on the wire; the token never appears in it.
+		client.sendError("Failed to issue a token")
+		log.Printf("OAUTH_ISSUE_SELF mint failed: %v", err)
+		return
+	}
+	client.sendResponse(MsgOAuthIssueSelf, OAuthIssueSelfPayload{
+		AccessToken:  token,
+		AccessExpiry: expiry,
+	})
 }
 
 // toOAuthConnectionInfo maps a store SeriesInfo to the no-secret wire DTO,
