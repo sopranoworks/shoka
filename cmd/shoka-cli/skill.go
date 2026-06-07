@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/shoka/mcp-server/internal/skillcache"
@@ -216,26 +215,15 @@ func computeDrift(runtime string, global bool) ([]string, error) {
 
 // skillsConventionDir resolves the skills directory for a runtime. The skill is
 // later placed at <returned>/<name>/. --global selects the user-level location;
-// otherwise it is relative to the current working directory.
+// otherwise it is relative to the current working directory. It builds on the
+// shared conventionDir resolver so the runtime→path mapping is defined once:
 //
 //	claude -> .claude/skills   (~/.claude/skills with --global)
 //	gemini -> .gemini/skills   (~/.gemini/skills with --global)
 func skillsConventionDir(runtime string, global bool) (string, error) {
-	var conventionDir string
-	switch runtime {
-	case "claude":
-		conventionDir = ".claude"
-	case "gemini":
-		conventionDir = ".gemini"
-	default:
-		return "", fmt.Errorf("unknown runtime %q (expected: claude, gemini)", runtime)
+	base, err := conventionDir(runtime, global)
+	if err != nil {
+		return "", err
 	}
-	if global {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home dir for --global: %w", err)
-		}
-		return filepath.Join(home, conventionDir, "skills"), nil
-	}
-	return filepath.Join(conventionDir, "skills"), nil
+	return filepath.Join(base, "skills"), nil
 }

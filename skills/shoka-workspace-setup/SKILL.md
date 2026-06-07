@@ -1,6 +1,6 @@
 ---
 name: shoka-workspace-setup
-description: Use when a working directory has no Shoka workspace JSON yet — the interactive initial-setup fallback that the shoka-directive-onboarding skill sends you to when it cannot find the per-working-dir assignment. Discovers the available namespaces/projects via the list_projects MCP tool, leads the user to choose which one this working directory is responsible for, and writes the workspace JSON. Sets only the assignment, not the connection.
+description: Use when a working directory has no Shoka workspace JSON yet — the interactive initial-setup fallback that the shoka-directive-onboarding skill sends you to when it cannot find the per-working-dir assignment. Discovers the available namespaces/projects via the list_projects MCP tool, leads the user to choose which one this working directory is responsible for, and records the assignment by calling shoka-cli workspace set. Sets only the assignment, not the connection.
 ---
 
 # Shoka Workspace Setup
@@ -32,28 +32,21 @@ user first, since other skills rely on the current assignment.
 
 ## What you will produce
 
-A single file — the **workspace JSON** — in the convention directory above, with
-this exact shape (the same shape documented in `skills/README.md`; do not invent
-a new one):
+The **workspace JSON** — the per-working-dir record of which Shoka
+namespace/project this working directory is responsible for — written into the
+convention directory above. You do **not** hand-write this file: you record the
+assignment by running **`shoka-cli workspace set`** (step 5), which is the single
+write point that owns the file's shape and convention-dir location.
 
-```json
-{
-  "namespace": "<namespace>",
-  "project": "<project>",
-  "environment": "<optional: the clientconfig environment name>"
-}
-```
+You choose two things and pass them to that command:
 
-- `namespace`, `project` — which Shoka namespace/project this working directory is
-  responsible for. **Required.**
-- `environment` — optional; names the connection environment (the
-  `internal/clientconfig` environment holding endpoint + token) this assignment
-  connects through. Omit it to use the default environment.
-
-The values above are **abstract placeholders**. Never hard-code a concrete
-namespace/project into the file from memory or example — every concrete value
-comes from `list_projects` at runtime or from the user's explicit choice (see the
-steps below).
+- **namespace / project** — which Shoka namespace/project this working directory is
+  responsible for. **Required.** Every concrete value comes from `list_projects` at
+  runtime or the user's explicit choice (see the steps) — never hard-coded from
+  memory or an example.
+- **environment** *(optional)* — the connection environment (the `shoka-cli auth`
+  clientconfig environment holding endpoint + token) this assignment uses. Omit it
+  to use the default environment.
 
 ## Steps
 
@@ -85,16 +78,27 @@ steps below).
    - If the choice is ambiguous or the user is unsure, ask rather than picking
      one arbitrarily.
 
-5. **Write the workspace JSON.** Write the chosen values into the convention
-   directory using the exact shape above. Optionally set `environment` if the
-   user wants this assignment to use a specific (non-default) connection
-   environment; otherwise omit it.
+5. **Record the assignment with `shoka-cli workspace set`.** Run:
 
-   **This is an ordinary file in the runtime's convention directory** (e.g.
-   `.claude/shoka-workspace.json`) — write it with the normal file-writing tool.
-   It is **not** Shoka data: do **not** write it through the Shoka
-   `write_file`/`read_file` MCP data path, and the ingest allowlist does not
-   apply to it.
+   ```
+   shoka-cli workspace set --namespace <namespace> --project <project>
+   ```
+
+   substituting the values the user chose. Add `--environment <env>` if the user
+   wants this assignment to use a specific (non-default) connection environment;
+   add `--runtime gemini` if the runtime is gemini-cli (the default is Claude
+   Code); add `--global` to write at the user level instead of this working
+   directory.
+
+   `workspace set` is the **single write point** for the workspace JSON — it owns
+   the file's shape and convention-dir location, so you do **not** hand-write the
+   file or compose its JSON yourself. If a workspace JSON already exists and the
+   user wants to change it, re-run with `--force` (it prints the old→new change);
+   otherwise `workspace set` refuses to overwrite.
+
+   The workspace JSON is **not** Shoka data: `workspace set` writes an ordinary
+   file in the runtime's convention directory — never through the Shoka
+   `write_file`/`read_file` MCP data path, and the ingest allowlist does not apply.
 
 6. **State the layer boundary to the user.** Tell the user that this set the
    **assignment** (which namespace/project this working directory owns), and that
@@ -127,11 +131,13 @@ CLI-ergonomics defaults itself.
 - **Discover, don't guess.** Concrete namespaces/projects come from
   `list_projects` (or the user's explicit choice), never hard-coded. Any example
   in this skill is an abstract placeholder.
-- **Reuse the workspace JSON shape exactly** (`{namespace, project,
-  environment?}`, in the runtime convention dir). Do not invent a new shape; it
-  must match what `shoka-directive-onboarding` reads and what `skills/README.md`
-  documents.
-- **Assignment only.** Write the workspace JSON and nothing else: do not set the
+- **Record via `shoka-cli workspace set`; do not hand-write the JSON.** The
+  workspace JSON's shape and convention-dir location live in `workspace set`, the
+  single write point — call it rather than composing the file yourself, so the
+  interactive (this skill), automated (a launcher), and manual (a human) paths all
+  produce an identical assignment.
+- **Assignment only.** Set the assignment and nothing else: do not configure the
   connection (endpoint + token) or the CLI-ergonomics defaults.
-- **The workspace JSON is not Shoka data.** Write it as an ordinary file in the
-  convention directory, never through the `write_file`/`read_file` MCP data path.
+- **The workspace JSON is not Shoka data.** `workspace set` writes an ordinary file
+  in the convention directory, never through the `write_file`/`read_file` MCP data
+  path.

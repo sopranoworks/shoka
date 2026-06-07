@@ -18,6 +18,10 @@
 //	shoka-cli skill     apt-model skill distribution: update/install/upgrade/
 //	                    outdated. git + filesystem only; no connection, no data
 //	                    path.
+//	shoka-cli workspace set  Write the per-working-dir workspace JSON (the agent
+//	                    assignment: namespace/project) — the single write point.
+//	shoka-cli init      Orchestrator: run config-setup + skill install + workspace
+//	                    set by composing the per-phase subcommands (git init-like).
 //
 // The subcommand surface is small, so it stays on the repo's stdlib `flag`
 // convention (cmd/server uses it too) with hand-rolled dispatch — no
@@ -53,6 +57,10 @@ func run(args []string) error {
 		return cmdFile(args[1:])
 	case "skill":
 		return cmdSkill(args[1:])
+	case "workspace":
+		return cmdWorkspace(args[1:])
+	case "init":
+		return cmdInit(args[1:])
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return nil
@@ -75,6 +83,13 @@ Usage:
   shoka-cli skill install   [--runtime claude|gemini] [--global] <name>
   shoka-cli skill upgrade   [--runtime claude|gemini] [--global]
   shoka-cli skill outdated  [--runtime claude|gemini] [--global]
+  shoka-cli workspace set   --namespace NS --project PROJ [--environment E] \
+                            [--runtime claude|gemini] [--global] [--force]
+  shoka-cli init            [--no-setup-config] [--no-install-skill] [--reconfigure] \
+                            [--env NAME] [--endpoint URL] [--token-file PATH] \
+                            [--repo URL-OR-PATH] [--ref REF] [--skill NAME ...] \
+                            --namespace NS --project PROJ [--environment E] \
+                            [--runtime claude|gemini] [--global]
 
 The access token is read from --token-file or stdin (never from the command line,
 which would leak it into shell history) and stored at
@@ -90,5 +105,17 @@ git-fetches the --repo skills repository into a local cache
 into the runtime convention dir (.claude/skills or .gemini/skills, or the
 user-level dir with --global) and work offline. Skills are not Shoka data and
 install never writes the workspace JSON.
+
+"workspace set" is the single write point for the per-working-dir workspace JSON
+(.claude/shoka-workspace.json or .gemini/...), the agent assignment of which
+namespace/project this directory owns. It writes only the assignment — never the
+connection (endpoint+token) or skill files. It refuses to overwrite an existing
+assignment unless --force.
+
+"init" is a git init-like orchestrator that runs config-setup (auth), skill
+update+install (the onboarding+setup pair by default; add more with --skill), and
+workspace set, by composing those subcommands. Already-established phases are
+reported and skipped; --reconfigure forces them. --no-setup-config / --no-install-skill
+skip a phase. It adds no logic of its own — each phase stays independently callable.
 `)
 }
