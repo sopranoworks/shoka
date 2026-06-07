@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -30,7 +31,10 @@ func cmdAuth(args []string) error {
 	// Start from the existing config (if any) so we update rather than clobber.
 	cfg, err := clientconfig.Load(*env)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		// Load reports a missing config as a wrapped os.ErrNotExist (so this is the
+		// first-time "not authenticated yet" case): start from an empty config.
+		// errors.Is unwraps; os.IsNotExist would not see through the %w wrap.
+		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		cfg = &clientconfig.Config{}
