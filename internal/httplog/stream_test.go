@@ -68,7 +68,7 @@ func TestRespRecorder_EventStreamMessageRedacted(t *testing.T) {
 	if strings.Contains(logs, body) {
 		t.Fatalf("file body leaked into logs: %s", logs)
 	}
-	for _, want := range []string{"mcp response sent", "rpc_id=4", "vhash", "conn_id=c1", "session_id=s1"} {
+	for _, want := range []string{"mcp response sent", "rpc_id=4", "vhash", "request_id=c1", "session_id=s1"} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("logs missing %q: %s", want, logs)
 		}

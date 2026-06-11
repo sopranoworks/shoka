@@ -1,11 +1,17 @@
 // Package httplog provides transport-layer logging for Shoka's MCP endpoint,
 // which is served over the Streamable HTTP transport. At INFO it logs the
-// server->client stream lifecycle (GET), session termination (DELETE), and
-// rejected requests (metadata only, never headers — so Authorization/?token= are
-// never logged). At DEBUG it adds protocol-level observation: full JSON-RPC
-// request/response bodies, with the directive's §4 redaction applied (see
-// jsonrpc.go, stream.go). All DEBUG work is gated on logger.Enabled so INFO-level
-// overhead is unchanged.
+// server->client stream lifecycle (GET), the initialize handshake and assigned
+// session (POST), and session termination (DELETE). At DEBUG it adds protocol-level
+// observation: full JSON-RPC request/response bodies, with the directive's §4
+// redaction applied (see jsonrpc.go, stream.go). All DEBUG work is gated on
+// logger.Enabled so INFO-level overhead is unchanged.
+//
+// Every line carries the per-request correlation id (request_id) assigned by the
+// outermost reqtrace layer (B-53), read from the request context, so an MCP
+// request's transport lines correlate with its entry/auth/response lines. The
+// status>=400 "request rejected" line that lived here is now reqtrace's
+// response-stage line (it carries the same id plus a reason category and the
+// routing stage) — removed here rather than duplicated.
 package httplog
 
 import (
@@ -16,6 +22,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/shoka/mcp-server/internal/reqtrace"
 )
 
 // sessionIDHeader is the Streamable HTTP session identifier header (MCP spec,
@@ -26,11 +34,11 @@ import (
 const sessionIDHeader = "Mcp-Session-Id"
 
 // Middleware observes the Streamable HTTP transport: the server->client stream
-// open/close on GET (INFO), session termination on DELETE (INFO), POST JSON-RPC
-// request bodies (DEBUG, redacted) and their responses (DEBUG, redacted, whether
-// the SDK answers with application/json or a text/event-stream frame), and any
-// response with status >= 400 (WARN). A nil logger is replaced with a discard
-// logger.
+// open/close on GET (INFO), the initialize handshake + assigned session and session
+// termination on DELETE (INFO), and POST JSON-RPC request bodies (DEBUG, redacted)
+// and their responses (DEBUG, redacted, whether the SDK answers with
+// application/json or a text/event-stream frame). Every line carries the shared
+// request_id from reqtrace (B-53). A nil logger is replaced with a discard logger.
 func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -43,7 +51,15 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			// response, captured below).
 			sessionID := r.Header.Get(sessionIDHeader)
 			debug := logger.Enabled(r.Context(), slog.LevelDebug)
-			connID := newConnID()
+			// B-53: the per-request correlation id is assigned once by reqtrace (the
+			// outermost layer) and read here from context, so httplog's lines share the
+			// id with the entry/auth/response lines. Fall back to a locally-minted id
+			// when reqtrace did not wrap this request (e.g. a unit test exercising
+			// httplog in isolation).
+			connID := reqtrace.ID(r.Context())
+			if connID == "" {
+				connID = newConnID()
+			}
 
 			sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			var rw http.ResponseWriter = sr
@@ -58,14 +74,14 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				// The standalone server->client SSE stream (optional per spec): a
 				// long-lived hanging GET the SDK uses to push notifications.
 				logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp stream opened",
-					slog.String("conn_id", connID), slog.String("session_id", sessionID),
+					slog.String("request_id", connID), slog.String("session_id", sessionID),
 					slog.String("remote", r.RemoteAddr))
 				next.ServeHTTP(rw, r)
 				if rec != nil {
 					rec.finish()
 				}
 				logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp stream closed",
-					slog.String("conn_id", connID), slog.String("session_id", sessionID),
+					slog.String("request_id", connID), slog.String("session_id", sessionID),
 					slog.String("remote", r.RemoteAddr),
 					slog.Int("status", sr.status), slog.Duration("duration", time.Since(start)))
 			case http.MethodPost:
@@ -77,7 +93,7 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				// initialize RESPONSE (surfaced below).
 				if sessionID == "" {
 					logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp initialize received",
-						slog.String("conn_id", connID), slog.String("remote", r.RemoteAddr))
+						slog.String("request_id", connID), slog.String("remote", r.RemoteAddr))
 				}
 				if debug {
 					logRequest(r, logger, sessionID, connID)
@@ -92,24 +108,21 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				// live line showed session_id="" (the assigned id was never logged).
 				if assigned := sr.Header().Get(sessionIDHeader); assigned != "" && assigned != sessionID {
 					logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp session established",
-						slog.String("conn_id", connID), slog.String("session_id", assigned),
+						slog.String("request_id", connID), slog.String("session_id", assigned),
 						slog.String("remote", r.RemoteAddr))
 				}
 			case http.MethodDelete:
 				logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp session terminated",
-					slog.String("conn_id", connID), slog.String("session_id", sessionID),
+					slog.String("request_id", connID), slog.String("session_id", sessionID),
 					slog.String("remote", r.RemoteAddr))
 				next.ServeHTTP(rw, r)
 			default:
 				next.ServeHTTP(rw, r)
 			}
-
-			if sr.status >= 400 {
-				logger.LogAttrs(r.Context(), slog.LevelWarn, "request rejected",
-					slog.String("http_method", r.Method), slog.String("path", r.URL.Path),
-					slog.String("session_id", sessionID), slog.Int("status", sr.status),
-					slog.String("remote", r.RemoteAddr))
-			}
+			// The status>=400 "request rejected" line lived here before B-53; it is now
+			// superseded by reqtrace's response-stage line ("request completed", WARN on
+			// non-2xx), which carries the shared request_id plus the reason category and
+			// routing stage this line lacked. Removed rather than duplicated.
 		})
 	}
 }
@@ -132,7 +145,7 @@ func logRequest(r *http.Request, logger *slog.Logger, sessionID, connID string) 
 	if !ok {
 		// Content-safe: never log raw bytes we could not structurally redact.
 		logger.LogAttrs(r.Context(), slog.LevelDebug, "mcp message received (unparseable)",
-			slog.String("conn_id", connID),
+			slog.String("request_id", connID),
 			slog.String("session_id", sessionID),
 			slog.Int("body_bytes", len(body)),
 			slog.String("remote", r.RemoteAddr))
@@ -140,7 +153,7 @@ func logRequest(r *http.Request, logger *slog.Logger, sessionID, connID string) 
 	}
 	attrs := []slog.Attr{
 		slog.String("rpc_method", method),
-		slog.String("conn_id", connID),
+		slog.String("request_id", connID),
 		slog.String("session_id", sessionID),
 		slog.String("remote", r.RemoteAddr),
 	}

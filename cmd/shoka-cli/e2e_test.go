@@ -69,15 +69,15 @@ func TestEndToEndCredentialPath(t *testing.T) {
 	mcpSrv := mcp.NewServer(&mcp.Implementation{Name: "shoka-test", Version: "0.0.0"}, nil)
 	mcp.AddTool(mcpSrv, &mcp.Tool{Name: "list_projects", Description: "list projects"}, tools.ListProjectsHandler(s))
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
-	validate := func(token string) (auth.Principal, bool) {
+	validate := func(token string) (auth.Principal, auth.RejectReason, bool) {
 		if token == "" {
-			return auth.Principal{}, false
+			return auth.Principal{}, auth.ReasonMissingBearer, false
 		}
 		rec, lerr := store.Lookup(token, time.Now())
 		if lerr != nil {
-			return auth.Principal{}, false
+			return auth.Principal{}, auth.ReasonInvalidToken, false
 		}
-		return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, true
+		return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, "", true
 	}
 	authn := auth.New(auth.Config{Enabled: true, ValidateToken: validate})
 	mcpTS := httptest.NewServer(authn.Middleware(mcpHandler))
@@ -187,15 +187,15 @@ func TestEndToEndFileAdd(t *testing.T) {
 	mcpSrv := mcp.NewServer(&mcp.Implementation{Name: "shoka-test", Version: "0.0.0"}, nil)
 	mcp.AddTool(mcpSrv, &mcp.Tool{Name: "write_file", Description: "write a file"}, tools.WriteFileHandler(s))
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
-	validate := func(token string) (auth.Principal, bool) {
+	validate := func(token string) (auth.Principal, auth.RejectReason, bool) {
 		if token == "" {
-			return auth.Principal{}, false
+			return auth.Principal{}, auth.ReasonMissingBearer, false
 		}
 		rec, lerr := store.Lookup(token, time.Now())
 		if lerr != nil {
-			return auth.Principal{}, false
+			return auth.Principal{}, auth.ReasonInvalidToken, false
 		}
-		return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, true
+		return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, "", true
 	}
 	authn := auth.New(auth.Config{Enabled: true, ValidateToken: validate})
 	mcpTS := httptest.NewServer(authn.Middleware(mcpHandler))

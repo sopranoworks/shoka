@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/shoka/mcp-server/internal/reqtrace"
 	"github.com/shoka/mcp-server/internal/serverurl"
 )
 
@@ -64,14 +65,15 @@ type AuthorizationServerMetadata struct {
 func ProtectedResourceMetadataHandler(cfg DiscoveryConfig) http.Handler {
 	logger := cfg.logger()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lg := logger.With("request_id", reqtrace.ID(r.Context()))
 		base, err := serverurl.Base(cfg.ExternalURL, r)
 		if err != nil {
-			logger.Warn("oauth discovery served",
+			lg.Warn("oauth discovery served",
 				"document", "protected_resource_metadata", "result", "public-url-unresolvable")
 			http.Error(w, "public URL not resolvable", http.StatusServiceUnavailable)
 			return
 		}
-		logger.Info("oauth discovery served", "document", "protected_resource_metadata")
+		lg.Info("oauth discovery served", "document", "protected_resource_metadata")
 		writeJSON(w, ProtectedResourceMetadata{
 			Resource:               serverurl.ResourceURL(base),
 			AuthorizationServers:   []string{serverurl.IssuerURL(base)},
@@ -85,14 +87,15 @@ func ProtectedResourceMetadataHandler(cfg DiscoveryConfig) http.Handler {
 func AuthorizationServerMetadataHandler(cfg DiscoveryConfig) http.Handler {
 	logger := cfg.logger()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lg := logger.With("request_id", reqtrace.ID(r.Context()))
 		base, err := serverurl.Base(cfg.ExternalURL, r)
 		if err != nil {
-			logger.Warn("oauth discovery served",
+			lg.Warn("oauth discovery served",
 				"document", "authorization_server_metadata", "result", "public-url-unresolvable")
 			http.Error(w, "public URL not resolvable", http.StatusServiceUnavailable)
 			return
 		}
-		logger.Info("oauth discovery served", "document", "authorization_server_metadata")
+		lg.Info("oauth discovery served", "document", "authorization_server_metadata")
 		writeJSON(w, AuthorizationServerMetadata{
 			Issuer:                            serverurl.IssuerURL(base),
 			AuthorizationEndpoint:             serverurl.AuthorizeURL(base),
@@ -110,10 +113,12 @@ func AuthorizationServerMetadataHandler(cfg DiscoveryConfig) http.Handler {
 // served at both the RFC 9728 §3.1 path-inserted location (canonical, matching the
 // resource identifier) and the root location (the fallback clients probe).
 func RegisterDiscovery(mux *http.ServeMux, cfg DiscoveryConfig) {
-	prm := ProtectedResourceMetadataHandler(cfg)
+	// reqtrace.Route tags the routing stage (B-53 §2.5) so a discovery request's
+	// response line names route="oauth-discovery" under the shared request_id.
+	prm := reqtrace.Route("oauth-discovery", ProtectedResourceMetadataHandler(cfg))
 	mux.Handle(serverurl.ProtectedResourceMetadataPath(), prm)
 	mux.Handle(serverurl.ProtectedResourceMetadataRootPath(), prm)
-	mux.Handle(serverurl.AuthorizationServerMetadataPath(), AuthorizationServerMetadataHandler(cfg))
+	mux.Handle(serverurl.AuthorizationServerMetadataPath(), reqtrace.Route("oauth-discovery", AuthorizationServerMetadataHandler(cfg)))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/shoka/mcp-server/internal/reqtrace"
 )
 
 // mcpSessionIDHeader is the Streamable HTTP session identifier header (MCP spec).
@@ -30,6 +32,26 @@ type Principal struct {
 	Email    string
 	ClientID string
 }
+
+// RejectReason is a discrete OAuth token-rejection category (B-53 §2.4), returned
+// by ValidateToken so the auth stage can name WHY a 401 was issued instead of the
+// prior reasonless rejection. The reason already exists at the token store
+// (oauthstore.Lookup distinguishes not-found from expired) — widening the validator
+// to carry it is observability-only: the allow/deny decision and every wire
+// response are unchanged. Empty ("") on success.
+type RejectReason string
+
+const (
+	// ReasonMissingBearer: no bearer token was presented at all.
+	ReasonMissingBearer RejectReason = "missing-bearer"
+	// ReasonInvalidToken: a token was presented but is unknown/revoked/rotated away.
+	ReasonInvalidToken RejectReason = "invalid-token"
+	// ReasonExpired: the token exists but is past its expiry.
+	ReasonExpired RejectReason = "expired"
+	// ReasonPrincipalUnresolved: the token validated but no principal could be
+	// resolved for it (defensive — a malformed/empty binding).
+	ReasonPrincipalUnresolved RejectReason = "principal-unresolved"
+)
 
 type principalCtxKey struct{}
 
@@ -65,11 +87,16 @@ type Config struct {
 	// is accepted, and the bound principal is attached to the request context.
 	// When nil, the MCP middleware behaves exactly as before (static-bearer or
 	// disabled) — preserving the (a) discovery-only semantics.
-	ValidateToken func(token string) (Principal, bool)
-	// Logger records the principal binding on the OAuth-enforced initialize
-	// handshake (B-52 §2.4), so an operator can see which client got bound to a
-	// new session. Nil → slog.Default(). Only the OAuth-enforcing Middleware
-	// (ValidateToken set) logs; the static-bearer path is silent as before.
+	//
+	// The RejectReason return (B-53 §2.4) is logging-only: it lets the auth stage
+	// name a discrete rejection category. It is ignored for the allow/deny decision
+	// (the bool alone decides), so the wire behaviour is identical to the prior
+	// (Principal, bool) signature.
+	ValidateToken func(token string) (Principal, RejectReason, bool)
+	// Logger records the auth stage (B-53 §2.4): every request that reaches an
+	// authenticator emits its result — authenticated (authenticator + principal/
+	// client_id) at INFO, or rejected with a discrete reason at WARN — all carrying
+	// the shared request_id. Nil → slog.Default(). The access token is never logged.
 	Logger *slog.Logger
 }
 
@@ -79,7 +106,7 @@ type Authenticator struct {
 	tokens              []string
 	allowedOrigins      []string
 	resourceMetadataURL func(*http.Request) string
-	validateToken       func(token string) (Principal, bool)
+	validateToken       func(token string) (Principal, RejectReason, bool)
 	logger              *slog.Logger
 }
 
@@ -130,27 +157,32 @@ func (a *Authenticator) AuthenticateWebSocket(r *http.Request) bool {
 // prior static-bearer (or disabled) one.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	if a.validateToken == nil {
-		return a.middleware(next, a.Authenticate)
+		return a.middleware(next, a.Authenticate, bearerToken)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, ok := a.validateToken(bearerToken(r))
+		p, reason, ok := a.validateToken(bearerToken(r))
 		if !ok {
+			// Close the reasonless-401 (B-53 §2.4): the OAuth auth stage names the
+			// discrete category and the shared request_id so the rejection correlates
+			// with this request's entry/response lines. The access token is never
+			// logged. The wire response is unchanged (401 + challenge).
+			a.logRejected(r, "oauth", reason)
 			w.Header().Set("WWW-Authenticate", a.challenge(r))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		// On the initialize handshake (a POST with no Mcp-Session-Id yet — the
-		// server assigns one on the response), log which client/principal got bound
-		// to the new session (B-52 §2.4 — answers "which client got bound", which a
-		// stuck connect needs). client_id + principal name are non-secret diagnostic
-		// payload; the access token is NEVER logged. Gated to the handshake so it
-		// fires once per connect, not on every authenticated request.
-		if r.Method == http.MethodPost && r.Header.Get(mcpSessionIDHeader) == "" {
-			a.logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp principal bound",
-				slog.String("client_id", p.ClientID),
-				slog.String("principal", p.Name),
-				slog.String("remote", r.RemoteAddr))
-		}
+		// Auth stage, success (B-53 §2.4 — always, not gated): which client/principal
+		// the token bound to, under the shared request_id. is_handshake marks the
+		// initialize POST (no Mcp-Session-Id yet) — answering B-52's "which client got
+		// bound to the new session" without a separate gated line. The token is NEVER
+		// logged.
+		a.logger.LogAttrs(r.Context(), slog.LevelInfo, "auth ok",
+			slog.String("request_id", reqtrace.ID(r.Context())),
+			slog.String("authenticator", "oauth"),
+			slog.String("client_id", p.ClientID),
+			slog.String("principal", p.Name),
+			slog.Bool("is_handshake", r.Method == http.MethodPost && r.Header.Get(mcpSessionIDHeader) == ""),
+			slog.String("remote", r.RemoteAddr))
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 	})
 }
@@ -158,18 +190,52 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 // MiddlewareAllowQueryToken wraps next with authentication that also accepts the
 // ?token= query parameter, for the WebSocket endpoints (/ws/ui and /drafts/).
 func (a *Authenticator) MiddlewareAllowQueryToken(next http.Handler) http.Handler {
-	return a.middleware(next, a.AuthenticateWebSocket)
+	return a.middleware(next, a.AuthenticateWebSocket, tokenFromRequest)
 }
 
-func (a *Authenticator) middleware(next http.Handler, authed func(*http.Request) bool) http.Handler {
+// middleware is the static-bearer / disabled auth path (plain MCP and all Web
+// routes). tokenOf extracts the credential the way authed consults it (header-only
+// vs header-or-?token=), so a rejection can be classified as missing vs invalid.
+func (a *Authenticator) middleware(next http.Handler, authed func(*http.Request) bool, tokenOf func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Disabled authenticator: allow-all (single-operator/loopback). It makes no
+		// auth decision, so the auth stage is "disabled" — the request is still fully
+		// traced by reqtrace's entry/response lines. Logged at INFO with the id.
+		if !a.enabled {
+			a.logger.LogAttrs(r.Context(), slog.LevelInfo, "auth ok",
+				slog.String("request_id", reqtrace.ID(r.Context())),
+				slog.String("authenticator", "disabled"),
+				slog.String("remote", r.RemoteAddr))
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !authed(r) {
+			reason := ReasonInvalidToken
+			if tokenOf(r) == "" {
+				reason = ReasonMissingBearer
+			}
+			a.logRejected(r, "static-bearer", reason)
 			w.Header().Set("WWW-Authenticate", a.challenge(r))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		a.logger.LogAttrs(r.Context(), slog.LevelInfo, "auth ok",
+			slog.String("request_id", reqtrace.ID(r.Context())),
+			slog.String("authenticator", "static-bearer"),
+			slog.String("remote", r.RemoteAddr))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// logRejected emits the auth-stage rejection line (B-53 §2.4) at WARN: the
+// authenticator kind, the discrete reason category, and the shared request_id — so
+// no 401 is ever silent again. No credential value is logged.
+func (a *Authenticator) logRejected(r *http.Request, authenticator string, reason RejectReason) {
+	a.logger.LogAttrs(r.Context(), slog.LevelWarn, "auth rejected",
+		slog.String("request_id", reqtrace.ID(r.Context())),
+		slog.String("authenticator", authenticator),
+		slog.String("reason", string(reason)),
+		slog.String("remote", r.RemoteAddr))
 }
 
 // challenge builds the WWW-Authenticate header value for a 401. It is the bare

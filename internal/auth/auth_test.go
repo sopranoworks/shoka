@@ -170,11 +170,14 @@ func TestOriginRestrictedWhenEnabled(t *testing.T) {
 
 func TestMiddleware_OAuthEnforcement_RejectsAbsentAndInvalid(t *testing.T) {
 	a := New(Config{
-		ValidateToken: func(token string) (Principal, bool) {
+		ValidateToken: func(token string) (Principal, RejectReason, bool) {
 			if token == "good" {
-				return Principal{Name: "Op", Email: "op@example.test"}, true
+				return Principal{Name: "Op", Email: "op@example.test"}, "", true
 			}
-			return Principal{}, false
+			if token == "" {
+				return Principal{}, ReasonMissingBearer, false
+			}
+			return Principal{}, ReasonInvalidToken, false
 		},
 		ResourceMetadataURL: func(*http.Request) string { return "https://rs.example/.well-known/oauth-protected-resource/mcp" },
 	})
@@ -201,11 +204,11 @@ func TestMiddleware_OAuthEnforcement_RejectsAbsentAndInvalid(t *testing.T) {
 
 func TestMiddleware_OAuthEnforcement_AcceptsAndAttachesPrincipal(t *testing.T) {
 	a := New(Config{
-		ValidateToken: func(token string) (Principal, bool) {
+		ValidateToken: func(token string) (Principal, RejectReason, bool) {
 			if token == "good" {
-				return Principal{Name: "Op", Email: "op@example.test"}, true
+				return Principal{Name: "Op", Email: "op@example.test"}, "", true
 			}
-			return Principal{}, false
+			return Principal{}, ReasonInvalidToken, false
 		},
 	})
 	rec := httptest.NewRecorder()
@@ -229,8 +232,11 @@ func TestMiddleware_OAuthSupersedesStaticBearer(t *testing.T) {
 	a := New(Config{
 		Enabled: true,
 		Tokens:  []string{"static-secret"},
-		ValidateToken: func(token string) (Principal, bool) {
-			return Principal{Name: "Op"}, token == "oauth-good"
+		ValidateToken: func(token string) (Principal, RejectReason, bool) {
+			if token == "oauth-good" {
+				return Principal{Name: "Op"}, "", true
+			}
+			return Principal{}, ReasonInvalidToken, false
 		},
 	})
 	// A valid STATIC bearer is rejected (OAuth supersedes).

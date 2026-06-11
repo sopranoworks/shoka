@@ -86,7 +86,12 @@ func TestMiddleware_LogsDeleteAsTermination(t *testing.T) {
 	}
 }
 
-func TestMiddleware_WarnsOnError(t *testing.T) {
+// The status>=400 "request rejected" line was removed from httplog in B-53 — that
+// responsibility moved to reqtrace's response-stage line (which carries the shared
+// request_id plus a reason category and the routing stage, and preserves the stale
+// session_id). httplog must no longer emit it; see reqtrace's
+// TestMiddleware_StaleSessionRejectNamesSession for the replacement coverage.
+func TestMiddleware_NoLongerEmitsRequestRejected(t *testing.T) {
 	lg, buf := dbgLogger()
 	h := Middleware(lg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -94,12 +99,8 @@ func TestMiddleware_WarnsOnError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"method":"tools/call"}`))
 	req.Header.Set("Mcp-Session-Id", "stale-session")
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	out := buf.String()
-	if !strings.Contains(out, "request rejected") || !strings.Contains(out, "status=404") {
-		t.Errorf("expected WARN with status 404: %q", out)
-	}
-	if !strings.Contains(out, "stale-session") {
-		t.Errorf("stale session id should appear on the rejection line: %q", out)
+	if out := buf.String(); strings.Contains(out, "request rejected") {
+		t.Errorf("httplog should no longer emit the reject line (moved to reqtrace): %q", out)
 	}
 }
 

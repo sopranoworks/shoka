@@ -178,7 +178,11 @@ func TestLiveHTTPServerRestart(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	rejected404 := extractMatchingLines(log2Text, "request rejected", "status=404")
+	// B-53: the stale-session 404 is now surfaced on reqtrace's response-stage line
+	// ("request completed", WARN on non-2xx) — which supersedes httplog's removed
+	// "request rejected" line and additionally carries the correlation request_id, a
+	// reason category, the routing stage, and the stale session_id.
+	rejected404 := extractMatchingLines(log2Text, "request completed", "status=404")
 	if len(rejected404) == 0 {
 		t.Fatalf("server #2 never issued a 404 for the stale session id.\n--- server #2 log ---\n%s", log2Text)
 	}

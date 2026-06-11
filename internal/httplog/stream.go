@@ -99,7 +99,7 @@ func (w *respRecorder) logFrame(frame []byte) {
 	// Log only its event name and size — never raw data, which could in principle
 	// carry payload we have not structurally redacted.
 	w.logger.LogAttrs(w.ctx, slog.LevelDebug, "mcp event sent",
-		slog.String("conn_id", w.connID),
+		slog.String("request_id", w.connID),
 		slog.String("session_id", w.sessionID),
 		slog.String("event_name", event),
 		slog.Int("data_bytes", len(data)))
@@ -114,7 +114,7 @@ func (w *respRecorder) logMessage(data []byte) bool {
 		return false
 	}
 	w.logger.LogAttrs(w.ctx, slog.LevelDebug, "mcp response sent",
-		slog.String("conn_id", w.connID),
+		slog.String("request_id", w.connID),
 		slog.String("session_id", w.sessionID),
 		slog.String("rpc_id", id),
 		slog.String("event_data", redacted))

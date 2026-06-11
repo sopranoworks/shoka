@@ -30,6 +30,7 @@ import (
 	"github.com/shoka/mcp-server/internal/metrics"
 	"github.com/shoka/mcp-server/internal/notify"
 	"github.com/shoka/mcp-server/internal/oauth"
+	"github.com/shoka/mcp-server/internal/reqtrace"
 	"github.com/shoka/mcp-server/internal/serverurl"
 	"github.com/shoka/mcp-server/internal/storage"
 	"github.com/shoka/mcp-server/internal/storage/filelock"
@@ -274,18 +275,29 @@ func main() {
 		}))
 
 		// Token enforcement: a valid OAuth access token is required on the MCP path
-		// and its bound principal is attached to the request (→ commit Committer).
-		authConfig.ValidateToken = func(token string) (auth.Principal, bool) {
+		// and its bound principal is attached to the request (→ commit Committer). The
+		// RejectReason (B-53 §2.4) is logging-only — it names WHY a token was rejected
+		// (the store already distinguishes not-found from expired); the allow/deny
+		// decision is the bool alone, so the wire behaviour is unchanged.
+		authConfig.ValidateToken = func(token string) (auth.Principal, auth.RejectReason, bool) {
 			if token == "" {
-				return auth.Principal{}, false
+				return auth.Principal{}, auth.ReasonMissingBearer, false
 			}
 			rec, lerr := oauthStore.Lookup(token, time.Now())
 			if lerr != nil {
-				return auth.Principal{}, false
+				reason := auth.ReasonInvalidToken
+				if errors.Is(lerr, oauthstore.ErrExpired) {
+					reason = auth.ReasonExpired
+				}
+				return auth.Principal{}, reason, false
+			}
+			if rec.Principal.Name == "" {
+				// Token validated but carries no resolvable principal (defensive).
+				return auth.Principal{}, auth.ReasonPrincipalUnresolved, false
 			}
 			// ClientID is carried for diagnostic logging only (B-52 §2.4 — "which
 			// client got bound to the session"); the commit identity uses Name/Email.
-			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email, ClientID: rec.ClientID}, true
+			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email, ClientID: rec.ClientID}, "", true
 		}
 	}
 	// The Web/non-MCP routes (/drafts/, /ws/ui, /api/) get their OWN authenticator
@@ -339,9 +351,13 @@ func main() {
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Web Server
+	// Web Server. reqtrace is the outermost layer (B-53): the Web listener is NOT
+	// wrapped by httplog, so without this its routes (/api, /ws/ui, /drafts, /) had
+	// no entry-to-exit trace at all. The surface label is a fixed category, never the
+	// listen address.
+	tracedWeb := reqtrace.Middleware(logger, "web")(webHandler)
 	g.Go(func() error {
-		return runServer(ctx, "Web", cfg.Server.HTTP, webHandler, logger)
+		return runServer(ctx, "Web", cfg.Server.HTTP, tracedWeb, logger)
 	})
 
 	// MCP transports (B-50 phase 2): open up to two MCP listeners over ONE shared
@@ -378,7 +394,11 @@ func main() {
 			Listen:      cfg.Server.MCP.Plain.Listen,
 			ExternalURL: cfg.Server.MCP.Plain.ExternalURL,
 		}
-		plainHandler := httplog.Middleware(logger)(plainAuth.Middleware(newMCPHandler()))
+		// reqtrace outermost (B-53): one correlation id per request, raw-inbound entry
+		// record, and response record (status+reason+route) — shared by httplog/auth's
+		// lines via the context id.
+		plainHandler := reqtrace.Middleware(logger, "mcp-plain")(
+			httplog.Middleware(logger)(plainAuth.Middleware(reqtrace.Route("mcp-dispatch", newMCPHandler()))))
 		g.Go(func() error {
 			return runServer(ctx, "MCP-plain", plainSettings, plainHandler, logger)
 		})
@@ -400,7 +420,11 @@ func main() {
 			Listen:      cfg.Server.MCP.OAuth.Listen,
 			ExternalURL: cfg.Server.MCP.OAuth.ExternalURL,
 		}
-		oauthHandler := httplog.Middleware(logger)(oauthListenerHandler(discoveryCfg, authServer, newMCPHandler(), oauthAuth))
+		// reqtrace outermost (B-53): correlates the discovery / /authorize / /token /
+		// MCP lines under one per-request id and adds the entry + response records — so
+		// the live token-bearing initialize that 401s on path=/ is traceable end to end.
+		oauthHandler := reqtrace.Middleware(logger, "mcp-oauth")(
+			httplog.Middleware(logger)(oauthListenerHandler(discoveryCfg, authServer, newMCPHandler(), oauthAuth)))
 		g.Go(func() error {
 			return runServer(ctx, "MCP-oauth", oauthSettings, oauthHandler, logger)
 		})
@@ -627,12 +651,15 @@ func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manage
 	// WebSocket endpoints accept the ?token= query fallback (browsers cannot set
 	// an Authorization header on a WS handshake). The MCP/SSE endpoint uses the
 	// header-only Middleware (see runServer wiring) so tokens never ride in URLs.
-	mux.Handle("/drafts/", authenticator.MiddlewareAllowQueryToken(dm))
-	mux.Handle("/ws/ui", authenticator.MiddlewareAllowQueryToken(uim))
+	// reqtrace.Route tags the routing stage (B-53 §2.5) INSIDE the auth layer, so a
+	// request 401'd before the handler shows route="unrouted" while a served request
+	// names its handler — both under the shared request_id.
+	mux.Handle("/drafts/", authenticator.MiddlewareAllowQueryToken(reqtrace.Route("web-drafts", dm)))
+	mux.Handle("/ws/ui", authenticator.MiddlewareAllowQueryToken(reqtrace.Route("web-ws-ui", uim)))
 
 	// Admin API (project state/rescan/recover) — shared by the `shoka project`
 	// CLI and the Web UI recovery dialog. Header-bearer auth (no ?token=).
-	mux.Handle("/api/", authenticator.Middleware(adminapi.New(s)))
+	mux.Handle("/api/", authenticator.Middleware(reqtrace.Route("web-api", adminapi.New(s))))
 
 	// Serve static files from embedded FS
 	distFS, err := fs.Sub(server.DistFS, "dist")
@@ -641,7 +668,7 @@ func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manage
 	}
 	fileServer := http.FileServer(http.FS(distFS))
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/", reqtrace.Route("web-static", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path == "" {
 			fileServer.ServeHTTP(w, r)
@@ -655,7 +682,7 @@ func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manage
 			r.URL.Path = "/"
 		}
 		fileServer.ServeHTTP(w, r)
-	})
+	})))
 
 	return mux, nil
 }
@@ -762,7 +789,10 @@ func oauthListenerHandler(discoveryCfg oauth.DiscoveryConfig, authServer *oauth.
 	if authServer != nil {
 		authServer.RegisterEndpoints(mux) // /authorize + /token, no bearer (they mint one)
 	}
-	mux.Handle("/", authenticator.Middleware(mcpHandler))
+	// Route tag INSIDE auth (B-53 §2.5): a token-bearing initialize that 401s here
+	// shows route="unrouted" (blocked before routing) — the exact disambiguation the
+	// live path=/ failure needs; a valid request shows route="mcp-dispatch".
+	mux.Handle("/", authenticator.Middleware(reqtrace.Route("mcp-dispatch", mcpHandler)))
 	return mux
 }
 
