@@ -7,17 +7,28 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"log/slog"
 	"net/http"
 	"strings"
 )
+
+// mcpSessionIDHeader is the Streamable HTTP session identifier header (MCP spec).
+// It is absent on the initialize handshake (the server assigns it on the response)
+// and echoed on every subsequent request — so an empty value on a POST marks the
+// connect's first request, used to log the principal binding once per connect.
+const mcpSessionIDHeader = "Mcp-Session-Id"
 
 // Principal is the authenticated OAuth principal bound to a validated access
 // token. It is attached to the MCP request context on a successful OAuth-enforced
 // request so the write path can record it as the commit Committer (the B-39 §2.5
 // decoupling). Name/Email come from the token's binding, not a config constant.
+// ClientID is the CIMD client_id (metadata URL) the token was issued to — a
+// non-secret identifier carried for diagnostic logging only (B-52); it does NOT
+// participate in the commit identity.
 type Principal struct {
-	Name  string
-	Email string
+	Name     string
+	Email    string
+	ClientID string
 }
 
 type principalCtxKey struct{}
@@ -55,6 +66,11 @@ type Config struct {
 	// When nil, the MCP middleware behaves exactly as before (static-bearer or
 	// disabled) — preserving the (a) discovery-only semantics.
 	ValidateToken func(token string) (Principal, bool)
+	// Logger records the principal binding on the OAuth-enforced initialize
+	// handshake (B-52 §2.4), so an operator can see which client got bound to a
+	// new session. Nil → slog.Default(). Only the OAuth-enforcing Middleware
+	// (ValidateToken set) logs; the static-bearer path is silent as before.
+	Logger *slog.Logger
 }
 
 // Authenticator enforces token authentication and origin restrictions.
@@ -64,16 +80,22 @@ type Authenticator struct {
 	allowedOrigins      []string
 	resourceMetadataURL func(*http.Request) string
 	validateToken       func(token string) (Principal, bool)
+	logger              *slog.Logger
 }
 
 // New builds an Authenticator from c.
 func New(c Config) *Authenticator {
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Authenticator{
 		enabled:             c.Enabled,
 		tokens:              c.Tokens,
 		allowedOrigins:      c.AllowedOrigins,
 		resourceMetadataURL: c.ResourceMetadataURL,
 		validateToken:       c.ValidateToken,
+		logger:              logger,
 	}
 }
 
@@ -116,6 +138,18 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			w.Header().Set("WWW-Authenticate", a.challenge(r))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		// On the initialize handshake (a POST with no Mcp-Session-Id yet — the
+		// server assigns one on the response), log which client/principal got bound
+		// to the new session (B-52 §2.4 — answers "which client got bound", which a
+		// stuck connect needs). client_id + principal name are non-secret diagnostic
+		// payload; the access token is NEVER logged. Gated to the handshake so it
+		// fires once per connect, not on every authenticated request.
+		if r.Method == http.MethodPost && r.Header.Get(mcpSessionIDHeader) == "" {
+			a.logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp principal bound",
+				slog.String("client_id", p.ClientID),
+				slog.String("principal", p.Name),
+				slog.String("remote", r.RemoteAddr))
 		}
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 	})

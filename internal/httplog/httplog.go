@@ -69,6 +69,16 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 					slog.String("remote", r.RemoteAddr),
 					slog.Int("status", sr.status), slog.Duration("duration", time.Since(start)))
 			case http.MethodPost:
+				// A POST with no Mcp-Session-Id is the initialize handshake (every
+				// subsequent request echoes the assigned id). Log it at INFO so the
+				// START of a connect is visible in production — this is half of the
+				// "session_id empty in every line" resolution: the id is read from the
+				// REQUEST header, which is empty until the server assigns one on the
+				// initialize RESPONSE (surfaced below).
+				if sessionID == "" {
+					logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp initialize received",
+						slog.String("conn_id", connID), slog.String("remote", r.RemoteAddr))
+				}
 				if debug {
 					logRequest(r, logger, sessionID, connID)
 				}
@@ -77,9 +87,11 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 					rec.finish()
 				}
 				// initialize assigns the session id on the response header; surface it
-				// so the handshake's session is observable at DEBUG.
+				// at INFO so the assigned session is observable in production (B-52).
+				// This was previously DEBUG-only — which is exactly why at INFO every
+				// live line showed session_id="" (the assigned id was never logged).
 				if assigned := sr.Header().Get(sessionIDHeader); assigned != "" && assigned != sessionID {
-					logger.LogAttrs(r.Context(), slog.LevelDebug, "mcp session established",
+					logger.LogAttrs(r.Context(), slog.LevelInfo, "mcp session established",
 						slog.String("conn_id", connID), slog.String("session_id", assigned),
 						slog.String("remote", r.RemoteAddr))
 				}

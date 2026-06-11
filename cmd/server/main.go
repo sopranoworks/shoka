@@ -283,7 +283,9 @@ func main() {
 			if lerr != nil {
 				return auth.Principal{}, false
 			}
-			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, true
+			// ClientID is carried for diagnostic logging only (B-52 §2.4 — "which
+			// client got bound to the session"); the commit identity uses Name/Email.
+			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email, ClientID: rec.ClientID}, true
 		}
 	}
 	// The Web/non-MCP routes (/drafts/, /ws/ui, /api/) get their OWN authenticator
@@ -392,6 +394,7 @@ func main() {
 		oauthAuth := auth.New(auth.Config{
 			ResourceMetadataURL: authConfig.ResourceMetadataURL,
 			ValidateToken:       authConfig.ValidateToken,
+			Logger:              logger,
 		})
 		oauthSettings := config.ServerSettings{
 			Listen:      cfg.Server.MCP.OAuth.Listen,
