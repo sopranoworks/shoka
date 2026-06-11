@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/shoka/mcp-server/internal/storage/oauthstore"
+	"github.com/shoka/mcp-server/internal/tokenfp"
 )
 
 // B-52: the WHOLE OAuth flow must be legible — /authorize (request, consent, code
@@ -113,6 +114,20 @@ func TestFlowLog_SuccessfulFlowLegible(t *testing.T) {
 	if err := json.Unmarshal(trec.Body.Bytes(), &tokenResp); err != nil {
 		t.Fatalf("decode token resp: %v", err)
 	}
+
+	// B-54 discriminator: the issuance line carries an 8-hex one-way fingerprint of
+	// the issued access token under the SAME field name (token_fingerprint) used at
+	// the auth-reject site, so the operator greps one field across both lines and
+	// reads match/differ at a glance. Assert it equals the issued token's fingerprint
+	// (so equal input → equal fingerprint holds at issuance too).
+	wantFP := tokenfp.Fingerprint(tokenResp.AccessToken)
+	if len(wantFP) != 8 {
+		t.Fatalf("issued access token fingerprint must be 8 hex chars, got %q", wantFP)
+	}
+	if issued["token_fingerprint"] != wantFP {
+		t.Errorf("token issued token_fingerprint: got %v want %s", issued["token_fingerprint"], wantFP)
+	}
+
 	secrets := map[string]string{
 		"authorization code": code,
 		"code_verifier":      verifier,
