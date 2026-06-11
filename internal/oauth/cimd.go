@@ -92,6 +92,13 @@ func NewVerifier(trustedDomains []string) *Verifier {
 	}
 }
 
+// TrustedCount reports how many trusted client-metadata domains are configured.
+// Operational logging records this COUNT (never the values) so an operator can
+// tell the empty-list default-deny case from a configured-but-no-match rejection.
+func (v *Verifier) TrustedCount() int {
+	return len(v.trusted)
+}
+
 // DomainTrusted reports whether host (no port) is allowed by the allowlist: an
 // exact match or a subdomain of a trusted entry. Default-deny on an empty list.
 func (v *Verifier) DomainTrusted(host string) bool {

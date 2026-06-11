@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -69,6 +70,7 @@ type AuthServerConfig struct {
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration
 	CodeTTL       time.Duration
+	Logger        *slog.Logger // operational log for client-verification outcomes; nil → slog.Default()
 }
 
 // AuthServer serves /authorize and /token for the built-in AS.
@@ -80,6 +82,7 @@ type AuthServer struct {
 	accessTTL     time.Duration
 	refreshTTL    time.Duration
 	codeTTL       time.Duration
+	logger        *slog.Logger
 	now           func() time.Time // injectable for tests
 }
 
@@ -97,6 +100,10 @@ func NewAuthServer(store *oauthstore.Store, verifier *Verifier, cfg AuthServerCo
 	if codeTTL <= 0 {
 		codeTTL = time.Minute
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &AuthServer{
 		store:         store,
 		verifier:      verifier,
@@ -105,6 +112,7 @@ func NewAuthServer(store *oauthstore.Store, verifier *Verifier, cfg AuthServerCo
 		accessTTL:     accessTTL,
 		refreshTTL:    refreshTTL,
 		codeTTL:       codeTTL,
+		logger:        logger,
 		now:           time.Now,
 	}
 }
@@ -156,9 +164,28 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// never receive a redirect (open-redirect / error-leak protection).
 	md, err := s.verifier.Verify(r.Context(), req.ClientID)
 	if err != nil {
+		// Make the rejection self-diagnosing: an operator reading the log learns
+		// the received client_id, the domain evaluated (or the stage reached),
+		// why it was denied, and how many trusted domains are configured — so the
+		// empty-list and wrong-domain cases reveal what to add. The wire response
+		// is unchanged (the caller still gets invalid_client); only the diagnostic
+		// payload goes to the operator's log. Secrets and the trusted-domain
+		// VALUES are never logged (only the count).
+		trustedCount := s.verifier.TrustedCount()
+		s.logger.Warn("oauth client verification rejected",
+			"client_id", req.ClientID,
+			"evaluated_domain", clientIDDomain(req.ClientID),
+			"reason", cimdRejectCategory(err, trustedCount),
+			"trusted_domains_configured", trustedCount,
+		)
 		s.authError(w, "invalid_client", "client verification failed: "+cimdReason(err))
 		return
 	}
+	// Success is equally observable: confirm which client_id/domain was accepted.
+	s.logger.Info("oauth client verification accepted",
+		"client_id", req.ClientID,
+		"evaluated_domain", clientIDDomain(req.ClientID),
+	)
 	if !RedirectURIAllowed(req.RedirectURI, md.RedirectURIs) {
 		s.authError(w, "invalid_request", "redirect_uri is not registered for this client")
 		return
@@ -436,6 +463,50 @@ func verifyPKCE(verifier, challenge string) bool {
 	sum := sha256.Sum256([]byte(verifier))
 	computed := base64.RawURLEncoding.EncodeToString(sum[:])
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
+}
+
+// clientIDDomain extracts the host of a client_id URL for operational logging,
+// returning "" when client_id is empty or not a parseable https URL (in which
+// case the reason category records the stage instead). The host is the external
+// client's domain being diagnosed — in-scope per the directive — not Shoka's.
+func clientIDDomain(clientID string) string {
+	u, err := url.Parse(strings.TrimSpace(clientID))
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// cimdRejectCategory maps a CIMD verification error to a discrete, log-only
+// reason category (distinct from the wire-facing cimdReason, which is unchanged).
+// ErrUntrustedDomain is split by the configured-domain count so the default-deny
+// empty-list case is distinguishable from a configured-but-no-match rejection.
+func cimdRejectCategory(err error, trustedCount int) string {
+	switch {
+	case errors.Is(err, ErrClientIDNotHTTPS):
+		return "client_id-missing-or-malformed"
+	case errors.Is(err, ErrUntrustedDomain):
+		if trustedCount == 0 {
+			return "trusted-list-empty"
+		}
+		return "domain-not-in-trusted-list"
+	case errors.Is(err, ErrBlockedAddress):
+		return "blocked-address"
+	case errors.Is(err, ErrRedirectAttempted):
+		return "metadata-fetch-failed"
+	case errors.Is(err, ErrFetchFailed):
+		return "metadata-fetch-failed"
+	case errors.Is(err, ErrDocumentTooLarge):
+		return "metadata-invalid"
+	case errors.Is(err, ErrInvalidDocument):
+		return "metadata-invalid"
+	case errors.Is(err, ErrClientIDMismatch):
+		return "metadata-client_id-mismatch"
+	case errors.Is(err, ErrNoRedirectURIs):
+		return "metadata-no-redirect-uris"
+	default:
+		return "metadata-fetch-failed"
+	}
 }
 
 // cimdReason maps a CIMD verification error to a short, non-leaking reason.

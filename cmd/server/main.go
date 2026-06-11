@@ -243,6 +243,7 @@ func main() {
 			AccessTTL:  oc.AccessTokenTTL.Std(),
 			RefreshTTL: oc.RefreshTokenTTL.Std(),
 			CodeTTL:    oc.AuthorizationCodeTTL.Std(),
+			Logger:     logger,
 		})
 
 		// Token-to-self (B-46b §2.2): the admin-gated OAUTH_ISSUE_SELF action mints
