@@ -88,8 +88,9 @@ func writeLiveConfig(t *testing.T, baseDir string, httpPort, mcpPort int, level 
     listen: "127.0.0.1:%d"
     external_url: "http://127.0.0.1:%d"
   mcp:
-    listen: "127.0.0.1:%d"
-    external_url: "http://127.0.0.1:%d"
+    plain:
+      listen: "127.0.0.1:%d"
+      external_url: "http://127.0.0.1:%d"
   auth:
     enabled: %t
     tokens: %s

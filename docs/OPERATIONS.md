@@ -27,8 +27,9 @@ Docker-capable environment (maintenance backlog B-12 remains open). (Source:
 
 ## Connecting clients
 
-Shoka serves MCP over **Streamable HTTP** at the `/mcp` path of the
-`server.mcp.listen` address. How a client registers depends on whether it speaks
+Shoka serves MCP over **Streamable HTTP** at the `/mcp` path of an MCP transport's
+listen address (the plain transport's `server.mcp.plain.listen`, or the external
+`server.mcp.oauth.listen`). How a client registers depends on whether it speaks
 Streamable HTTP directly:
 
 - **Claude Code** (CLI) registers Shoka directly:
@@ -45,7 +46,7 @@ Streamable HTTP directly:
   through `mcp-remote` works.
 
 The `http://localhost:8081/mcp` shown is a **placeholder** matching
-`shoka.example.yaml`'s default `server.mcp.listen` (`:8081`); substitute your own
+`shoka.example.yaml`'s default `server.mcp.plain.listen` (`:8081`); substitute your own
 address. (Source: maintenance backlog B-01; `shoka.example.yaml`.)
 
 ## Configuration reference
@@ -54,8 +55,9 @@ Configuration is a YAML file (Source: `internal/config/config.go`). A fully
 annotated example is `shoka.example.yaml` — the canonical reference for every key
 and its default. The schema has **eleven top-level sections**: `server`,
 `identity`, `storage`, `services`, `filelock`, `wal`, `wal_worker`, `notify`,
-`metrics`, `catalog`, and `webhooks`. Only three keys are required
-(`server.http.listen`, `server.mcp.listen`, `storage.base_dir`); every other
+`metrics`, `catalog`, and `webhooks`. The required keys are `server.http.listen`,
+`storage.base_dir`, and **at least one MCP transport** (`server.mcp.plain.listen`
+and/or `server.mcp.oauth.listen` — neither set is a startup error); every other
 section is optional and falls back to a built-in default.
 
 ### `server` — listeners, auth, logging
@@ -63,13 +65,18 @@ section is optional and falls back to a built-in default.
 | Key | Type | Required | Default | Meaning |
 |-----|------|----------|---------|---------|
 | `server.http.listen` | string | **yes** | — | Address for the web UI + WebSocket endpoints (`/`, `/ws/ui`, `/drafts/...`). |
-| `server.mcp.listen` | string | **yes** | — | Address for the MCP (Streamable HTTP) endpoint; clients connect at the `/mcp` path. |
-| `server.http.external_url` / `server.mcp.external_url` | string | no | "" | Public URL reported by `get_server_info`; `server.mcp.external_url` is also the OAuth public origin (see *Enabling OAuth*). |
-| `server.http.tls.enabled` / `.cert_file` / `.key_file` | bool / string | no | false | TLS for the web listener. Same shape under `server.mcp.tls`. |
-| `server.auth.enabled` | bool | no | `false` | Enable Bearer-token auth. When false, no auth and all WS origins accepted. |
-| `server.auth.tokens` | list of strings | no | [] | Accepted bearer tokens (constant-time compared). |
-| `server.auth.allowed_origins` | list of strings | no | [] | When auth is on, permitted WebSocket `Origin` values (empty Origin rejected; the MCP endpoint is bearer-authenticated, not origin-checked). |
-| `server.auth.oauth.*` | block | no | off | Built-in OAuth 2.1 authorization server. See *Enabling OAuth* below; keys are `enabled`, `consent_credential`, `trusted_client_metadata_domains`, `access_token_ttl`, `refresh_token_ttl`, `authorization_code_ttl`. |
+| `server.mcp.plain.listen` | string | one MCP transport required† | — | Address for the **plain** (internal) MCP transport; clients connect at the `/mcp` path. |
+| `server.mcp.plain.bearer_auth` | bool | no | `false` | Off → the plain transport is **unauthenticated** (loopback/internal use only). On → it requires `Authorization: Bearer <token>` validated against `server.auth.tokens` (an API-Token; **must** be behind TLS — see *TLS*). |
+| `server.mcp.oauth.listen` | string | one MCP transport required† | — | Address for the **OAuth** (external) MCP transport. Its presence enables OAuth — there is no separate flag. Purely OAuth; static bearer is not accepted here. See *Enabling OAuth*. |
+| `server.mcp.plain.external_url` / `server.mcp.oauth.external_url` | string | no | "" | Public URL for self-references; `server.mcp.oauth.external_url` is the OAuth public origin (see *Enabling OAuth*). `get_server_info` reports the plain transport's listen address. |
+| `server.auth.enabled` | bool | no | `false` | Enable static Bearer-token auth for the **Web UI / non-MCP** endpoints (and the API-Token set the plain transport validates against). No longer a global MCP gate — MCP auth is decided per transport above. When false, those endpoints need no token and all WS origins are accepted. |
+| `server.auth.tokens` | list of strings | no | [] | Accepted bearer tokens (constant-time compared); also the API-Token set for `server.mcp.plain.bearer_auth`. |
+| `server.auth.allowed_origins` | list of strings | no | [] | When auth is on, permitted WebSocket `Origin` values for `/ws/ui` and `/drafts` (empty Origin rejected). |
+| `server.mcp.oauth.{consent_credential, trusted_client_metadata_domains, access_token_ttl, refresh_token_ttl, authorization_code_ttl}` | block | no | off | Built-in OAuth 2.1 authorization server, active when `server.mcp.oauth.listen` is set. See *Enabling OAuth* below. |
+
+† **At least one** of `server.mcp.plain.listen` / `server.mcp.oauth.listen` must be
+set (both is valid; neither is a startup error). There are **no `tls` fields** on
+either MCP transport — Shoka terminates no TLS (see *TLS*).
 | `server.log.level` / `server.log.format` | string | no | `info` / `text` | Structured logging — see *Logging* below. |
 
 ### `identity` — commit author (single-user, provisional)
@@ -123,9 +130,9 @@ authentication here. (Source: `internal/config/config.go:193-210`.)
 | `webhooks[].name` / `.url` / `.events` / `.secret` | strings / list | no | — | Outbound webhook subscriptions. `events` ⊆ {`file_written`,`file_deleted`,`project_created`}. `secret` enables the `X-Shoka-Signature` HMAC header. |
 
 Validation: the server refuses to start without `storage.base_dir`,
-`server.http.listen`, and `server.mcp.listen`, and rejects an invalid
-`server.log.level`/`format` or a `wal_worker` min/max inversion. (Source:
-`internal/config/config.go:299-329`.)
+`server.http.listen`, or at least one MCP transport (`server.mcp.plain.listen` /
+`server.mcp.oauth.listen`), and rejects an invalid `server.log.level`/`format` or
+a `wal_worker` min/max inversion. (Source: `internal/config/config.go`.)
 
 ## Logging
 
@@ -211,32 +218,59 @@ because Shoka restarted). The client should re-initialize automatically; see § 
 of `docs/contracts/mcp-v1.md`. Comparing these events against the Streamable HTTP
 flow in that section pinpoints where a session diverges.
 
+## TLS
+
+**Shoka terminates no TLS — by design.** It speaks plain HTTP on every listener
+and delegates TLS to an external **TLS-terminating reverse proxy** (nginx, etc.)
+in front of it. This is deliberate: it keeps the certificate lifecycle —
+issuance, renewal, renewal↔reload synchronisation, revocation — in a component
+built for it, rather than in Shoka. There are **no `tls` fields on the MCP
+transports** (`server.mcp.plain` / `server.mcp.oauth`).
+
+Operational consequences, by transport:
+
+- **OAuth transport** (`server.mcp.oauth`) — OAuth requires HTTPS, so it is always
+  reached through the TLS proxy. This is the external entry point.
+- **Plain transport with `bearer_auth: true`** (an API-Token) — the token rides in
+  the `Authorization` header, so this transport **MUST** sit behind the TLS proxy;
+  a cleartext path leaks the token. Treat TLS as a hard requirement here.
+- **Plain transport with `bearer_auth: false`** (unauthenticated) — for
+  **loopback / internal use only**. Do not expose it beyond the host or a trusted
+  network; it has no authentication.
+
+(The proxy, public origin, and addresses are deployment-specific and live only in
+the operator's configuration — never in this repository.)
+
 ## Enabling OAuth
 
 Shoka includes a built-in **OAuth 2.1 authorization server** (maintenance backlog
-B-39). It is **code-complete but off by default and not stood up in this
-deployment** — while it is disabled, the static `Authorization: Bearer` path of
-`server.auth` applies unchanged. Turning it on is an operator task with
+B-39), surfaced as the **OAuth MCP transport** (`server.mcp.oauth`). It is
+**code-complete but not stood up in this deployment**. The OAuth transport is
+**active when `server.mcp.oauth.listen` is set** — there is no separate enable
+flag (its presence is the switch). Standing it up is an operator task with
 prerequisites, named here by **config field and role only** — no endpoint,
 domain, or address is given:
 
-- A **TLS-terminating reverse proxy** in front of Shoka (OAuth requires HTTPS).
-- **`server.mcp.external_url`** set to the public origin — the field; the URL
-  value lives only in your config, never in the docs.
-- The **`server.auth.oauth.trusted_client_metadata_domains`** allowlist populated.
+- A **TLS-terminating reverse proxy** in front of Shoka (OAuth requires HTTPS;
+  Shoka terminates no TLS — see *TLS*).
+- **`server.mcp.oauth.listen`** set — its presence opens the OAuth transport.
+- **`server.mcp.oauth.external_url`** set to the public origin — the field; the
+  URL value lives only in your config, never in the docs.
+- The **`server.mcp.oauth.trusted_client_metadata_domains`** allowlist populated.
   It is **default-deny**: an empty list admits no client, so list the legitimate
   connector domain(s) for your deployment.
-- **`server.auth.oauth.consent_credential`** set — an empty value denies all
+- **`server.mcp.oauth.consent_credential`** set — an empty value denies all
   consent, so consent cannot be granted until it is configured.
-- Toggled on with **`server.auth.oauth.enabled`**.
 
-When enabled, Shoka enforces OAuth access tokens on the MCP path, **superseding
-the static `tokens` set on that path**; clients are identified via CIMD (no
-dynamic client registration). For the protocol detail — discovery, `/authorize`,
-`/token`, PKCE, the disabled-mode fallback — see
-[`docs/contracts/mcp-v1.md`](contracts/mcp-v1.md) § 3.1. Enabling OAuth means
+The OAuth transport speaks **purely OAuth** — static `Authorization: Bearer`
+tokens are not accepted on it (mixing a bearer path onto the external port is
+forbidden by design). It enforces OAuth access tokens on its `/mcp` path and
+identifies clients via CIMD (no dynamic client registration). The separate
+plain transport carries the static-bearer / unauthenticated path. For the
+protocol detail — discovery, `/authorize`, `/token`, PKCE — see
+[`docs/contracts/mcp-v1.md`](contracts/mcp-v1.md) § 3.1. Standing up OAuth means
 configuring these fields; it does not point at a running, reachable service.
-(Source: `internal/config/config.go:67-94`, `internal/oauth/`.)
+(Source: `internal/config/config.go`, `internal/oauth/`.)
 
 ## Scraping `/metrics`
 
@@ -274,7 +308,8 @@ upgrade compatibility policy.
 
 | Symptom | Likely cause / fix |
 |---------|--------------------|
-| Server exits immediately with `... is required` | Missing `storage.base_dir`, `server.http.listen`, or `server.mcp.listen`. (`internal/config/config.go:58-69`.) |
+| Server exits immediately with `... is required` | Missing `storage.base_dir` or `server.http.listen`. (`internal/config/config.go`.) |
+| Server exits with `at least one MCP transport must be configured` | Neither `server.mcp.plain.listen` nor `server.mcp.oauth.listen` is set; set at least one. (`internal/config/config.go`.) |
 | HTTP **401** on the MCP endpoint | Auth enabled; request lacks a valid `Authorization: Bearer`. Note `?token=` is **not** accepted on the MCP endpoint — header only. |
 | HTTP **404** on the MCP endpoint (`request rejected ... status=404` with a `session_id`) | The client presented an `Mcp-Session-Id` this process does not know (normal after a Shoka restart). Expected and self-healing: the client re-initializes. (Contract § 2.) |
 | HTTP **403** `invalid Host header` on the MCP endpoint | DNS-rebinding protection: a non-loopback `Host` reached a loopback-bound Shoka (often a reverse proxy forwarding the original `Host`). Fix the proxy `Host`, or start with `MCPGODEBUG=disablelocalhostprotection=1`. (Contract § 2.) |
@@ -283,7 +318,7 @@ upgrade compatibility policy.
 | `translate_file` tool missing | `services.google_cloud.project_id` is unset, so the tool is not registered. |
 | `write_file`/`delete_file` returns a conflict | Another writer changed the file since you read it. Re-read to get the current `etag` (the content-SHA-256 token), pass it as `if_match`, then retry (contract § 5). |
 | Webhook never arrives | Check the hook's `events` includes the event, the `url` is reachable, and server logs (delivery is best-effort: 2 attempts, then logged failure). |
-| Port already in use on startup | Another process holds `http.listen`/`mcp.listen`; change the port or stop the other process. |
+| Port already in use on startup | Another process holds `server.http.listen` or an `server.mcp.*.listen`; change the port or stop the other process. |
 
 ## Sources
 

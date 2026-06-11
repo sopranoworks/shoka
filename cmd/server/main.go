@@ -170,8 +170,11 @@ func main() {
 
 	uim := ui.NewManager(s, dm, notifyCenter)
 
-	oauthEnabled := cfg.Server.Auth.OAuth.Enabled
-	discoveryCfg := oauth.DiscoveryConfig{ExternalURL: cfg.Server.MCP.ExternalURL}
+	// B-50: "is OAuth active" ≡ the OAuth MCP transport is configured (its listen
+	// address is set). The former server.auth.oauth.enabled flag is gone. The
+	// per-port listener wiring is phase 2; phase 1 only repoints the reads.
+	oauthEnabled := cfg.Server.MCP.OAuth.Listen != ""
+	discoveryCfg := oauth.DiscoveryConfig{ExternalURL: cfg.Server.MCP.OAuth.ExternalURL}
 	authConfig := auth.Config{
 		Enabled:        cfg.Server.Auth.Enabled,
 		Tokens:         cfg.Server.Auth.Tokens,
@@ -190,8 +193,8 @@ func main() {
 			}
 			return serverurl.ProtectedResourceMetadataURL(base)
 		}
-		if cfg.Server.MCP.ExternalURL == "" {
-			logger.Warn("oauth discovery enabled without server.mcp.external_url; " +
+		if cfg.Server.MCP.OAuth.ExternalURL == "" {
+			logger.Warn("oauth transport configured without server.mcp.oauth.external_url; " +
 				"relying on per-request X-Forwarded-* headers to compose the public URL — " +
 				"set external_url in production")
 		}
@@ -215,7 +218,7 @@ func main() {
 		// supplies a real role check via uim.SetAdminAuthorizer.
 		uim.SetOAuthStore(oauthStore)
 
-		oc := cfg.Server.Auth.OAuth
+		oc := cfg.Server.MCP.OAuth
 		if len(oc.TrustedClientMetadataDomains) == 0 {
 			logger.Warn("oauth enabled with an empty trusted_client_metadata_domains allowlist; " +
 				"no client can connect until at least the legitimate connector domain is listed")
@@ -226,7 +229,7 @@ func main() {
 		}
 		verifier := oauth.NewVerifier(oc.TrustedClientMetadataDomains)
 		authServer = oauth.NewAuthServer(oauthStore, verifier, oauth.AuthServerConfig{
-			ExternalURL: cfg.Server.MCP.ExternalURL,
+			ExternalURL: cfg.Server.MCP.OAuth.ExternalURL,
 			PrincipalAuth: oauth.ConsentCredentialAuth{
 				Credential: oc.ConsentCredential,
 				Principal: oauthstore.Principal{
@@ -248,7 +251,7 @@ func main() {
 		// oauth/serverurl/identity wiring stays here in main; the manager only
 		// admin-gates and calls. The minted token is never logged on this path.
 		uim.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(r *http.Request) (string, time.Time, error) {
-			base, berr := serverurl.Base(cfg.Server.MCP.ExternalURL, r)
+			base, berr := serverurl.Base(cfg.Server.MCP.OAuth.ExternalURL, r)
 			if berr != nil {
 				return "", time.Time{}, berr
 			}
@@ -335,9 +338,24 @@ func main() {
 		return runServer(ctx, "Web", cfg.Server.HTTP, webHandler, logger)
 	})
 
-	// MCP Server
+	// MCP Server.
+	// PHASE-1 INTERIM (B-50): the config now describes up to two MCP transports
+	// (server.mcp.plain / server.mcp.oauth), but the per-port listener wiring is
+	// phase 2. For now a single listener is bound mechanically to keep behaviour
+	// coherent: the OAuth port when configured (it carries the discovery/AS
+	// surface), otherwise the plain port. Validate() guarantees at least one is
+	// set. Phase 2 replaces this with the real 0/1/2-port wiring (one shared
+	// mcpServer, a per-port Authenticator, two StreamableHTTPHandler instances).
+	// No MCP TLS: Shoka terminates no TLS — both ports sit behind a TLS proxy.
+	mcpSettings := config.ServerSettings{Listen: cfg.Server.MCP.Plain.Listen}
+	if cfg.Server.MCP.OAuth.Listen != "" {
+		mcpSettings.Listen = cfg.Server.MCP.OAuth.Listen
+		mcpSettings.ExternalURL = cfg.Server.MCP.OAuth.ExternalURL
+	} else {
+		mcpSettings.ExternalURL = cfg.Server.MCP.Plain.ExternalURL
+	}
 	g.Go(func() error {
-		return runServer(ctx, "MCP", cfg.Server.MCP, httplog.Middleware(logger)(mcpListenerHandler(oauthEnabled, discoveryCfg, authServer, mcpHandler, authenticator)), logger)
+		return runServer(ctx, "MCP", mcpSettings, httplog.Middleware(logger)(mcpListenerHandler(oauthEnabled, discoveryCfg, authServer, mcpHandler, authenticator)), logger)
 	})
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {

@@ -37,7 +37,7 @@ func GetServerInfoHandler(cfg *config.Config, wal WALInfoProvider) func(context.
 		return nil, GetServerInfoOutput{
 			ExternalURL:           cfg.Server.HTTP.ExternalURL,
 			HTTPListen:            cfg.Server.HTTP.Listen,
-			MCPListen:             cfg.Server.MCP.Listen,
+			MCPListen:             cfg.Server.MCP.Plain.Listen,
 			StorageBaseDir:        cfg.Storage.BaseDir,
 			WALPending:            wal.WALPending(),
 			WALWriteDisabled:      wal.WALWriteDisabled(),

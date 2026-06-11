@@ -53,8 +53,14 @@ server:
   http:
     listen: ":8080"       # web UI + WebSocket endpoints
   mcp:
-    listen: ":8081"       # MCP (Streamable HTTP) endpoint for agents, served at /mcp
+    plain:                # the plain (internal) MCP transport — served at /mcp
+      listen: ":8081"     # MCP (Streamable HTTP) endpoint for agents
 ```
+
+The MCP surface is configured as up to two transports selected by presence — a
+**plain** (internal) one and an **OAuth** (external) one; at least one
+`listen` must be set. See *Connecting clients* and the configuration reference in
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 Point an MCP client at the `/mcp` path on the MCP listener, e.g.:
 
@@ -68,8 +74,16 @@ entry that runs `npx mcp-remote http://localhost:8081/mcp`. See
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Connecting clients*) for the detail.
 
 Authentication is **off** by default (single-operator local mode). See
-`shoka.example.yaml` for the full annotated configuration (auth, TLS, translation,
+`shoka.example.yaml` for the full annotated configuration (auth, translation,
 webhooks).
+
+**TLS is outsourced — by design.** Shoka terminates no TLS (it avoids the
+certificate lifecycle: issuance, renewal, reload synchronisation, revocation).
+Run it behind an external TLS-terminating reverse proxy (nginx, etc.). The plain
+transport with `bearer_auth: true` (an API-Token) **must** sit behind that proxy
+or the token travels in cleartext; the unauthenticated plain transport is for
+loopback/internal use only; the OAuth transport requires HTTPS and so is reached
+through the proxy too. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*TLS*).
 
 ## Documentation
 

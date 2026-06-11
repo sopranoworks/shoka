@@ -16,41 +16,36 @@ server:
       # cert_file: "/path/to/cert.pem"
       # key_file: "/path/to/key.pem"
 
-  # MCP endpoint (Streamable HTTP, served at /mcp) consumed by Claude Code instances.
-  # Register with: claude mcp add --transport http shoka http://localhost:8081/mcp
+  # MCP endpoint (Streamable HTTP, served at /mcp) consumed by Claude clients.
+  #
+  # Shoka runs the MCP transport as up to two instances over one shared worker
+  # layer, selected by PRESENCE of a `listen` address. At least one MUST be set
+  # (a server with no MCP transport is invalid and fails to start):
+  #   - plain.listen set  → open the plain (normal/internal) transport
+  #   - oauth.listen set  → open the OAuth (external) transport
+  #   - both set          → open both
+  #
+  # Shoka terminates NO TLS by design (it avoids the certificate lifecycle).
+  # Put BOTH ports behind an external TLS-terminating reverse proxy (nginx, etc.);
+  # there is no `tls` block here. See README / docs/OPERATIONS.md ("TLS").
   mcp:
-    listen: ":8081"
-    external_url: "http://localhost:8081"   # optional
-    tls:
-      enabled: false
+    # Plain transport — normal/internal. Register with:
+    #   claude mcp add --transport http shoka http://localhost:8081/mcp
+    plain:
+      listen: ":8081"
+      external_url: "http://localhost:8081"   # optional
+      # bearer_auth off (default) = unauthenticated — loopback/internal use ONLY.
+      # bearer_auth on = require `Authorization: Bearer <token>` validated against
+      #   server.auth.tokens (the API-Token path). MUST be behind a TLS proxy, or
+      #   the token travels in cleartext.
+      bearer_auth: false
 
-  # Structured logging (written to stderr). Optional — omit for info/text.
-  log:
-    level: "info"   # error | warn | info | debug
-    format: "text"  # text | json
-
-  # Optional Bearer-token authentication. When disabled (the default) the server
-  # runs with no auth and accepts all WebSocket origins (single-operator local mode).
-  auth:
-    enabled: false
-    # When enabled, every non-static endpoint (MCP /mcp, /ws/ui, /drafts/...) requires
-    # `Authorization: Bearer <token>`. Browsers cannot set that header on a WebSocket,
-    # so the web UI passes the token as a `?token=<token>` query parameter instead.
-    # tokens:
-    #   - "replace-with-a-long-random-token"
-    # WebSocket upgrades are additionally restricted to these origins when auth is on
-    # (the MCP endpoint is bearer-authenticated, not origin-checked). An empty/absent Origin is rejected.
-    # allowed_origins:
-    #   - "http://localhost:8080"
-
-    # Built-in OAuth 2.1 authorization server (B-39). When enabled, Shoka acts as
-    # its own AS: it serves discovery (RFC 9728 / RFC 8414), runs /authorize +
-    # /token, verifies clients via CIMD (no DCR), and ENFORCES OAuth access tokens
-    # on the MCP path — superseding the static `tokens` above on that path.
-    # Requires a TLS-terminating reverse proxy and `mcp.external_url` set to the
-    # public origin. Leave disabled for local single-operator use.
+    # OAuth transport — external entry, PURELY OAuth (B-39). Omit the whole block
+    # (no listen) to run plain-only. Bearer/static-token auth is NOT accepted here
+    # by design. OAuth requires HTTPS, so this port also sits behind the TLS proxy.
     oauth:
-      enabled: false
+      # listen: ":8082"
+      # external_url: "https://your-public-origin"   # public origin behind the proxy
       # Gates /authorize approval (the consent step). Set a long secret; an empty
       # value denies all consent. Replaced by per-user auth under multi-user mode.
       # consent_credential: "replace-with-a-long-random-secret"
@@ -63,6 +58,27 @@ server:
       # access_token_ttl: "1h"
       # refresh_token_ttl: "720h"
       # authorization_code_ttl: "1m"
+
+  # Structured logging (written to stderr). Optional — omit for info/text.
+  log:
+    level: "info"   # error | warn | info | debug
+    format: "text"  # text | json
+
+  # Static Bearer-token auth + WebSocket origin policy. As of B-50 this is NO
+  # LONGER a global MCP gate — MCP access is decided per transport above. It now
+  # governs: (1) the API-Token validated by server.mcp.plain.bearer_auth, and
+  # (2) the Web UI / non-MCP endpoints (/ws/ui, /drafts/...). When disabled (the
+  # default) those non-MCP endpoints require no token and accept all WS origins.
+  auth:
+    enabled: false
+    # Accepted bearer tokens (constant-time compared). Also the token set the
+    # plain MCP transport checks when its bearer_auth flag is on.
+    # tokens:
+    #   - "replace-with-a-long-random-token"
+    # Permitted WebSocket `Origin` values for /ws/ui and /drafts when auth is on
+    # (an empty/absent Origin is rejected).
+    # allowed_origins:
+    #   - "http://localhost:8080"
 
 # Commit-author identity. PROVISIONAL: this is "single-user mode" — the floor of
 # a larger authentication design (maintenance backlog B-28), NOT that design.

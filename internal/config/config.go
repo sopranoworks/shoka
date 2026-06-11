@@ -54,27 +54,60 @@ type ServerSettings struct {
 	TLS         TLSConfig `yaml:"tls"`
 }
 
-// AuthConfig configures optional Bearer-token authentication. When Enabled is
-// false (the default) no authentication is performed and all WebSocket origins
-// are accepted, preserving single-operator local behaviour.
+// AuthConfig configures static Bearer-token authentication and the WebSocket
+// origin policy. As of B-50 this is NO LONGER a global MCP gate: MCP access is
+// decided per transport by which port a request arrives on (see MCPConfig).
+// AuthConfig now serves two roles: (1) the API-Token source the plain MCP
+// transport validates against when server.mcp.plain.bearer_auth is on, and
+// (2) the token + origin policy for the Web UI / non-MCP endpoints
+// (/ws/ui, /drafts, /api). When Enabled is false (the default) those non-MCP
+// endpoints require no token and accept all WebSocket origins, preserving
+// single-operator local behaviour.
 type AuthConfig struct {
-	Enabled        bool        `yaml:"enabled"`
-	Tokens         []string    `yaml:"tokens"`
-	AllowedOrigins []string    `yaml:"allowed_origins"`
-	OAuth          OAuthConfig `yaml:"oauth"`
+	Enabled        bool     `yaml:"enabled"`
+	Tokens         []string `yaml:"tokens"`
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
-// OAuthConfig configures the OAuth 2.1 discovery substrate (the 2026-06-03 OAuth
-// (a) directive). When Enabled, Shoka serves RFC 9728 Protected Resource Metadata
-// and RFC 8414 Authorization Server Metadata, and its 401 challenge carries the
-// resource_metadata parameter — so a client (e.g. Claude.ai) can DISCOVER the
-// authorization server. This is discovery ONLY: it issues no tokens and enforces
-// no OAuth (that is a later directive). It is intentionally distinct from
-// AuthConfig.Enabled (the static-bearer switch) so discovery can be toggled
-// independently. The public URL is composed from server.mcp.external_url (or the
-// proxy's X-Forwarded-* headers); see internal/serverurl.
-type OAuthConfig struct {
-	Enabled bool `yaml:"enabled"`
+// MCPConfig configures the MCP transport surface (B-50). Shoka runs the MCP
+// transport as up to two instances over one shared worker layer, selected by
+// PRESENCE of a listen address:
+//
+//   - Plain.Listen set  → open the plain (normal/internal) transport;
+//   - OAuth.Listen set  → open the OAuth (external) transport;
+//   - both set          → open both (the external-OAuth + internal split);
+//   - neither set        → startup error (a Shoka with no MCP transport is invalid).
+//
+// "Is OAuth active" reduces to "is OAuth.Listen configured" — there is no
+// separate enable flag. Neither block carries TLS: Shoka terminates no TLS by
+// design; both ports sit behind an external TLS-terminating reverse proxy.
+type MCPConfig struct {
+	Plain PlainTransportConfig `yaml:"plain"`
+	OAuth OAuthTransportConfig `yaml:"oauth"`
+}
+
+// PlainTransportConfig is the normal/internal MCP transport. With BearerAuth off
+// it is unauthenticated (loopback/internal use — the internal client connects
+// directly). With BearerAuth on it requires a static API-Token presented as
+// `Authorization: Bearer <token>`, validated against server.auth.tokens — for a
+// non-loopback internal host that must be behind a TLS-terminating proxy (the
+// token rides in cleartext otherwise).
+type PlainTransportConfig struct {
+	Listen      string `yaml:"listen"`
+	ExternalURL string `yaml:"external_url"`
+	BearerAuth  bool   `yaml:"bearer_auth"`
+}
+
+// OAuthTransportConfig is the external MCP transport: PURELY OAuth (B-39 —
+// authorize/token/PKCE/consent/CIMD). Static bearer auth is intentionally NOT
+// mixed in (an accident risk on the external port, forbidden by design). It
+// carries the OAuth fields relocated from the former server.auth.oauth block; the
+// `enabled` flag is gone (presence of Listen is the switch). ExternalURL is the
+// public origin behind the TLS proxy, used to compose the discovery / AS URLs
+// (or the proxy's X-Forwarded-* headers when empty); see internal/serverurl.
+type OAuthTransportConfig struct {
+	Listen      string `yaml:"listen"`
+	ExternalURL string `yaml:"external_url"`
 	// ConsentCredential gates the /authorize approval in single-user mode (the
 	// pluggable principal-auth seam; B-39 (b)). The operator sets a secret; an
 	// empty value denies all consent (a safe default — consent cannot be granted
@@ -212,7 +245,7 @@ type IdentityConfig struct {
 type Config struct {
 	Server struct {
 		HTTP ServerSettings `yaml:"http"`
-		MCP  ServerSettings `yaml:"mcp"`
+		MCP  MCPConfig      `yaml:"mcp"`
 		Auth AuthConfig     `yaml:"auth"`
 		Log  LogConfig      `yaml:"log"`
 	} `yaml:"server"`
@@ -303,8 +336,12 @@ func (c *Config) Validate() error {
 	if c.Server.HTTP.Listen == "" {
 		return errors.New("server.http.listen is required")
 	}
-	if c.Server.MCP.Listen == "" {
-		return errors.New("server.mcp.listen is required")
+	// B-50 presence semantics: at least one MCP transport must be configured.
+	// Each opens iff its listen address is set; both is valid; neither is invalid
+	// (a Shoka with no MCP transport serves nothing). This replaces the former
+	// single `server.mcp.listen is required` check.
+	if c.Server.MCP.Plain.Listen == "" && c.Server.MCP.OAuth.Listen == "" {
+		return errors.New("at least one MCP transport must be configured: set server.mcp.plain.listen and/or server.mcp.oauth.listen")
 	}
 	switch c.Server.Log.Level {
 	case "", "error", "warn", "info", "debug":

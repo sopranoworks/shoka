@@ -20,10 +20,9 @@ server:
       cert_file: "cert.pem"
       key_file: "key.pem"
   mcp:
-    listen: ":8081"
-    external_url: "http://localhost:8081"
-    tls:
-      enabled: false
+    plain:
+      listen: ":8081"
+      external_url: "http://localhost:8081"
 storage:
   base_dir: "/tmp/shoka"
 services:
@@ -48,8 +47,8 @@ services:
 	assert.Equal(t, "cert.pem", cfg.Server.HTTP.TLS.CertFile)
 	assert.Equal(t, "key.pem", cfg.Server.HTTP.TLS.KeyFile)
 
-	assert.Equal(t, ":8081", cfg.Server.MCP.Listen)
-	assert.False(t, cfg.Server.MCP.TLS.Enabled)
+	assert.Equal(t, ":8081", cfg.Server.MCP.Plain.Listen)
+	assert.Equal(t, "http://localhost:8081", cfg.Server.MCP.Plain.ExternalURL)
 
 	assert.Equal(t, "/tmp/shoka", cfg.Storage.BaseDir)
 	assert.Equal(t, "my-project", cfg.Services.GoogleCloud.ProjectID)
@@ -61,7 +60,8 @@ server:
   http:
     listen: ":8080"
   mcp:
-    listen: ":8081"
+    plain:
+      listen: ":8081"
   auth:
     enabled: true
     tokens:
@@ -87,17 +87,22 @@ storage:
 	assert.Equal(t, []string{"https://app.example.com"}, cfg.Server.Auth.AllowedOrigins)
 }
 
-func TestLoad_OAuthDiscovery(t *testing.T) {
+func TestLoad_OAuthTransport(t *testing.T) {
+	// B-50: the OAuth transport's fields live under server.mcp.oauth; "is OAuth
+	// active" is the presence of mcp.oauth.listen (no separate enable flag). The
+	// former server.auth.oauth block is gone.
 	yamlContent := `
 server:
   http:
     listen: ":8080"
   mcp:
-    listen: ":8081"
-    external_url: "https://public.example"
-  auth:
     oauth:
-      enabled: true
+      listen: ":8082"
+      external_url: "https://public.example"
+      consent_credential: "secret"
+      trusted_client_metadata_domains:
+        - "connector.example"
+      access_token_ttl: "2h"
 storage:
   base_dir: "/tmp/shoka"
 `
@@ -111,23 +116,31 @@ storage:
 	cfg, err := Load(tmpFile.Name())
 	require.NoError(t, err)
 
-	// OAuth discovery is a distinct switch from the static-bearer auth.enabled.
-	assert.True(t, cfg.Server.Auth.OAuth.Enabled)
+	// OAuth-only is valid (presence of mcp.oauth.listen); the static-bearer
+	// server.auth is independent and stays disabled.
+	assert.Equal(t, ":8082", cfg.Server.MCP.OAuth.Listen)
+	assert.Equal(t, "", cfg.Server.MCP.Plain.Listen)
+	assert.Equal(t, "https://public.example", cfg.Server.MCP.OAuth.ExternalURL)
+	assert.Equal(t, "secret", cfg.Server.MCP.OAuth.ConsentCredential)
+	assert.Equal(t, []string{"connector.example"}, cfg.Server.MCP.OAuth.TrustedClientMetadataDomains)
+	assert.Equal(t, 2*time.Hour, cfg.Server.MCP.OAuth.AccessTokenTTL.Std())
 	assert.False(t, cfg.Server.Auth.Enabled)
-	assert.Equal(t, "https://public.example", cfg.Server.MCP.ExternalURL)
 }
 
-func TestLoad_OAuthDiscoveryDefaultsDisabled(t *testing.T) {
+func TestLoad_PlainBearerAuth(t *testing.T) {
+	// The plain transport carries a bearer_auth flag (default false).
 	yamlContent := `
 server:
   http:
     listen: ":8080"
   mcp:
-    listen: ":8081"
+    plain:
+      listen: ":8081"
+      bearer_auth: true
 storage:
   base_dir: "/tmp/shoka"
 `
-	f, err := os.CreateTemp(t.TempDir(), "config-nooauth*.yaml")
+	f, err := os.CreateTemp(t.TempDir(), "config-bearer*.yaml")
 	require.NoError(t, err)
 	_, err = f.WriteString(yamlContent)
 	require.NoError(t, err)
@@ -135,7 +148,75 @@ storage:
 
 	cfg, err := Load(f.Name())
 	require.NoError(t, err)
-	assert.False(t, cfg.Server.Auth.OAuth.Enabled)
+	assert.True(t, cfg.Server.MCP.Plain.BearerAuth)
+	assert.Equal(t, "", cfg.Server.MCP.OAuth.Listen)
+}
+
+func TestLoad_PlainBearerAuthDefaultsOff(t *testing.T) {
+	yamlContent := `
+server:
+  http:
+    listen: ":8080"
+  mcp:
+    plain:
+      listen: ":8081"
+storage:
+  base_dir: "/tmp/shoka"
+`
+	f, err := os.CreateTemp(t.TempDir(), "config-nobearer*.yaml")
+	require.NoError(t, err)
+	_, err = f.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	cfg, err := Load(f.Name())
+	require.NoError(t, err)
+	assert.False(t, cfg.Server.MCP.Plain.BearerAuth)
+}
+
+// TestLoad_MCPTransportPresence is the B-50 presence matrix: each MCP transport
+// opens iff its listen is set; both is valid; neither is a startup error.
+func TestLoad_MCPTransportPresence(t *testing.T) {
+	write := func(t *testing.T, mcpBlock string) string {
+		t.Helper()
+		body := "server:\n  http:\n    listen: \":8080\"\n  mcp:\n" + mcpBlock + "storage:\n  base_dir: \"/tmp/shoka\"\n"
+		f, err := os.CreateTemp(t.TempDir(), "config-presence*.yaml")
+		require.NoError(t, err)
+		_, err = f.WriteString(body)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		return f.Name()
+	}
+
+	t.Run("plain only is valid", func(t *testing.T) {
+		cfg, err := Load(write(t, "    plain:\n      listen: \":8081\"\n"))
+		require.NoError(t, err)
+		assert.Equal(t, ":8081", cfg.Server.MCP.Plain.Listen)
+		assert.Equal(t, "", cfg.Server.MCP.OAuth.Listen)
+	})
+
+	t.Run("oauth only is valid", func(t *testing.T) {
+		cfg, err := Load(write(t, "    oauth:\n      listen: \":8082\"\n"))
+		require.NoError(t, err)
+		assert.Equal(t, "", cfg.Server.MCP.Plain.Listen)
+		assert.Equal(t, ":8082", cfg.Server.MCP.OAuth.Listen)
+	})
+
+	t.Run("both is valid", func(t *testing.T) {
+		cfg, err := Load(write(t, "    plain:\n      listen: \":8081\"\n    oauth:\n      listen: \":8082\"\n"))
+		require.NoError(t, err)
+		assert.Equal(t, ":8081", cfg.Server.MCP.Plain.Listen)
+		assert.Equal(t, ":8082", cfg.Server.MCP.OAuth.Listen)
+	})
+
+	t.Run("neither is a startup error", func(t *testing.T) {
+		_, err := Load(write(t, "    plain:\n      bearer_auth: false\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid configuration")
+		assert.Contains(t, err.Error(), "at least one MCP transport must be configured")
+		assert.Contains(t, err.Error(), "server.mcp.plain.listen")
+		assert.Contains(t, err.Error(), "server.mcp.oauth.listen")
+	})
 }
 
 func TestLoad_AuthDefaultsDisabled(t *testing.T) {
@@ -144,7 +225,8 @@ server:
   http:
     listen: ":8080"
   mcp:
-    listen: ":8081"
+    plain:
+      listen: ":8081"
 storage:
   base_dir: "/tmp/shoka"
 `
@@ -177,7 +259,8 @@ server:
   http:
     listen: ":8080"
   mcp:
-    listen: ":8081"
+    plain:
+      listen: ":8081"
 `
 	t.Run("absent log block defaults to empty (info/text applied later)", func(t *testing.T) {
 		cfg, err := Load(write(t, base))
@@ -230,7 +313,8 @@ server:
   http:
     listen: ":8080"
   mcp:
-    listen: ":8081"
+    plain:
+      listen: ":8081"
 `
 		tmpFile, err := os.CreateTemp("", "config*.yaml")
 		require.NoError(t, err)
@@ -252,7 +336,8 @@ storage:
   base_dir: "/tmp/shoka"
 server:
   mcp:
-    listen: ":8081"
+    plain:
+      listen: ":8081"
 `
 		tmpFile, err := os.CreateTemp("", "config*.yaml")
 		require.NoError(t, err)
@@ -268,7 +353,8 @@ server:
 		assert.Contains(t, err.Error(), "server.http.listen is required")
 	})
 
-	t.Run("validation failure - missing server.mcp.listen", func(t *testing.T) {
+	t.Run("validation failure - no MCP transport configured", func(t *testing.T) {
+		// Neither server.mcp.plain.listen nor server.mcp.oauth.listen set.
 		yamlContent := `
 storage:
   base_dir: "/tmp/shoka"
@@ -287,7 +373,7 @@ server:
 		_, err = Load(tmpFile.Name())
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid configuration")
-		assert.Contains(t, err.Error(), "server.mcp.listen is required")
+		assert.Contains(t, err.Error(), "at least one MCP transport must be configured")
 	})
 }
 
@@ -308,7 +394,8 @@ server:
   http:
     listen: ":8080"
   mcp:
-    listen: ":8081"
+    plain:
+      listen: ":8081"
 storage:
   base_dir: "/tmp/shoka"
 `

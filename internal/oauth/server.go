@@ -64,7 +64,7 @@ func (c ConsentCredentialAuth) Authenticate(r *http.Request) (oauthstore.Princip
 
 // AuthServerConfig configures the AuthServer.
 type AuthServerConfig struct {
-	ExternalURL   string // Server.MCP.ExternalURL; empty falls back to forwarded headers
+	ExternalURL   string // Server.MCP.OAuth.ExternalURL; empty falls back to forwarded headers
 	PrincipalAuth PrincipalAuthenticator
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration

@@ -19,7 +19,7 @@ import (
 
 // DiscoveryConfig configures the OAuth discovery handlers. ExternalURL is the
 // configured public origin authoritative for OAuth/MCP self-references
-// (Server.MCP.ExternalURL); empty falls back to per-request forwarded headers.
+// (Server.MCP.OAuth.ExternalURL); empty falls back to per-request forwarded headers.
 type DiscoveryConfig struct {
 	ExternalURL string
 }
