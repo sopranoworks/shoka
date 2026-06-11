@@ -40,8 +40,11 @@ Shoka is a single Go binary running two HTTP listeners (Source:
   project trees stay clean without losing data. (Source:
   `internal/storage/lostfound_area.go`.)
 - **MCP server (Streamable HTTP)** — `internal/tools` + the MCP Go SDK. Exposes
-  the 16 tools on the `server.mcp.listen` port (path `/mcp`) over the Streamable
-  HTTP transport (spec `2025-03-26`). (Source: `cmd/server/main.go`,
+  the 18 tools (path `/mcp`) over the Streamable HTTP transport (spec
+  `2025-03-26`) on up to two listeners selected by config presence: the plain
+  `server.mcp.plain.listen` (unauthenticated, or static-bearer when
+  `bearer_auth`) and the OAuth-protected `server.mcp.oauth.listen` — one shared
+  MCP server behind per-port authenticators. (Source: `cmd/server/main.go`,
   `setupMCPServer`.)
 - **Web UI (WebSocket + draft persistence)** — `internal/ui`, `internal/drafts`,
   plus an embedded React build served on the `server.http.listen` port. Drafts are

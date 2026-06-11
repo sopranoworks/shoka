@@ -77,6 +77,11 @@ func mcpEndpoint(port int) string {
 }
 
 // writeLiveConfig writes a minimal but complete Shoka config and returns its path.
+// authEnabled drives BOTH the plain MCP port's static-bearer enforcement
+// (server.mcp.plain.bearer_auth, the B-50 per-port auth source) and the Web/non-MCP
+// token policy (server.auth.enabled), so a single flag keeps the long-standing
+// "auth on → MCP requires the token" intent of the live suite after the two-transport
+// split. The single plain transport carries the documented /mcp endpoint.
 func writeLiveConfig(t *testing.T, baseDir string, httpPort, mcpPort int, level string, authEnabled bool, token string) string {
 	t.Helper()
 	tokensYAML := "[]"
@@ -91,6 +96,7 @@ func writeLiveConfig(t *testing.T, baseDir string, httpPort, mcpPort int, level 
     plain:
       listen: "127.0.0.1:%d"
       external_url: "http://127.0.0.1:%d"
+      bearer_auth: %t
   auth:
     enabled: %t
     tokens: %s
@@ -103,7 +109,7 @@ storage:
 services:
   google_cloud:
     project_id: ""
-`, httpPort, httpPort, mcpPort, mcpPort, authEnabled, tokensYAML, level, baseDir)
+`, httpPort, httpPort, mcpPort, mcpPort, authEnabled, authEnabled, tokensYAML, level, baseDir)
 
 	path := filepath.Join(t.TempDir(), "shoka.yaml")
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {

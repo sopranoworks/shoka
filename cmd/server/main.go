@@ -316,15 +316,6 @@ func main() {
 	}
 
 	mcpServer := setupMCPServer(ctx, cfg, s, ts, logger, notifyCenter)
-	// MCP is served over the Streamable HTTP transport (single endpoint on the
-	// dedicated MCP listener; see docs/contracts/mcp-v1.md § Transport). The
-	// handler is path-agnostic, so the documented endpoint is the MCP listener's
-	// /mcp path. Stateful mode (the SDK default) is required: it validates the
-	// Mcp-Session-Id header and returns 404 for an unknown/stale session id,
-	// which is how a client recovers after a server restart.
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return mcpServer
-	}, &mcp.StreamableHTTPOptions{Logger: logger})
 
 	webHandler, err := setupWebHandler(s, dm, uim, authenticator)
 	if err != nil {
@@ -338,25 +329,66 @@ func main() {
 		return runServer(ctx, "Web", cfg.Server.HTTP, webHandler, logger)
 	})
 
-	// MCP Server.
-	// PHASE-1 INTERIM (B-50): the config now describes up to two MCP transports
-	// (server.mcp.plain / server.mcp.oauth), but the per-port listener wiring is
-	// phase 2. For now a single listener is bound mechanically to keep behaviour
-	// coherent: the OAuth port when configured (it carries the discovery/AS
-	// surface), otherwise the plain port. Validate() guarantees at least one is
-	// set. Phase 2 replaces this with the real 0/1/2-port wiring (one shared
-	// mcpServer, a per-port Authenticator, two StreamableHTTPHandler instances).
-	// No MCP TLS: Shoka terminates no TLS — both ports sit behind a TLS proxy.
-	mcpSettings := config.ServerSettings{Listen: cfg.Server.MCP.Plain.Listen}
-	if cfg.Server.MCP.OAuth.Listen != "" {
-		mcpSettings.Listen = cfg.Server.MCP.OAuth.Listen
-		mcpSettings.ExternalURL = cfg.Server.MCP.OAuth.ExternalURL
-	} else {
-		mcpSettings.ExternalURL = cfg.Server.MCP.Plain.ExternalURL
+	// MCP transports (B-50 phase 2): open up to two MCP listeners over ONE shared
+	// mcpServer, selected by config PRESENCE (Validate guarantees at least one is
+	// set). Each opened port gets its OWN StreamableHTTPHandler instance, so a
+	// Mcp-Session-Id minted on one port is unknown on the other (per-port session
+	// maps — defense-in-depth; the OAuth middleware re-validates every request
+	// regardless). Stateful mode (the SDK default) is required: it validates the
+	// Mcp-Session-Id header and returns 404 for an unknown/stale id, which is how a
+	// client recovers after a restart. The handler is path-agnostic, so the
+	// documented /mcp endpoint is just one path it serves (see
+	// docs/contracts/mcp-v1.md § Transport). Init stays SINGLE — one storage/
+	// catalog/index, one notifyCenter, one mcpServer, one subscription-manager +
+	// reaper — shared by both legs; duplicating any of them is the only way to
+	// introduce a cross-transport race. No MCP TLS: Shoka terminates none; both
+	// ports sit behind an external TLS-terminating reverse proxy.
+	newMCPHandler := func() http.Handler {
+		return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+			return mcpServer
+		}, &mcp.StreamableHTTPOptions{Logger: logger})
 	}
-	g.Go(func() error {
-		return runServer(ctx, "MCP", mcpSettings, httplog.Middleware(logger)(mcpListenerHandler(oauthEnabled, discoveryCfg, authServer, mcpHandler, authenticator)), logger)
-	})
+
+	// Plain (internal) transport: static-bearer iff bearer_auth (validated against
+	// server.auth.tokens), else unauthenticated loopback use. Never OAuth — no
+	// discovery/AS surface, no token enforcement closure.
+	if cfg.Server.MCP.Plain.Listen != "" {
+		var plainAuth *auth.Authenticator
+		if cfg.Server.MCP.Plain.BearerAuth {
+			plainAuth = auth.New(auth.Config{Enabled: true, Tokens: cfg.Server.Auth.Tokens})
+		} else {
+			plainAuth = auth.New(auth.Config{}) // disabled → allows all (loopback use)
+		}
+		plainSettings := config.ServerSettings{
+			Listen:      cfg.Server.MCP.Plain.Listen,
+			ExternalURL: cfg.Server.MCP.Plain.ExternalURL,
+		}
+		plainHandler := httplog.Middleware(logger)(plainAuth.Middleware(newMCPHandler()))
+		g.Go(func() error {
+			return runServer(ctx, "MCP-plain", plainSettings, plainHandler, logger)
+		})
+	}
+
+	// OAuth (external) transport: PURE OAuth — the OAuth-enforcing authenticator
+	// (the ValidateToken closure over oauthStore.Lookup) behind a per-listener mux
+	// that also mounts the discovery documents + the /authorize + /token endpoints
+	// unauthenticated (they must be reachable before a token exists). It never
+	// accepts a static bearer. Opened iff oauth.listen is set — which is exactly
+	// oauthEnabled, so authServer and the authConfig closures below are non-nil.
+	if cfg.Server.MCP.OAuth.Listen != "" {
+		oauthAuth := auth.New(auth.Config{
+			ResourceMetadataURL: authConfig.ResourceMetadataURL,
+			ValidateToken:       authConfig.ValidateToken,
+		})
+		oauthSettings := config.ServerSettings{
+			Listen:      cfg.Server.MCP.OAuth.Listen,
+			ExternalURL: cfg.Server.MCP.OAuth.ExternalURL,
+		}
+		oauthHandler := httplog.Middleware(logger)(oauthListenerHandler(discoveryCfg, authServer, newMCPHandler(), oauthAuth))
+		g.Go(func() error {
+			return runServer(ctx, "MCP-oauth", oauthSettings, oauthHandler, logger)
+		})
+	}
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("server error", "error", err)
@@ -630,23 +662,21 @@ func startMetricsServer(ctx context.Context, addr string, src metrics.Source, lo
 	}()
 }
 
-// mcpListenerHandler assembles the MCP listener's HTTP handler. When OAuth
-// discovery is enabled, the RFC 9728 / RFC 8414 discovery documents are mounted
-// WITHOUT auth (they must be reachable before a token exists) and the MCP handler
-// becomes the auth-wrapped catch-all. When disabled, the handler is exactly the
-// auth-wrapped MCP handler — behaviour byte-for-byte unchanged. The MCP handler is
-// path-agnostic, so the "/" catch-all serves it on /mcp and elsewhere as before.
-func mcpListenerHandler(oauthEnabled bool, discoveryCfg oauth.DiscoveryConfig, authServer *oauth.AuthServer, mcpHandler http.Handler, authenticator *auth.Authenticator) http.Handler {
-	authed := authenticator.Middleware(mcpHandler)
-	if !oauthEnabled {
-		return authed
-	}
+// oauthListenerHandler assembles the OAuth MCP listener's HTTP handler. The RFC
+// 9728 / RFC 8414 discovery documents and the /authorize + /token endpoints are
+// mounted WITHOUT auth (they must be reachable before a token exists); the
+// OAuth-enforcing MCP handler is the "/" catch-all. The MCP handler is
+// path-agnostic, so the catch-all serves it on /mcp and elsewhere. This handler
+// is built ONLY for the OAuth port (B-50 phase 2) — the plain port wraps the bare
+// MCP handler with its own static-bearer-or-none authenticator and has no
+// discovery/AS surface.
+func oauthListenerHandler(discoveryCfg oauth.DiscoveryConfig, authServer *oauth.AuthServer, mcpHandler http.Handler, authenticator *auth.Authenticator) http.Handler {
 	mux := http.NewServeMux()
 	oauth.RegisterDiscovery(mux, discoveryCfg) // RFC 9728 / RFC 8414, no auth
 	if authServer != nil {
 		authServer.RegisterEndpoints(mux) // /authorize + /token, no bearer (they mint one)
 	}
-	mux.Handle("/", authed)
+	mux.Handle("/", authenticator.Middleware(mcpHandler))
 	return mux
 }
 

@@ -55,10 +55,13 @@ such cases are flagged inline.
   `2025-06-18`). SSE (the older `2024-11-05` HTTP+SSE transport) has been
   **removed**; there is no SSE endpoint. (Source: `cmd/server/main.go:103-105` —
   `mcp.NewStreamableHTTPHandler(...)`, SDK `go-sdk@v1.6.0/mcp/streamable.go:194`.)
-- **Endpoint:** the MCP listener `server.mcp.listen` (e.g. `:8081`). The handler
-  is the MCP listener's root handler and is **path-agnostic**, but the canonical,
-  documented endpoint path is **`/mcp`**. (Source: `cmd/server/main.go:103-121`.)
-  A client registers it with:
+- **Endpoint:** Shoka opens up to **two** MCP listeners, selected by config
+  presence: the **plain** transport `server.mcp.plain.listen` and the **OAuth**
+  transport `server.mcp.oauth.listen` (at least one must be set; see § 3). Each
+  serves the same MCP server over its own handler. The handler is the listener's
+  root handler and is **path-agnostic**, but the canonical, documented endpoint
+  path on either port is **`/mcp`**. (Source: `cmd/server/main.go` MCP transport
+  wiring; `internal/config/config.go:84-127`.) A client registers it with:
 
   ```
   claude mcp add --transport http shoka http://localhost:<port>/mcp
@@ -116,35 +119,45 @@ such cases are flagged inline.
 
 ## 3. Authentication
 
-Controlled by config `server.auth` (Source: `internal/config/config.go:23-30`;
-`internal/auth/auth.go`).
+**MCP authentication is decided per transport — by which port a request arrives
+on**, not by a single global switch. The two MCP transports (§ 2) have distinct,
+non-mixable auth models (Source: `internal/config/config.go:84-127`;
+`cmd/server/main.go` per-port authenticator construction; `internal/auth/auth.go`):
 
-- **`server.auth.enabled: false` (default):** no authentication; all requests pass
-  and all WebSocket origins are accepted. (Source: `internal/auth/auth.go:39-44`.)
-- **`server.auth.enabled: true`:**
-  - **The MCP endpoint requires `Authorization: Bearer <token>`** on every
-    request. The `?token=` query parameter is **NOT** accepted on the MCP
-    endpoint — only on the WebSocket paths `/ws/ui` and `/drafts/`. (Source:
-    `internal/auth/auth.go:39-75` header-only `Authenticate`/`Middleware` vs.
-    query-allowing `AuthenticateWebSocket`/`MiddlewareAllowQueryToken`; wired at
-    `cmd/server/main.go:121` (MCP, header-only) and the WS handlers
-    (query-allowing). This was finding **F1**, fixed.)
-  - Tokens are compared in **constant time** against the configured set. (Source:
-    `internal/auth/auth.go:80-89`.)
-  - **Failure response:** HTTP **401** with header `WWW-Authenticate: Bearer` and
-    body `unauthorized`. (Source: `internal/auth/auth.go` middleware.)
-  - The credential must be present on **every** request of the session — each
-    POST to `/mcp`, the optional GET stream, and the DELETE that ends the session.
-    (The Streamable HTTP client must attach the header to all requests.)
+- **Plain transport (`server.mcp.plain`)** — the normal/internal port:
+  - **`bearer_auth: false` (default):** no authentication; every request reaches
+    the MCP handler. Intended for loopback/internal use behind the network
+    boundary. (Source: `internal/config/config.go:95-99`; `internal/auth/auth.go`
+    disabled authenticator.)
+  - **`bearer_auth: true`:** the port requires `Authorization: Bearer <token>` on
+    every request, validated in **constant time** against the **`server.auth.tokens`**
+    set. The `?token=` query parameter is **NOT** accepted on the MCP endpoint —
+    only on the WebSocket paths `/ws/ui` and `/drafts/`. Failure is HTTP **401**
+    with `WWW-Authenticate: Bearer` and body `unauthorized`. The credential must
+    be present on **every** request of the session (each POST to `/mcp`, the
+    optional GET stream, and the DELETE that ends it). (Source:
+    `internal/auth/auth.go` header-only `Middleware` vs. query-allowing
+    `MiddlewareAllowQueryToken`; this was finding **F1**, fixed.)
+  - The plain port is **never** OAuth: no discovery/AS surface, no token-store
+    enforcement.
+- **OAuth transport (`server.mcp.oauth`)** — the external port: **pure OAuth**
+  (§ 3.1). It requires a valid OAuth access token on every MCP request and never
+  accepts a static `server.auth.tokens` bearer.
 
-### 3.1 OAuth 2.1 authorization server (capability — not enabled by default)
+`server.auth` is therefore **no longer a global MCP gate**: `server.auth.tokens`
+is the static-bearer source the plain port validates against when its `bearer_auth`
+is on, and `server.auth.{enabled,allowed_origins}` govern the Web UI / non-MCP
+endpoints (`/ws/ui`, `/drafts`, `/api`) — token + WebSocket-origin policy.
+(Source: `internal/config/config.go:57-70`.)
 
-> **Capability, not a running deployment.** OAuth is **supported but not enabled
-> by default**; it is code-complete and not stood up. This subsection describes
-> what the server *can* do and the configuration an operator must supply — it
-> names config fields and protocol roles only, never an address, endpoint URL,
-> token, or secret. When OAuth is off, the bearer-token rules of § 3 apply
-> unchanged.
+### 3.1 OAuth 2.1 authorization server (the OAuth transport)
+
+> **Active when the OAuth transport is configured.** OAuth is in force exactly
+> when `server.mcp.oauth.listen` is set (there is no separate enable flag); it
+> applies to the **OAuth port only**. This subsection describes what that port
+> does and the configuration an operator must supply — it names config fields and
+> protocol roles only, never an address, endpoint URL, token, or secret. When no
+> OAuth transport is configured, only the plain-port rules of § 3 apply.
 
 When enabled, Shoka acts as **its own built-in OAuth 2.1 authorization server**
 protecting the MCP resource, so a client can obtain a bearer access token instead
@@ -170,41 +183,46 @@ of being handed a static one.
   deliberately omitted — do not look for one). Instead the client's `client_id`
   **is an https URL to its own client-metadata document**; the server fetches that
   document and only trusts it when its domain is on the
-  **`server.auth.oauth.trusted_client_metadata_domains`** allowlist — which is
+  **`server.mcp.oauth.trusted_client_metadata_domains`** allowlist — which is
   **default-deny** (empty ⇒ no client may connect, so the operator must list the
   connector's metadata domain). The allowlist is referenced as a **config field
   name**, never by its contents. (Source: `internal/oauth/discovery.go:9-10,37-38,84,96`;
-  `internal/oauth/cimd.go`; `internal/config/config.go:84-89`.)
+  `internal/oauth/cimd.go`; `internal/config/config.go:117-122`.)
 - **Consent:** approval at `/authorize` is gated by a server-side consent step
-  bound to the **`server.auth.oauth.consent_credential`** field (an empty value
+  bound to the **`server.mcp.oauth.consent_credential`** field (an empty value
   denies all consent — a safe default). This is the single-operator seam; it is
   named, never valued. (Source: `internal/oauth/server.go:41-63,189-222`;
-  `internal/config/config.go:78-83`.)
-- **Enablement prerequisites (operator-supplied, names only):** turning OAuth on
-  requires a **TLS-terminating reverse proxy** in front of Shoka,
-  **`server.mcp.external_url`** set to the public URL (the field name — the URL
-  value lives only in config), the **`server.auth.oauth.trusted_client_metadata_domains`**
-  allowlist populated, and **`server.auth.oauth.consent_credential`** set. The
-  enable switch itself is **`server.auth.oauth.enabled`**; token lifetimes are
-  `access_token_ttl` / `refresh_token_ttl` / `authorization_code_ttl`. (Source:
-  `internal/config/config.go:76-94`; `internal/oauth/server.go:86-99`.)
-- **What an MCP client does:**
-  - **OAuth enabled** — discover the AS from the metadata documents (above), run the
-    standard authorization-code + PKCE-`S256` handshake to obtain an access token,
+  `internal/config/config.go:111-116`.)
+- **Enablement prerequisites (operator-supplied, names only):** the OAuth
+  transport activates by **setting `server.mcp.oauth.listen`** (there is no
+  separate enable flag — presence is the switch). A production deployment also
+  requires a **TLS-terminating reverse proxy** in front of Shoka (Shoka
+  terminates no TLS itself), **`server.mcp.oauth.external_url`** set to the public
+  URL (the field name — the URL value lives only in config), the
+  **`server.mcp.oauth.trusted_client_metadata_domains`** allowlist populated, and
+  **`server.mcp.oauth.consent_credential`** set. Token lifetimes are
+  `server.mcp.oauth.access_token_ttl` / `refresh_token_ttl` /
+  `authorization_code_ttl`. (Source: `internal/config/config.go:108-127`;
+  `internal/oauth/server.go:86-99`.)
+- **What an MCP client does (by port):**
+  - **On the OAuth port** — discover the AS from the metadata documents (above), run
+    the standard authorization-code + PKCE-`S256` handshake to obtain an access token,
     then present it as `Authorization: Bearer <access token>` on every MCP request.
-    A request without a valid OAuth access token is refused with `401` and the
-    `resource_metadata` challenge. (Source: `internal/auth/auth.go:109-122`.)
-  - **OAuth disabled** — the OAuth token check is not installed and the **§ 3
-    static-bearer behaviour applies verbatim**: `server.auth.enabled: false` ⇒ no
-    auth; `server.auth.enabled: true` ⇒ `Authorization: Bearer <static token>` on
-    every request. (Source: `internal/auth/auth.go:85-122` — the OAuth validator
-    *supersedes* the static-bearer check only when injected; nil ⇒ prior behaviour.)
+    A request without a valid OAuth access token — including one carrying a static
+    `server.auth.tokens` bearer — is refused with `401` and the `resource_metadata`
+    challenge. (Source: `internal/auth/auth.go:109-122`; per-port authenticators in
+    `cmd/server/main.go`.)
+  - **On the plain port** — no OAuth: `bearer_auth: false` ⇒ no auth;
+    `bearer_auth: true` ⇒ `Authorization: Bearer <static token>` (validated against
+    `server.auth.tokens`) on every request, per § 3. The OAuth token check is never
+    installed on this port. (Source: `internal/auth/auth.go:85-122`;
+    `internal/config/config.go:95-99`.)
 
 ---
 
 ## 4. Tool catalog
 
-v1 exposes **16 tools**. Fifteen are always registered; `translate_file` is
+v1 exposes **18 tools**. Seventeen are always registered; `translate_file` is
 registered **only** when `services.google_cloud.project_id` is set. (Source:
 `cmd/server/main.go`.)
 
@@ -212,8 +230,11 @@ registered **only** when `services.google_cloud.project_id` is set. (Source:
 get_server_info  list_projects  create_project  list_files  read_file
 read_file_at_version  write_file  delete_file  append_to_file  patch_file
 move_file  get_history  read_summary  list_files_since  search_files
-translate_file*  (*conditional)
+subscribe  unsubscribe  translate_file*  (*conditional)
 ```
+
+`subscribe` / `unsubscribe` register scoped file-change notifications delivered as
+`notifications/message` (the B-45b subscription tools).
 
 ### 4.0 Common argument conventions
 
