@@ -12,6 +12,7 @@ package oauth
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/shoka/mcp-server/internal/serverurl"
@@ -22,6 +23,17 @@ import (
 // (Server.MCP.OAuth.ExternalURL); empty falls back to per-request forwarded headers.
 type DiscoveryConfig struct {
 	ExternalURL string
+	// Logger records which discovery document was served (B-52), so a
+	// discovery-path failure is visible. Nil → slog.Default().
+	Logger *slog.Logger
+}
+
+// logger resolves the configured logger, defaulting to slog.Default() (panic-safe).
+func (c DiscoveryConfig) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.Default()
 }
 
 // ProtectedResourceMetadata is the RFC 9728 document. resource is the exact MCP
@@ -50,12 +62,16 @@ type AuthorizationServerMetadata struct {
 // ProtectedResourceMetadataHandler serves RFC 9728 PRM. Reachable without auth
 // (discovery must work before a token exists).
 func ProtectedResourceMetadataHandler(cfg DiscoveryConfig) http.Handler {
+	logger := cfg.logger()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		base, err := serverurl.Base(cfg.ExternalURL, r)
 		if err != nil {
+			logger.Warn("oauth discovery served",
+				"document", "protected_resource_metadata", "result", "public-url-unresolvable")
 			http.Error(w, "public URL not resolvable", http.StatusServiceUnavailable)
 			return
 		}
+		logger.Info("oauth discovery served", "document", "protected_resource_metadata")
 		writeJSON(w, ProtectedResourceMetadata{
 			Resource:               serverurl.ResourceURL(base),
 			AuthorizationServers:   []string{serverurl.IssuerURL(base)},
@@ -67,12 +83,16 @@ func ProtectedResourceMetadataHandler(cfg DiscoveryConfig) http.Handler {
 // AuthorizationServerMetadataHandler serves RFC 8414 AS metadata. Reachable
 // without auth.
 func AuthorizationServerMetadataHandler(cfg DiscoveryConfig) http.Handler {
+	logger := cfg.logger()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		base, err := serverurl.Base(cfg.ExternalURL, r)
 		if err != nil {
+			logger.Warn("oauth discovery served",
+				"document", "authorization_server_metadata", "result", "public-url-unresolvable")
 			http.Error(w, "public URL not resolvable", http.StatusServiceUnavailable)
 			return
 		}
+		logger.Info("oauth discovery served", "document", "authorization_server_metadata")
 		writeJSON(w, AuthorizationServerMetadata{
 			Issuer:                            serverurl.IssuerURL(base),
 			AuthorizationEndpoint:             serverurl.AuthorizeURL(base),

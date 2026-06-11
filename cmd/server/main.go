@@ -174,7 +174,7 @@ func main() {
 	// address is set). The former server.auth.oauth.enabled flag is gone. The
 	// per-port listener wiring is phase 2; phase 1 only repoints the reads.
 	oauthEnabled := cfg.Server.MCP.OAuth.Listen != ""
-	discoveryCfg := oauth.DiscoveryConfig{ExternalURL: cfg.Server.MCP.OAuth.ExternalURL}
+	discoveryCfg := oauth.DiscoveryConfig{ExternalURL: cfg.Server.MCP.OAuth.ExternalURL, Logger: logger}
 	// authConfig carries ONLY the OAuth MCP transport's concerns — the RFC 9728
 	// challenge composer and the token-enforcement closure, both set below when the
 	// OAuth port is configured and consumed SOLELY by that port. server.auth's
