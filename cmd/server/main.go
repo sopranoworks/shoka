@@ -175,11 +175,14 @@ func main() {
 	// per-port listener wiring is phase 2; phase 1 only repoints the reads.
 	oauthEnabled := cfg.Server.MCP.OAuth.Listen != ""
 	discoveryCfg := oauth.DiscoveryConfig{ExternalURL: cfg.Server.MCP.OAuth.ExternalURL}
-	authConfig := auth.Config{
-		Enabled:        cfg.Server.Auth.Enabled,
-		Tokens:         cfg.Server.Auth.Tokens,
-		AllowedOrigins: cfg.Server.Auth.AllowedOrigins,
-	}
+	// authConfig carries ONLY the OAuth MCP transport's concerns — the RFC 9728
+	// challenge composer and the token-enforcement closure, both set below when the
+	// OAuth port is configured and consumed SOLELY by that port. server.auth's
+	// static-bearer/origin policy is deliberately NOT here: it is the Web/non-MCP
+	// routes' gate (webAuth, below) and the plain MCP port's bearer source (B-50
+	// phase 2). Keeping them apart is what stops the OAuth closure from reaching a
+	// Web route (B-50 phase 3 decoupling).
+	var authConfig auth.Config
 	var authServer *oauth.AuthServer
 	var oauthStore *oauthstore.Store
 	if oauthEnabled {
@@ -282,9 +285,18 @@ func main() {
 			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email}, true
 		}
 	}
-	authenticator := auth.New(authConfig)
-	dm.SetOriginChecker(authenticator.OriginAllowed)
-	uim.SetOriginChecker(authenticator.OriginAllowed)
+	// The Web/non-MCP routes (/drafts/, /ws/ui, /api/) get their OWN authenticator
+	// carrying ONLY server.auth's static-bearer tokens + WS origin policy — never
+	// the OAuth ValidateToken closure (B-50 phase 3). An OAuth access token is an
+	// MCP-client credential; at HEAD it gated /api/ (the OAuth-wrapped admin route)
+	// whenever the OAuth transport was configured, which locked the browser Web-UI
+	// recovery dialog out — the latent bug this decoupling fixes. This is the
+	// existing server.auth gate the Web routes were always built on, NOT a decision
+	// about the Web UI's own auth model (static-bearer vs B-28 user-auth vs open),
+	// which stays a separate, deferred question.
+	webAuth := auth.New(webAuthConfig(cfg.Server.Auth))
+	dm.SetOriginChecker(webAuth.OriginAllowed)
+	uim.SetOriginChecker(webAuth.OriginAllowed)
 
 	// Optional Prometheus metrics endpoint: default off, loopback-only (mirrors
 	// the pprof endpoint's defaults). Started here — after the UI manager (the
@@ -317,7 +329,7 @@ func main() {
 
 	mcpServer := setupMCPServer(ctx, cfg, s, ts, logger, notifyCenter)
 
-	webHandler, err := setupWebHandler(s, dm, uim, authenticator)
+	webHandler, err := setupWebHandler(s, dm, uim, webAuth)
 	if err != nil {
 		log.Fatalf("failed to setup web handler: %v", err)
 	}
@@ -534,6 +546,22 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	subMgr.StartReaper(ctx)
 
 	return mcpServer
+}
+
+// webAuthConfig returns the auth.Config for the Web/non-MCP routes (/drafts/,
+// /ws/ui, /api/): server.auth's static-bearer tokens + WS allowed-origins ONLY. It
+// deliberately carries NEITHER the OAuth ValidateToken closure nor the RFC 9728
+// ResourceMetadataURL — an OAuth access token is an MCP-client credential and must
+// never gate a browser route. This returns the gate the Web routes were always
+// built on (server.auth); it is NOT a decision about the Web UI's own auth model
+// (static-bearer vs B-28 user-auth vs open), which remains a separate, deferred
+// question (B-50 phase 3 only removes the OAuth coupling).
+func webAuthConfig(a config.AuthConfig) auth.Config {
+	return auth.Config{
+		Enabled:        a.Enabled,
+		Tokens:         a.Tokens,
+		AllowedOrigins: a.AllowedOrigins,
+	}
 }
 
 func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator) (http.Handler, error) {

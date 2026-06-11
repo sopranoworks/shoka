@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shoka/mcp-server/internal/auth"
+	"github.com/shoka/mcp-server/internal/config"
 	"github.com/shoka/mcp-server/internal/oauth"
 	"github.com/shoka/mcp-server/internal/storage/oauthstore"
 )
@@ -15,6 +16,16 @@ func mcpProbe(t *testing.T, h http.Handler, path string) int {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	return rec.Code
+}
+
+// probeBearer probes h with an Authorization: Bearer <token> header.
+func probeBearer(t *testing.T, h http.Handler, path, token string) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(rec, req)
 	return rec.Code
 }
 
@@ -85,5 +96,83 @@ func TestPlainPortHandlerAuthAndNoDiscovery(t *testing.T) {
 	noAuth := auth.New(auth.Config{}).Middleware(okHandler())
 	if code := mcpProbe(t, noAuth, "/mcp"); code != http.StatusOK {
 		t.Fatalf("plain port without bearer_auth must allow the request through, got %d", code)
+	}
+}
+
+// B-50 phase 3: the Web/non-MCP routes (/drafts/, /ws/ui, /api/) authenticate
+// against server.auth's static-bearer tokens + WS origin policy ONLY — never the
+// OAuth ValidateToken closure (an OAuth access token is an MCP-client credential
+// and must not gate a browser route). webAuthConfig must therefore strip all OAuth
+// wiring regardless of what the rest of the config carries: no ValidateToken, no
+// ResourceMetadataURL. Behaviourally that means the configured static bearer IS
+// accepted on the Web path (it would be REJECTED if the OAuth closure had leaked
+// through, since ValidateToken supersedes static-bearer), while a non-configured
+// token (e.g. an OAuth access token) is not.
+func TestWebAuthConfigHasNoOAuthClosure(t *testing.T) {
+	wc := webAuthConfig(config.AuthConfig{
+		Enabled:        true,
+		Tokens:         []string{"web-secret"},
+		AllowedOrigins: []string{"https://ui.example"},
+	})
+	if wc.ValidateToken != nil {
+		t.Fatal("web auth must not carry the OAuth ValidateToken closure")
+	}
+	if wc.ResourceMetadataURL != nil {
+		t.Fatal("web auth must not carry the OAuth ResourceMetadataURL composer")
+	}
+
+	gate := auth.New(wc).Middleware(okHandler())
+	if code := probeBearer(t, gate, "/api/recover", "web-secret"); code != http.StatusOK {
+		t.Fatalf("the configured static bearer must be accepted on the Web /api path, got %d", code)
+	}
+	if code := probeBearer(t, gate, "/api/recover", "an-oauth-access-token"); code != http.StatusUnauthorized {
+		t.Fatalf("a non-server.auth token (e.g. an OAuth access token) must NOT authenticate the Web /api path, got %d", code)
+	}
+	if code := mcpProbe(t, gate, "/api/recover"); code != http.StatusUnauthorized {
+		t.Fatalf("no token with server.auth enabled must be 401 on the Web /api path, got %d", code)
+	}
+}
+
+// With server.auth disabled (the default single-operator local mode) the Web /api
+// route is open — the pinned non-OAuth gate when server.auth is unset. This proves
+// a browser with NO token can reach /api/ (the recovery dialog), the intended
+// latent-bug fix: at HEAD, /api/ was OAuth-wrapped and locked the browser out
+// whenever the OAuth transport was configured.
+func TestWebAuthConfigDisabledIsOpen(t *testing.T) {
+	gate := auth.New(webAuthConfig(config.AuthConfig{Enabled: false})).Middleware(okHandler())
+	if code := mcpProbe(t, gate, "/api/recover"); code != http.StatusOK {
+		t.Fatalf("with server.auth disabled the Web /api path must be open, got %d", code)
+	}
+}
+
+// /drafts/ and /ws/ui already used the static-bearer/query-token path at HEAD;
+// after decoupling they run on the same server.auth policy via the non-OAuth
+// webAuth. Their gate is unchanged: the ?token= query fallback (browsers cannot
+// set an Authorization header on a WS handshake) and the WS origin policy are
+// carried through exactly as before — only the authenticator instance changed.
+func TestWebAuthConfigCarriesWSPolicyUnchanged(t *testing.T) {
+	a := auth.New(webAuthConfig(config.AuthConfig{
+		Enabled:        true,
+		Tokens:         []string{"web-secret"},
+		AllowedOrigins: []string{"https://ui.example"},
+	}))
+
+	wsGate := a.MiddlewareAllowQueryToken(okHandler())
+	if code := mcpProbe(t, wsGate, "/ws/ui?token=web-secret"); code != http.StatusOK {
+		t.Fatalf("?token= must authenticate the WS routes, got %d", code)
+	}
+	if code := mcpProbe(t, wsGate, "/ws/ui?token=wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("a wrong ?token= must be rejected on the WS routes, got %d", code)
+	}
+
+	allow := httptest.NewRequest(http.MethodGet, "/ws/ui", nil)
+	allow.Header.Set("Origin", "https://ui.example")
+	if !a.OriginAllowed(allow) {
+		t.Fatal("the configured allowed origin must pass")
+	}
+	deny := httptest.NewRequest(http.MethodGet, "/ws/ui", nil)
+	deny.Header.Set("Origin", "https://evil.example")
+	if a.OriginAllowed(deny) {
+		t.Fatal("an unlisted origin must be rejected")
 	}
 }
