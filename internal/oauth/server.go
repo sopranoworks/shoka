@@ -17,6 +17,7 @@ import (
 	"github.com/shoka/mcp-server/internal/reqtrace"
 	"github.com/shoka/mcp-server/internal/serverurl"
 	"github.com/shoka/mcp-server/internal/storage/oauthstore"
+	"github.com/shoka/mcp-server/internal/tokenfp"
 )
 
 // This file builds Shoka's built-in OAuth 2.1 authorization-server core (the
@@ -523,6 +524,11 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	lg.Info("oauth token issued",
 		"grant_type", "authorization_code", "client_id", rec.ClientID,
 		"pkce_result", "match",
+		// B-54 discriminator: a one-way fingerprint of the issued access token (never
+		// the value). The same fingerprint on a later "auth rejected" line proves the
+		// SAME token reached Lookup (→ store reset/split); a different/absent one proves
+		// a different value arrived (→ proxy/stale token).
+		"access_fingerprint", tokenfp.Fingerprint(series.AccessToken),
 		"access_ttl_seconds", int(s.accessTTL/time.Second),
 		"refresh_ttl_seconds", int(s.refreshTTL/time.Second))
 	s.writeTokens(w, series)
@@ -554,6 +560,7 @@ func (s *AuthServer) grantRefreshToken(w http.ResponseWriter, r *http.Request) {
 	// never logged).
 	lg.Info("oauth token issued",
 		"grant_type", "refresh_token", "client_id", series.ClientID,
+		"access_fingerprint", tokenfp.Fingerprint(series.AccessToken), // B-54 discriminator (one-way; never the value)
 		"access_ttl_seconds", int(s.accessTTL/time.Second),
 		"refresh_ttl_seconds", int(s.refreshTTL/time.Second))
 	s.writeTokens(w, series)

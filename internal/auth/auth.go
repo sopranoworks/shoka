@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/shoka/mcp-server/internal/reqtrace"
+	"github.com/shoka/mcp-server/internal/tokenfp"
 )
 
 // mcpSessionIDHeader is the Streamable HTTP session identifier header (MCP spec).
@@ -160,13 +161,16 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		return a.middleware(next, a.Authenticate, bearerToken)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, reason, ok := a.validateToken(bearerToken(r))
+		bearer := bearerToken(r)
+		p, reason, ok := a.validateToken(bearer)
 		if !ok {
 			// Close the reasonless-401 (B-53 §2.4): the OAuth auth stage names the
 			// discrete category and the shared request_id so the rejection correlates
 			// with this request's entry/response lines. The access token is never
-			// logged. The wire response is unchanged (401 + challenge).
-			a.logRejected(r, "oauth", reason)
+			// logged; a one-way fingerprint (B-54) correlates the PRESENTED token with
+			// the "oauth token issued" line — proving whether the same value reached
+			// Lookup. The wire response is unchanged (401 + challenge).
+			a.logRejected(r, "oauth", reason, tokenfp.Fingerprint(bearer))
 			w.Header().Set("WWW-Authenticate", a.challenge(r))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -174,13 +178,15 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		// Auth stage, success (B-53 §2.4 — always, not gated): which client/principal
 		// the token bound to, under the shared request_id. is_handshake marks the
 		// initialize POST (no Mcp-Session-Id yet) — answering B-52's "which client got
-		// bound to the new session" without a separate gated line. The token is NEVER
-		// logged.
+		// bound to the new session" without a separate gated line. token_fingerprint
+		// (B-54) is the one-way fingerprint of the accepted token, so a SUCCESSFUL
+		// validation also correlates to its issuance. The token is NEVER logged.
 		a.logger.LogAttrs(r.Context(), slog.LevelInfo, "auth ok",
 			slog.String("request_id", reqtrace.ID(r.Context())),
 			slog.String("authenticator", "oauth"),
 			slog.String("client_id", p.ClientID),
 			slog.String("principal", p.Name),
+			slog.String("token_fingerprint", tokenfp.Fingerprint(bearer)),
 			slog.Bool("is_handshake", r.Method == http.MethodPost && r.Header.Get(mcpSessionIDHeader) == ""),
 			slog.String("remote", r.RemoteAddr))
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
@@ -210,11 +216,12 @@ func (a *Authenticator) middleware(next http.Handler, authed func(*http.Request)
 			return
 		}
 		if !authed(r) {
+			tok := tokenOf(r)
 			reason := ReasonInvalidToken
-			if tokenOf(r) == "" {
+			if tok == "" {
 				reason = ReasonMissingBearer
 			}
-			a.logRejected(r, "static-bearer", reason)
+			a.logRejected(r, "static-bearer", reason, tokenfp.Fingerprint(tok))
 			w.Header().Set("WWW-Authenticate", a.challenge(r))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -228,13 +235,16 @@ func (a *Authenticator) middleware(next http.Handler, authed func(*http.Request)
 }
 
 // logRejected emits the auth-stage rejection line (B-53 §2.4) at WARN: the
-// authenticator kind, the discrete reason category, and the shared request_id — so
-// no 401 is ever silent again. No credential value is logged.
-func (a *Authenticator) logRejected(r *http.Request, authenticator string, reason RejectReason) {
+// authenticator kind, the discrete reason category, the shared request_id, and the
+// one-way fingerprint of the PRESENTED token (B-54 — "" when none) — so no 401 is
+// ever silent and the rejected token correlates to its issuance line. No credential
+// value is logged.
+func (a *Authenticator) logRejected(r *http.Request, authenticator string, reason RejectReason, fingerprint string) {
 	a.logger.LogAttrs(r.Context(), slog.LevelWarn, "auth rejected",
 		slog.String("request_id", reqtrace.ID(r.Context())),
 		slog.String("authenticator", authenticator),
 		slog.String("reason", string(reason)),
+		slog.String("token_fingerprint", fingerprint),
 		slog.String("remote", r.RemoteAddr))
 }
 
