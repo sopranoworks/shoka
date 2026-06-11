@@ -373,6 +373,12 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 		&mcp.ServerOptions{Logger: logger},
 	)
 
+	// Core-first tools/list ordering (B-49 fix-1): the SDK emits tools/list sorted
+	// alphabetically by name with no ordering hook; this receiving middleware
+	// reorders the response so the core read/write tools appear first. It touches
+	// only the listing order — registration and tools/call dispatch are unaffected.
+	mcpServer.AddReceivingMiddleware(tools.CoreFirstToolsMiddleware())
+
 	// Scoped MCP change notifications (B-45b): the subscribe/unsubscribe tools let
 	// an MCP client (e.g. an automation watcher) receive notifications/message for
 	// external file changes under a subscribed namespace/project/path pattern,
