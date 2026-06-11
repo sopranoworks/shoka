@@ -159,6 +159,20 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		Scope:               r.FormValue("scope"),
 	}
 
+	// Make the whole authorize step legible (B-52): log the request as received,
+	// with non-secret identifiers and presence bools only — never the
+	// code_challenge value (PKCE challenge is logged as present/absent + method).
+	s.logger.Info("oauth authorize request",
+		"http_method", r.Method,
+		"response_type", req.ResponseType,
+		"client_id", req.ClientID,
+		"redirect_uri", req.RedirectURI,
+		"scope", req.Scope,
+		"state_present", req.State != "",
+		"code_challenge_present", req.CodeChallenge != "",
+		"code_challenge_method", req.CodeChallengeMethod,
+	)
+
 	// Validate the client via CIMD and the redirect_uri against its metadata
 	// BEFORE we are willing to redirect anywhere — an unverified redirect_uri must
 	// never receive a redirect (open-redirect / error-leak protection).
@@ -187,6 +201,9 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		"evaluated_domain", clientIDDomain(req.ClientID),
 	)
 	if !RedirectURIAllowed(req.RedirectURI, md.RedirectURIs) {
+		s.logger.Warn("oauth authorize rejected",
+			"client_id", req.ClientID, "redirect_uri", req.RedirectURI,
+			"reason", "redirect-uri-not-registered")
 		s.authError(w, "invalid_request", "redirect_uri is not registered for this client")
 		return
 	}
@@ -194,21 +211,28 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// From here a redirect_uri is trusted, so protocol errors redirect back per
 	// OAuth 2.1 (RFC 6749 §4.1.2.1) rather than rendering on-page.
 	if req.ResponseType != "code" {
+		s.logger.Warn("oauth authorize rejected",
+			"client_id", req.ClientID, "reason", "unsupported-response-type")
 		s.redirectError(w, r, req, "unsupported_response_type", "only response_type=code is supported")
 		return
 	}
 	if req.CodeChallenge == "" || req.CodeChallengeMethod != "S256" {
+		s.logger.Warn("oauth authorize rejected",
+			"client_id", req.ClientID, "reason", "pkce-s256-required")
 		s.redirectError(w, r, req, "invalid_request", "PKCE with code_challenge_method=S256 is required")
 		return
 	}
 	resource, ok := s.resolveResource(r, req.Resource)
 	if !ok {
+		s.logger.Warn("oauth authorize rejected",
+			"client_id", req.ClientID, "reason", "resource-mismatch")
 		s.redirectError(w, r, req, "invalid_target", "resource does not identify this server")
 		return
 	}
 	req.Resource = resource
 
 	if r.Method == http.MethodGet {
+		s.logger.Info("oauth authorize consent rendered", "client_id", req.ClientID)
 		s.renderConsent(w, req, md, "")
 		return
 	}
@@ -216,19 +240,26 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// POST: an approval or denial.
 	switch {
 	case r.PostFormValue("deny") != "":
+		s.logger.Info("oauth authorize denied", "client_id", req.ClientID, "reason", "user-denied")
 		s.redirectError(w, r, req, "access_denied", "the operator denied the request")
 		return
 	case r.PostFormValue("approve") != "":
 		principal, authed := s.principalAuth.Authenticate(r)
 		if !authed {
 			// Re-render the consent page with an error; do NOT redirect (the
-			// credential was wrong — treat like an unauthenticated retry).
+			// credential was wrong — treat like an unauthenticated retry). Logged as
+			// a discrete category so a wrong/empty consent credential is visible
+			// (the credential VALUE is never logged).
+			s.logger.Warn("oauth authorize consent rejected",
+				"client_id", req.ClientID, "reason", "consent-credential-mismatch")
 			w.WriteHeader(http.StatusUnauthorized)
 			s.renderConsent(w, req, md, "Incorrect consent credential.")
 			return
 		}
 		code, herr := oauthstore.NewHandle()
 		if herr != nil {
+			s.logger.Error("oauth authorize code issuance failed",
+				"client_id", req.ClientID, "reason", "handle-generation-failed")
 			s.redirectError(w, r, req, "server_error", "could not issue code")
 			return
 		}
@@ -243,12 +274,20 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			Expiry:              now.Add(s.codeTTL),
 		})
 		if perr != nil {
+			s.logger.Error("oauth authorize code issuance failed",
+				"client_id", req.ClientID, "reason", "code-persist-failed")
 			s.redirectError(w, r, req, "server_error", "could not persist code")
 			return
 		}
+		// Code minted: log the issuance (for client_id + redirect target) — the
+		// authorization-code VALUE is NEVER logged.
+		s.logger.Info("oauth authorize code issued",
+			"client_id", req.ClientID, "redirect_uri", req.RedirectURI)
 		s.redirectSuccess(w, r, req, code)
 		return
 	default:
+		s.logger.Info("oauth authorize consent re-rendered",
+			"client_id", req.ClientID, "reason", "no-approve-or-deny")
 		s.renderConsent(w, req, md, "Choose approve or deny.")
 	}
 }
@@ -364,6 +403,7 @@ type tokenResponse struct {
 
 func (s *AuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		s.logger.Warn("oauth token rejected", "error", "invalid_request", "reason", "method-not-post")
 		s.tokenError(w, http.StatusMethodNotAllowed, "invalid_request", "POST required")
 		return
 	}
@@ -371,19 +411,33 @@ func (s *AuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	// Reject a JSON body explicitly (some frameworks default to JSON-only).
 	ct := r.Header.Get("Content-Type")
 	if ct != "" && !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+		s.logger.Warn("oauth token rejected", "error", "invalid_request", "reason", "content-type-not-form-urlencoded")
 		s.tokenError(w, http.StatusBadRequest, "invalid_request", "Content-Type must be application/x-www-form-urlencoded")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
+		s.logger.Warn("oauth token rejected", "error", "invalid_request", "reason", "form-parse-failed")
 		s.tokenError(w, http.StatusBadRequest, "invalid_request", "could not parse form body")
 		return
 	}
+	// The currently-invisible step made legible (B-52): log the request as received
+	// — grant_type + non-secret identifiers + presence bools, never the code,
+	// refresh token, or code_verifier VALUES.
+	s.logger.Info("oauth token request",
+		"grant_type", r.PostFormValue("grant_type"),
+		"client_id", r.PostFormValue("client_id"),
+		"redirect_uri", r.PostFormValue("redirect_uri"),
+		"code_present", r.PostFormValue("code") != "",
+		"refresh_token_present", r.PostFormValue("refresh_token") != "",
+		"code_verifier_present", r.PostFormValue("code_verifier") != "",
+	)
 	switch r.PostFormValue("grant_type") {
 	case "authorization_code":
 		s.grantAuthorizationCode(w, r)
 	case "refresh_token":
 		s.grantRefreshToken(w, r)
 	default:
+		s.logger.Warn("oauth token rejected", "error", "unsupported_grant_type", "reason", "grant-type-unsupported")
 		s.tokenError(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
 	}
 }
@@ -394,43 +448,97 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	redirectURI := r.PostFormValue("redirect_uri")
 	verifier := r.PostFormValue("code_verifier")
 	if code == "" || clientID == "" || verifier == "" {
+		// Distinguish a missing PKCE verifier (the §2.2 "missing" outcome) from the
+		// other missing params, without logging any value.
+		reason := "code-or-client_id-missing"
+		if verifier == "" && code != "" && clientID != "" {
+			reason = "code_verifier-missing"
+		}
+		s.logger.Warn("oauth token rejected",
+			"grant_type", "authorization_code", "error", "invalid_request", "reason", reason)
 		s.tokenError(w, http.StatusBadRequest, "invalid_request", "code, client_id and code_verifier are required")
 		return
 	}
 	rec, err := s.store.TakeCode(code, s.now())
 	if err != nil {
-		// Unknown, already-used, or expired code — all invalid_grant.
+		// Unknown, already-used, or expired code — all invalid_grant on the wire,
+		// but logged with a discrete category (expired vs unknown/used; the store
+		// collapses unknown and already-used into ErrNotFound).
+		reason := "code-unknown-or-used"
+		if errors.Is(err, oauthstore.ErrExpired) {
+			reason = "code-expired"
+		}
+		s.logger.Warn("oauth token rejected",
+			"grant_type", "authorization_code", "client_id", clientID,
+			"error", "invalid_grant", "reason", reason)
 		s.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization code is invalid or expired")
 		return
 	}
 	if rec.ClientID != clientID || rec.RedirectURI != redirectURI {
+		// Split the combined check for the log only (wire response unchanged).
+		reason := "code-client-mismatch"
+		if rec.ClientID == clientID {
+			reason = "code-redirect-uri-mismatch"
+		}
+		s.logger.Warn("oauth token rejected",
+			"grant_type", "authorization_code", "client_id", clientID,
+			"error", "invalid_grant", "reason", reason)
 		s.tokenError(w, http.StatusBadRequest, "invalid_grant", "code was issued to a different client or redirect_uri")
 		return
 	}
 	if !verifyPKCE(verifier, rec.CodeChallenge) {
+		// PKCE mismatch — the verifier/challenge VALUES are never logged, only the
+		// match outcome.
+		s.logger.Warn("oauth token rejected",
+			"grant_type", "authorization_code", "client_id", rec.ClientID,
+			"error", "invalid_grant", "reason", "pkce-mismatch")
 		s.tokenError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
 	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, s.now(), s.accessTTL, s.refreshTTL)
 	if err != nil {
+		s.logger.Error("oauth token issuance failed",
+			"grant_type", "authorization_code", "client_id", rec.ClientID, "reason", "series-create-failed")
 		s.tokenError(w, http.StatusInternalServerError, "server_error", "could not issue tokens")
 		return
 	}
+	// Issued: log for client_id with the TTLs — the access/refresh token VALUES are
+	// NEVER logged. PKCE matched (implied by reaching issuance).
+	s.logger.Info("oauth token issued",
+		"grant_type", "authorization_code", "client_id", rec.ClientID,
+		"pkce_result", "match",
+		"access_ttl_seconds", int(s.accessTTL/time.Second),
+		"refresh_ttl_seconds", int(s.refreshTTL/time.Second))
 	s.writeTokens(w, series)
 }
 
 func (s *AuthServer) grantRefreshToken(w http.ResponseWriter, r *http.Request) {
 	refresh := r.PostFormValue("refresh_token")
 	if refresh == "" {
+		s.logger.Warn("oauth token rejected",
+			"grant_type", "refresh_token", "error", "invalid_request", "reason", "refresh_token-missing")
 		s.tokenError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 		return
 	}
 	series, err := s.store.Rotate(refresh, s.now(), s.accessTTL, s.refreshTTL)
 	if err != nil {
-		// Unknown, already-rotated, revoked, or expired — all invalid_grant.
+		// Unknown, already-rotated, revoked, or expired — all invalid_grant on the
+		// wire; logged with a discrete category (expired vs unknown/rotated).
+		reason := "refresh-unknown-or-rotated"
+		if errors.Is(err, oauthstore.ErrExpired) {
+			reason = "refresh-expired"
+		}
+		s.logger.Warn("oauth token rejected",
+			"grant_type", "refresh_token", "error", "invalid_grant", "reason", reason)
 		s.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token is invalid or expired")
 		return
 	}
+	// Rotated: a fresh access+refresh pair issued in the same series (token VALUES
+	// never logged).
+	s.logger.Info("oauth token issued",
+		"grant_type", "refresh_token", "client_id", series.ClientID,
+		"access_ttl_seconds", int(s.accessTTL/time.Second),
+		"refresh_ttl_seconds", int(s.refreshTTL/time.Second))
 	s.writeTokens(w, series)
 }
 
