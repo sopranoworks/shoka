@@ -402,6 +402,22 @@ func main() {
 		})
 	}
 
+	// Operator-facing startup posture (B-50 phase 4): one line per opened surface
+	// stating PRESENCE + AUTH POSTURE as categories, so the operator confirms the
+	// deployment topology at a glance — important now that auth is split across
+	// ports (an externally-reachable plain port left unauthenticated should be
+	// visible here). Confidentiality is LOAD-BEARING: these lines carry ONLY
+	// categories — never a listen address, port, host, domain, external_url, token,
+	// or consent credential. (runServer logs the bind address separately; the lines
+	// here are deliberately address-free and add no new address exposure.)
+	for _, p := range describeStartupPostures(cfg) {
+		if p.Policy != "" {
+			logger.Info("startup transport posture", "surface", p.Surface, "auth", p.Auth, "policy", p.Policy)
+		} else {
+			logger.Info("startup transport posture", "surface", p.Surface, "auth", p.Auth)
+		}
+	}
+
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("server error", "error", err)
 		os.Exit(1)
@@ -562,6 +578,44 @@ func webAuthConfig(a config.AuthConfig) auth.Config {
 		Tokens:         a.Tokens,
 		AllowedOrigins: a.AllowedOrigins,
 	}
+}
+
+// startupPosture describes one network surface for the operator-facing startup
+// log (B-50 phase 4): which surface opened and its auth posture, expressed as
+// CATEGORIES only. Confidentiality is load-bearing — a startupPosture never carries
+// a listen address, port, host, domain, external_url, token, or secret; Surface and
+// Auth (and the optional web Policy) are fixed enumerated strings, not config values.
+type startupPosture struct {
+	Surface string // "mcp-plain", "mcp-oauth", "web"
+	Auth    string // "unauthenticated" | "static-bearer" | "oauth-protected" | "oauth-free"
+	Policy  string // web-only sub-category: "open" | "static-bearer"; "" when n/a
+}
+
+// describeStartupPostures returns the presence+posture summary of the opened
+// surfaces, derived purely from the loaded config: an MCP port appears only when its
+// listen is set (matching the listener wiring above), and the Web UI always appears.
+// It maps config flags to fixed category strings — by construction it cannot emit an
+// address or secret, which is what the phase-4 confidentiality rule requires of every
+// startup log line. The neither-MCP-port case is a config-load fatal (phase 1) and is
+// not re-checked here.
+func describeStartupPostures(cfg *config.Config) []startupPosture {
+	var out []startupPosture
+	if cfg.Server.MCP.Plain.Listen != "" {
+		authPosture := "unauthenticated"
+		if cfg.Server.MCP.Plain.BearerAuth {
+			authPosture = "static-bearer"
+		}
+		out = append(out, startupPosture{Surface: "mcp-plain", Auth: authPosture})
+	}
+	if cfg.Server.MCP.OAuth.Listen != "" {
+		out = append(out, startupPosture{Surface: "mcp-oauth", Auth: "oauth-protected"})
+	}
+	webPolicy := "open"
+	if cfg.Server.Auth.Enabled {
+		webPolicy = "static-bearer"
+	}
+	out = append(out, startupPosture{Surface: "web", Auth: "oauth-free", Policy: webPolicy})
+	return out
 }
 
 func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator) (http.Handler, error) {

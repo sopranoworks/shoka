@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shoka/mcp-server/internal/auth"
@@ -174,5 +175,114 @@ func TestWebAuthConfigCarriesWSPolicyUnchanged(t *testing.T) {
 	deny.Header.Set("Origin", "https://evil.example")
 	if a.OriginAllowed(deny) {
 		t.Fatal("an unlisted origin must be rejected")
+	}
+}
+
+// startupPostures by case (B-50 phase 4): each opened surface is summarised by
+// presence + auth posture as a category — plain unauthenticated vs static-bearer
+// per bearer_auth, oauth always OAuth-protected, web always OAuth-free (open vs
+// static-bearer per server.auth.enabled). The MCP ports appear only when their
+// listen is set; the Web UI always appears.
+func TestDescribeStartupPostures(t *testing.T) {
+	posture := func(ps []startupPosture, surface string) (startupPosture, bool) {
+		for _, p := range ps {
+			if p.Surface == surface {
+				return p, true
+			}
+		}
+		return startupPosture{}, false
+	}
+
+	t.Run("plain-only unauthenticated", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Server.MCP.Plain.Listen = "plain-listen-PLACEHOLDER"
+		cfg.Server.MCP.Plain.BearerAuth = false
+		ps := describeStartupPostures(cfg)
+		if _, ok := posture(ps, "mcp-oauth"); ok {
+			t.Fatal("mcp-oauth must NOT appear when oauth.listen is unset")
+		}
+		p, ok := posture(ps, "mcp-plain")
+		if !ok || p.Auth != "unauthenticated" {
+			t.Fatalf("plain posture = %+v, ok=%v; want auth=unauthenticated", p, ok)
+		}
+		w, ok := posture(ps, "web")
+		if !ok || w.Auth != "oauth-free" || w.Policy != "open" {
+			t.Fatalf("web posture = %+v; want oauth-free/open", w)
+		}
+	})
+
+	t.Run("plain-only static-bearer", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Server.MCP.Plain.Listen = "plain-listen-PLACEHOLDER"
+		cfg.Server.MCP.Plain.BearerAuth = true
+		p, ok := posture(describeStartupPostures(cfg), "mcp-plain")
+		if !ok || p.Auth != "static-bearer" {
+			t.Fatalf("plain posture = %+v, ok=%v; want auth=static-bearer", p, ok)
+		}
+	})
+
+	t.Run("oauth-only", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Server.MCP.OAuth.Listen = "oauth-listen-PLACEHOLDER"
+		ps := describeStartupPostures(cfg)
+		if _, ok := posture(ps, "mcp-plain"); ok {
+			t.Fatal("mcp-plain must NOT appear when plain.listen is unset")
+		}
+		p, ok := posture(ps, "mcp-oauth")
+		if !ok || p.Auth != "oauth-protected" {
+			t.Fatalf("oauth posture = %+v, ok=%v; want auth=oauth-protected", p, ok)
+		}
+	})
+
+	t.Run("both ports plus web static-bearer", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Server.MCP.Plain.Listen = "plain-listen-PLACEHOLDER"
+		cfg.Server.MCP.Plain.BearerAuth = true
+		cfg.Server.MCP.OAuth.Listen = "oauth-listen-PLACEHOLDER"
+		cfg.Server.Auth.Enabled = true
+		ps := describeStartupPostures(cfg)
+		if _, ok := posture(ps, "mcp-plain"); !ok {
+			t.Fatal("mcp-plain must appear")
+		}
+		if _, ok := posture(ps, "mcp-oauth"); !ok {
+			t.Fatal("mcp-oauth must appear")
+		}
+		w, ok := posture(ps, "web")
+		if !ok || w.Auth != "oauth-free" || w.Policy != "static-bearer" {
+			t.Fatalf("web posture = %+v; want oauth-free/static-bearer", w)
+		}
+	})
+}
+
+// The phase-4 KEY CHECK: no startup posture field may contain a listen address,
+// external_url, token, or trusted-domain value. We seed the config with sentinel
+// secrets/addresses and assert NONE of them appears in any posture field.
+func TestDescribeStartupPostures_NoAddressOrSecret(t *testing.T) {
+	const (
+		plainAddr   = "10.1.2.3:7777"
+		oauthAddr   = "0.0.0.0:8443"
+		extURL      = "https://secret.example.test/mcp"
+		token       = "super-secret-static-token"
+		trustedHost = "trusted.client.example.test"
+	)
+	cfg := &config.Config{}
+	cfg.Server.MCP.Plain.Listen = plainAddr
+	cfg.Server.MCP.Plain.BearerAuth = true
+	cfg.Server.MCP.Plain.ExternalURL = extURL
+	cfg.Server.MCP.OAuth.Listen = oauthAddr
+	cfg.Server.MCP.OAuth.ExternalURL = extURL
+	cfg.Server.Auth.Enabled = true
+	cfg.Server.Auth.Tokens = []string{token}
+	cfg.Server.Auth.AllowedOrigins = []string{"https://" + trustedHost}
+
+	forbidden := []string{plainAddr, oauthAddr, extURL, token, trustedHost, "10.1.2.3", "8443", "7777"}
+	for _, p := range describeStartupPostures(cfg) {
+		for _, field := range []string{p.Surface, p.Auth, p.Policy} {
+			for _, bad := range forbidden {
+				if field != "" && strings.Contains(field, bad) {
+					t.Fatalf("posture field %q leaks confidential value %q (surface=%s)", field, bad, p.Surface)
+				}
+			}
+		}
 	}
 }
