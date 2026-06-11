@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shoka/mcp-server/internal/auth"
 	"github.com/shoka/mcp-server/internal/storage/oauthstore"
 )
 
@@ -173,6 +175,90 @@ func TestFullFlow(t *testing.T) {
 	rec = h.token(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tr.RefreshToken}}, "application/x-www-form-urlencoded")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_grant") {
 		t.Fatalf("old refresh reuse: want 400 invalid_grant, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// B-54 regression: a freshly-issued access token must validate through the
+// OAuth-port auth middleware (bearer extraction + the main.go ValidateToken closure
+// over the SAME store) — the exact round-trip the live connect reported failing as
+// reason=invalid-token. This crosses the one combination the prior tests left
+// untested: TestFullFlow calls store.Lookup directly (not through the middleware),
+// and the live two-transport test validates a SEEDED token (not a /token-issued one)
+// through the middleware. Here a /token-ISSUED token is presented as
+// `Authorization: Bearer` exactly as claude.ai's MCP initialize does.
+func TestIssuedToken_ValidatesThroughOAuthPortAuthMiddleware(t *testing.T) {
+	h := newTestAS(t)
+	verifier, challenge := pkcePair()
+
+	// authorize (consent) -> code
+	form := baseAuthForm(h.clientID, challenge)
+	form.Set("approve", "1")
+	form.Set("consent_credential", testCredential)
+	rec := h.authorize(t, http.MethodPost, form)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("authorize: want 302, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	loc, _ := url.Parse(rec.Header().Get("Location"))
+	code := loc.Query().Get("code")
+	if code == "" {
+		t.Fatalf("no code in redirect: %s", loc)
+	}
+
+	// /token (authorization_code) -> access token (the value the client receives)
+	rec = h.token(t, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {h.clientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {verifier},
+	}, "application/x-www-form-urlencoded")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var tr tokenResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &tr); err != nil {
+		t.Fatalf("decode token resp: %v", err)
+	}
+
+	// The OAuth-port authenticator, wired EXACTLY as cmd/server/main.go does: the
+	// ValidateToken closure over the SAME store, behind auth.Middleware.
+	authn := auth.New(auth.Config{
+		ValidateToken: func(token string) (auth.Principal, auth.RejectReason, bool) {
+			if token == "" {
+				return auth.Principal{}, auth.ReasonMissingBearer, false
+			}
+			recd, lerr := h.store.Lookup(token, h.as.now())
+			if lerr != nil {
+				reason := auth.ReasonInvalidToken
+				if errors.Is(lerr, oauthstore.ErrExpired) {
+					reason = auth.ReasonExpired
+				}
+				return auth.Principal{}, reason, false
+			}
+			if recd.Principal.Name == "" {
+				return auth.Principal{}, auth.ReasonPrincipalUnresolved, false
+			}
+			return auth.Principal{Name: recd.Principal.Name, Email: recd.Principal.Email}, "", true
+		},
+	})
+
+	// Present it as the MCP initialize does: POST /, no Mcp-Session-Id, Bearer token.
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tr.AccessToken)
+	served := httptest.NewRecorder()
+	var attached auth.Principal
+	var ok bool
+	authn.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attached, ok = auth.PrincipalFrom(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(served, req)
+
+	if served.Code != http.StatusOK {
+		t.Fatalf("freshly-issued token REJECTED by the OAuth-port auth middleware: got %d "+
+			"(this is the live reason=invalid-token symptom reproduced)", served.Code)
+	}
+	if !ok || attached.Name != "Operator" {
+		t.Fatalf("principal not attached after accept: %+v ok=%v", attached, ok)
 	}
 }
 
