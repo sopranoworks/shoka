@@ -14,6 +14,7 @@ require (
 	golang.org/x/sync v0.20.0
 	google.golang.org/api v0.277.0
 	google.golang.org/genproto v0.0.0-20260504160031-60b97b32f348
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 

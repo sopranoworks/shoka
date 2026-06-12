@@ -42,12 +42,38 @@ type TLSConfig struct {
 	KeyFile  string `yaml:"key_file"`
 }
 
-// LogConfig configures structured server logging (written to stderr). An absent
-// block means level "info" and format "text"; empty values are resolved to those
-// defaults by internal/logging at startup.
+// LogConfig configures structured server logging. It controls WHERE log output
+// goes (the destination), not just its level/format. An absent block means
+// level "info", format "text", and the stderr destination — byte-for-byte the
+// historical behaviour. Empty level/format are resolved to defaults by
+// internal/logging at startup; an empty/"stderr" Output keeps stderr.
 type LogConfig struct {
 	Level  string `yaml:"level"`  // error | warn | info | debug ("" = info)
 	Format string `yaml:"format"` // text | json ("" = text)
+	// Output selects the log destination: "stderr" (default, unchanged) or
+	// "file". slog already writes to a configurable io.Writer; this is the knob
+	// that selects which one. Room is left for further destinations later.
+	Output string        `yaml:"output"` // stderr (default) | file
+	File   LogFileConfig `yaml:"file"`   // used only when Output == "file"
+}
+
+// LogFileConfig configures the "file" log destination (B-66). The on-disk
+// footprint is BOUNDED by lumberjack: the active file rotates on size, and old
+// backups are pruned by count and age. Zero values resolve to bounded defaults
+// (see internal/logging) so a file destination can never grow without limit —
+// lumberjack itself keeps every backup when MaxBackups and MaxAge are both zero,
+// which we deliberately avoid. By default the file is also rotated at least once
+// per day even with no size pressure (lumberjack rotates on size alone).
+type LogFileConfig struct {
+	Path       string `yaml:"path"`         // required when output: file
+	MaxSizeMB  int    `yaml:"max_size_mb"`  // rotate when the active file exceeds this (0 => 100)
+	MaxBackups int    `yaml:"max_backups"`  // rotated backups to retain (0 => 7)
+	MaxAgeDays int    `yaml:"max_age_days"` // days to retain rotated backups (0 => 30)
+	Compress   bool   `yaml:"compress"`     // gzip rotated backups (default false)
+	// RotateDaily drives a once-per-day Rotate() so the active file cycles at
+	// least daily regardless of size. Unset (nil) => true (the default must
+	// rotate at-least-daily); set false for size-only rotation.
+	RotateDaily *bool `yaml:"rotate_daily"`
 }
 
 type ServerSettings struct {
@@ -386,6 +412,21 @@ func (c *Config) Validate() error {
 	case "", "text", "json":
 	default:
 		return fmt.Errorf("server.log.format must be one of text|json, got %q", c.Server.Log.Format)
+	}
+	// B-66 log destination: stderr (default) or file. A file destination needs a
+	// path, and its bound knobs must be non-negative. The writer is not opened
+	// here — validation is side-effect-free (B-58 --config-check binds nothing).
+	switch c.Server.Log.Output {
+	case "", "stderr":
+	case "file":
+		if c.Server.Log.File.Path == "" {
+			return errors.New("server.log.file.path is required when server.log.output is \"file\"")
+		}
+	default:
+		return fmt.Errorf("server.log.output must be one of stderr|file, got %q", c.Server.Log.Output)
+	}
+	if c.Server.Log.File.MaxSizeMB < 0 || c.Server.Log.File.MaxBackups < 0 || c.Server.Log.File.MaxAgeDays < 0 {
+		return errors.New("server.log.file max_size_mb, max_backups and max_age_days must be >= 0 (0 = bounded default)")
 	}
 	// B-63 §2.3: the registration posture is cimd (default) or dcr; any other value
 	// is a config error so a typo cannot silently leave the AS advertising neither.

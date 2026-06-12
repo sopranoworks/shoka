@@ -80,15 +80,30 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	logger, err := logging.New(cfg.Server.Log.Level, cfg.Server.Log.Format, os.Stderr)
+	// B-66: resolve WHERE log output goes (the destination), defaulting to stderr.
+	// slog.New already writes to any io.Writer; this selects which one from config
+	// (stderr unchanged, or a bounded file). Fail loud on an unopenable destination
+	// rather than silently falling back to stderr (B-58 fail-loud stance).
+	logDest, err := openLogDestination(cfg.Server.Log)
+	if err != nil {
+		log.Fatalf("failed to open log destination: %v", err)
+	}
+	logger, err := logging.New(cfg.Server.Log.Level, cfg.Server.Log.Format, logDest.Writer)
 	if err != nil {
 		log.Fatalf("failed to initialize logger: %v", err)
 	}
 	slog.SetDefault(logger)
+	// Closed last (registered before s.Close/stop) so every shutdown log line —
+	// including "servers shut down gracefully" — still reaches the destination.
+	defer logDest.Close()
 
 	// Setup context with signal handling
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// B-66: drive at-least-daily rotation of a file destination (no-op for
+	// stderr). Tied to ctx, so it stops on SIGINT/SIGTERM with the rest.
+	logDest.StartDailyRotation(ctx, logger)
 
 	// Optional pprof endpoint: default off, loopback-only. Block and mutex
 	// profiling rates are enabled only when the flag is set, so production runs
@@ -485,6 +500,34 @@ func main() {
 	logger.Info("servers shut down gracefully")
 }
 
+// openLogDestination maps the log config onto a logging.Destination: stderr by
+// default (unchanged), or a bounded lumberjack-backed file. The mapping lives
+// here (cmd/server already depends on both config and logging) so internal/logging
+// stays decoupled from internal/config. Validation has already rejected an
+// unknown output or a file output with no path (config.Validate), so this only
+// builds the writer; it does not re-validate.
+func openLogDestination(c config.LogConfig) (*logging.Destination, error) {
+	switch c.Output {
+	case "", "stderr":
+		return logging.Stderr(), nil
+	case "file":
+		rotateDaily := true // default: rotate at least daily even with no size pressure
+		if c.File.RotateDaily != nil {
+			rotateDaily = *c.File.RotateDaily
+		}
+		return logging.OpenFile(logging.FileConfig{
+			Path:        c.File.Path,
+			MaxSizeMB:   c.File.MaxSizeMB,
+			MaxBackups:  c.File.MaxBackups,
+			MaxAgeDays:  c.File.MaxAgeDays,
+			Compress:    c.File.Compress,
+			RotateDaily: rotateDaily,
+		})
+	default:
+		return nil, fmt.Errorf("invalid log output %q (want stderr|file)", c.Output)
+	}
+}
+
 func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
 	out := make([]webhooks.Config, 0, len(in))
 	for _, w := range in {
@@ -667,6 +710,14 @@ func runConfigCheck(configPath string, out io.Writer) error {
 		dumpState = "enabled"
 	}
 	fmt.Fprintf(out, "  http dump: %s\n", dumpState)
+	// Report WHERE log output goes, without opening it (config-check stays
+	// side-effect-free: it binds no port and opens no destination — B-58).
+	switch cfg.Server.Log.Output {
+	case "", "stderr":
+		fmt.Fprintln(out, "  log output: stderr")
+	case "file":
+		fmt.Fprintf(out, "  log output: file %s (bounded)\n", cfg.Server.Log.File.Path)
+	}
 	return nil
 }
 

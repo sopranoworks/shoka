@@ -69,10 +69,30 @@ server:
       # Flip this and re-test the live claude.ai connect each way; no rebuild needed.
       # registration_mode: "cimd"
 
-  # Structured logging (written to stderr). Optional — omit for info/text.
+  # Structured logging. Optional — omit the whole block for info/text on stderr.
+  #
+  # `output` selects WHERE log output goes (the destination), not just its shape:
+  #   stderr  (default) — one shared sink for every subsystem; capture it with a
+  #                       service manager (journald/launchd) or a shell redirect.
+  #   file              — a bounded log file (see `file:` below). Never grows
+  #                       without limit: it rotates on size AND, by default, at
+  #                       least once per day.
+  # `level`/`format` apply to whichever destination is selected.
   log:
-    level: "info"   # error | warn | info | debug
-    format: "text"  # text | json
+    level: "info"     # error | warn | info | debug
+    format: "text"    # text | json
+    output: "stderr"  # stderr (default) | file
+    # The file destination is BOUNDED so it cannot grow forever. Used only when
+    # output: file. A path is required; the bound knobs below have safe defaults
+    # (a 0 means "use the default", not "unlimited" — the footprint stays bounded).
+    # file:
+    #   path: "/var/log/shoka/shoka.log"  # required; parent dirs are created
+    #   max_size_mb: 100      # rotate the active file once it exceeds this (0 => 100)
+    #   max_backups: 7        # rotated backups to keep (0 => 7)
+    #   max_age_days: 30      # days to keep rotated backups (0 => 30)
+    #   compress: false       # gzip rotated backups
+    #   rotate_daily: true    # also rotate at least once per day even with no size
+    #                         # pressure (default true; set false for size-only)
 
   # Static Bearer-token auth + WebSocket origin policy. As of B-50 this is NO
   # LONGER a global MCP gate — MCP access is decided per transport above. It now

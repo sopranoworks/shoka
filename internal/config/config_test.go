@@ -333,6 +333,45 @@ server:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "log.format")
 	})
+
+	// B-66 — the destination selector (output) + the bounded file knobs.
+	t.Run("output defaults to empty (stderr resolved later)", func(t *testing.T) {
+		cfg, err := Load(write(t, base))
+		require.NoError(t, err)
+		assert.Equal(t, "", cfg.Server.Log.Output)
+	})
+	t.Run("file destination parses with bound knobs", func(t *testing.T) {
+		cfg, err := Load(write(t, base+"  log:\n    output: file\n    file:\n      path: /var/log/shoka/shoka.log\n      max_size_mb: 50\n      max_backups: 5\n      max_age_days: 14\n      compress: true\n      rotate_daily: false\n"))
+		require.NoError(t, err)
+		assert.Equal(t, "file", cfg.Server.Log.Output)
+		assert.Equal(t, "/var/log/shoka/shoka.log", cfg.Server.Log.File.Path)
+		assert.Equal(t, 50, cfg.Server.Log.File.MaxSizeMB)
+		assert.Equal(t, 5, cfg.Server.Log.File.MaxBackups)
+		assert.Equal(t, 14, cfg.Server.Log.File.MaxAgeDays)
+		assert.True(t, cfg.Server.Log.File.Compress)
+		require.NotNil(t, cfg.Server.Log.File.RotateDaily)
+		assert.False(t, *cfg.Server.Log.File.RotateDaily)
+	})
+	t.Run("rotate_daily defaults to nil (=> daily) when unset", func(t *testing.T) {
+		cfg, err := Load(write(t, base+"  log:\n    output: file\n    file:\n      path: /var/log/shoka/shoka.log\n"))
+		require.NoError(t, err)
+		assert.Nil(t, cfg.Server.Log.File.RotateDaily, "unset rotate_daily stays nil so the caller defaults it to true")
+	})
+	t.Run("invalid output rejected", func(t *testing.T) {
+		_, err := Load(write(t, base+"  log:\n    output: syslog\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "log.output")
+	})
+	t.Run("file output without path rejected", func(t *testing.T) {
+		_, err := Load(write(t, base+"  log:\n    output: file\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "log.file.path")
+	})
+	t.Run("negative bound rejected", func(t *testing.T) {
+		_, err := Load(write(t, base+"  log:\n    output: file\n    file:\n      path: /var/log/shoka/shoka.log\n      max_size_mb: -1\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max_size_mb")
+	})
 }
 
 func TestLoad_Errors(t *testing.T) {

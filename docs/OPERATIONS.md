@@ -12,7 +12,8 @@ go build -o shoka ./cmd/server
 ```
 
 The `--config` flag defaults to `shoka.yaml`. On startup Shoka creates
-`storage.base_dir` if absent and starts two listeners (web + MCP). (Source:
+`storage.base_dir` if absent and starts up to three listeners (web, MCP-plain,
+MCP-OAuth — see *Connecting clients*). (Source:
 `cmd/server/main.go:30-35`; `internal/storage/fs_git.go:64-76`.)
 
 ### Devcontainer
@@ -120,6 +121,7 @@ section is optional and falls back to a built-in default.
 set (both is valid; neither is a startup error). There are **no `tls` fields** on
 either MCP transport — Shoka terminates no TLS (see *TLS*).
 | `server.log.level` / `server.log.format` | string | no | `info` / `text` | Structured logging — see *Logging* below. |
+| `server.log.output` (+ `server.log.file.*`) | string | no | `stderr` | Where log output goes: `stderr` (default) or a bounded `file`. See *Logging* below. |
 | `server.debug.dump_http` | bool | no | `false` | Operator-only verbatim HTTP request/response dump for connect/debug sessions. See *Verbatim HTTP dump* below. |
 
 ### `identity` — commit author (single-user, provisional)
@@ -209,8 +211,17 @@ after a failed connect.
 
 ## Logging
 
-Shoka emits structured log lines to **stderr**; stdout is reserved for the MCP
-transport's stream output and must remain clean.
+All subsystems share **one** structured log sink, and `server.log.output`
+selects **where that output goes**. The default is **stderr** (unchanged); a
+**bounded file** is the other built-in destination. Logs go to stderr — not
+stdout — so that under a service manager the journal captures them cleanly; the
+MCP transport is Streamable HTTP, so nothing rides stdout.
+
+Under a service manager this is usually all you need: leave `output: stderr` and
+let **journald** (systemd) or the launchd `StandardErrorPath` capture and rotate
+the stream. The **file** destination is for deployments **not** fronted by a
+service manager — it bounds its own on-disk footprint so you don't need an
+external rotator (logrotate etc.).
 
 ### Configuration
 
@@ -219,17 +230,38 @@ Add a `server.log` block to `shoka.yaml`:
 ```yaml
 server:
   log:
-    level: info    # error | warn | info | debug  (default: info)
-    format: text   # text | json                  (default: text)
+    level: info       # error | warn | info | debug  (default: info)
+    format: text      # text | json                  (default: text)
+    output: stderr    # stderr (default) | file      — where output goes
+    # When output: file, the file is BOUNDED (it never grows forever):
+    # file:
+    #   path: /var/log/shoka/shoka.log  # required; parent dirs created
+    #   max_size_mb: 100   # rotate the active file past this size (0 => 100)
+    #   max_backups: 7     # rotated backups kept (0 => 7)
+    #   max_age_days: 30   # days rotated backups kept (0 => 30)
+    #   compress: false    # gzip rotated backups
+    #   rotate_daily: true # also rotate at least once a day (default true)
 ```
 
 An absent `server.log` block is fully backward-compatible: the server starts at
-`info`/`text` without any config change.
+`info`/`text` on **stderr** without any config change.
 
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
 | `server.log.level` | `error` `warn` `info` `debug` | `info` | Minimum severity to emit. |
 | `server.log.format` | `text` `json` | `text` | Human-readable key=value (`text`) or machine-parseable JSON (`json`). Use `json` when shipping logs to a structured collector. |
+| `server.log.output` | `stderr` `file` | `stderr` | Where log output goes. `stderr` is the historical default (one shared sink); `file` selects the bounded file destination below. |
+| `server.log.file.path` | path | — | Required when `output: file`. Parent directories are created; an unopenable path **fails startup loud** (no silent fall-back to stderr). |
+| `server.log.file.max_size_mb` | int ≥ 0 | `100` | Rotate the active file once it exceeds this size. `0` means "use the default", not "unlimited". |
+| `server.log.file.max_backups` | int ≥ 0 | `7` | Rotated backups retained (`0` ⇒ default). |
+| `server.log.file.max_age_days` | int ≥ 0 | `30` | Days rotated backups are retained (`0` ⇒ default). |
+| `server.log.file.compress` | bool | `false` | gzip rotated backups. |
+| `server.log.file.rotate_daily` | bool | `true` | Rotate at least once per day even with no size pressure. Rotation by size alone would let a low-traffic log span weeks in one file; the default cycles it daily. Set `false` for size-only. |
+
+The file destination is bounded by [lumberjack](https://github.com/natefinch/lumberjack)
+(MIT). lumberjack rotates on **size**; the **daily** trigger is a Shoka addition,
+so by default the active file never spans more than a day or `max_size_mb`,
+whichever comes first.
 
 ### What is logged
 
