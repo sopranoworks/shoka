@@ -1,25 +1,38 @@
 // Command client is the strict OAuth 2.1 + PKCE-S256 + MCP test client for the
-// B-61 Docker multi-host e2e harness. It drives the COMPLETE proxied connect flow
-// against the public TLS proxy URL exactly the way claude.ai does — and one step
-// further, to the AUTHENTICATED MCP initialize claude.ai never reaches:
+// B-61 / B-63 Docker multi-host e2e harness. It drives the COMPLETE proxied connect
+// flow against the public TLS proxy URL exactly the way claude.ai does — and one
+// step further, to the AUTHENTICATED MCP initialize claude.ai never reaches.
+//
+// It proves BOTH client-registration paths the AS advertises:
+//
+//   - CIMD path (the pre-B-63 flow): client_id is an https metadata URL.
+//   - DCR path (B-63, RFC 7591): POST client metadata to registration_endpoint,
+//     receive an opaque public client_id, then run the flow with it. claude.ai's
+//     connector docs REQUIRE DCR, so this is the path the live connect uses.
+//
+// Per path:
 //
 //  1. unauthenticated MCP initialize probe         -> expect 401 + WWW-Authenticate
-//  2. discovery: Protected Resource Metadata + AS metadata
-//  3. authorize: CIMD client_id + consent          -> capture the code from the 302
-//  4. token: code + PKCE verifier                  -> STRICT parse of the response
-//     4b. refresh rotation                            -> new pair + old refresh invalidated
-//  5. authenticated MCP initialize + a tool call round-trip (the proof)
+//  2. discovery: Protected Resource Metadata + AS metadata (incl. registration_endpoint)
+//  3. (DCR only) register: POST metadata             -> opaque public client_id (no secret)
+//  4. authorize: client_id + consent               -> capture the code from the 302
+//  5. token: code + PKCE verifier                  -> STRICT parse of the response
+//     5b. refresh rotation                            -> new pair + old refresh invalidated
+//  6. authenticated MCP initialize + a tool call round-trip (the proof)
 //
 // It parses the /token response strictly (Content-Type incl. charset, token_type,
 // JSON fields) so a spec deviation fails HERE, locally and repeatably, instead of
 // only inside claude.ai. Any failed step exits non-zero: that exit code IS the
-// end-to-end assertion the harness asserts on.
+// end-to-end assertion the harness asserts on. Without the /register endpoint the
+// DCR path cannot proceed (no registration_endpoint advertised / 404 POST), so the
+// harness fails — exactly the B-63 "fail without /register, pass with it" bar.
 //
 // Everything is a test fixture (placeholder hostnames, a local CA, a throwaway
 // consent credential supplied by the harness) — no operator deployment value.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -71,29 +84,99 @@ func main() {
 	// --- 1. unauthenticated MCP initialize probe -> 401 + WWW-Authenticate ---
 	prmURL := probeUnauthenticated(ctx, caClient, publicURL)
 
-	// --- 2. discovery: PRM + AS metadata ------------------------------------
+	// --- 2. discovery: PRM + AS metadata (incl. registration_endpoint) ------
 	resource, asMeta := discover(ctx, caClient, publicURL, prmURL)
 
-	// --- 3. authorize: CIMD client_id + consent -> code ---------------------
+	// --- CIMD path: client_id is the https metadata URL (pre-B-63 flow) ------
+	step("PATH", "=== CIMD path (client_id = metadata URL) ===")
+	connectAndProve(ctx, caClient, caPath, publicURL, asMeta, resource, clientID, redirectURI, consentCred)
+
+	// --- DCR path (B-63): register first, then run with the issued client_id -
+	// claude.ai's connector docs REQUIRE DCR — this is the path the live connect
+	// uses. Without /register this step cannot start (no registration_endpoint /
+	// 404 POST), so the harness fails: the B-63 "fail without /register" bar.
+	step("PATH", "=== DCR path (RFC 7591 register -> issued client_id) ===")
+	if asMeta.RegistrationEndpoint == "" {
+		fatalf("DCR: AS metadata advertises no registration_endpoint — claude.ai's docs require DCR (B-63)")
+	}
+	dcrClientID := registerDCRClient(ctx, caClient, asMeta.RegistrationEndpoint, redirectURI)
+	connectAndProve(ctx, caClient, caPath, publicURL, asMeta, resource, dcrClientID, redirectURI, consentCred)
+
+	step("DONE", "the complete proxied OAuth + MCP flow succeeded end-to-end on BOTH the CIMD and DCR paths")
+	fmt.Println("\nB-63 E2E: PASS")
+}
+
+// connectAndProve runs one full registration-path-agnostic flow: authorize (with
+// the given client_id + consent) -> token (STRICT parse) -> refresh rotation ->
+// authenticated MCP initialize + tool round-trip. It is called once per
+// registration path (CIMD, DCR) so both are proven end-to-end through the proxy.
+func connectAndProve(ctx context.Context, c *http.Client, caPath, publicURL string, asMeta asMetadata, resource, clientID, redirectURI, consentCred string) {
 	verifier, challenge := newPKCE()
-	code := authorize(ctx, caClient, asMeta.AuthorizationEndpoint, clientID, redirectURI, challenge, resource, consentCred)
-
-	// --- 4. token: code + verifier -> STRICT parse --------------------------
-	accessToken, refreshToken := exchangeToken(ctx, caClient, asMeta.TokenEndpoint, clientID, redirectURI, code, verifier)
-
-	// --- 4b. refresh rotation: new pair + old refresh invalidated -----------
-	// OAuth 2.1 requires public clients (CIMD registers Claude as one) to rotate or
-	// sender-constrain refresh tokens, returning the new refresh in the same response
-	// that invalidates the old one. Assert that here, end-to-end through the proxy, and
-	// carry the ROTATED access token forward so the authenticated MCP step proves the
-	// rotated token works.
-	accessToken = rotateRefresh(ctx, caClient, asMeta.TokenEndpoint, refreshToken)
-
-	// --- 5. authenticated MCP initialize + tool round-trip (the proof) ------
+	code := authorize(ctx, c, asMeta.AuthorizationEndpoint, clientID, redirectURI, challenge, resource, consentCred)
+	accessToken, refreshToken := exchangeToken(ctx, c, asMeta.TokenEndpoint, clientID, redirectURI, code, verifier)
+	// OAuth 2.1 requires public clients to rotate refresh tokens; carry the ROTATED
+	// access token forward so the authenticated MCP step proves the rotated token works.
+	accessToken = rotateRefresh(ctx, c, asMeta.TokenEndpoint, refreshToken)
 	authenticatedMCP(ctx, caPath, publicURL, accessToken)
+}
 
-	step("DONE", "the complete proxied OAuth + MCP flow succeeded end-to-end")
-	fmt.Println("\nB-61 E2E: PASS")
+// registrationResponse is the subset of the RFC 7591 registration response the
+// harness asserts on.
+type registrationResponse struct {
+	ClientID                string   `json:"client_id"`
+	RedirectURIs            []string `json:"redirect_uris"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	ClientSecret            string   `json:"client_secret"` // MUST be absent (public client)
+}
+
+// registerDCRClient POSTs an RFC 7591 client-metadata document to the advertised
+// registration_endpoint and returns the issued client_id, asserting it is an
+// opaque PUBLIC client (no secret, token_endpoint_auth_method "none", not a URL).
+func registerDCRClient(ctx context.Context, c *http.Client, registrationEndpoint, redirectURI string) string {
+	meta := map[string]any{
+		"client_name":                "b63-e2e-dcr",
+		"redirect_uris":              []string{redirectURI},
+		"token_endpoint_auth_method": "none",
+		"grant_types":                []string{"authorization_code", "refresh_token"},
+		"response_types":             []string{"code"},
+	}
+	buf, err := json.Marshal(meta)
+	must(err, "marshal DCR client metadata")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, registrationEndpoint, bytes.NewReader(buf))
+	must(err, "build register POST")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.Do(req)
+	must(err, "send register POST")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		fatalf("DCR register: expected 201, got %d; body: %s", resp.StatusCode, truncate(string(body), 400))
+	}
+	if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "application/json") {
+		fatalf("DCR register: response Content-Type is not application/json: %q", resp.Header.Get("Content-Type"))
+	}
+	var rr registrationResponse
+	if err := json.Unmarshal(body, &rr); err != nil {
+		fatalf("DCR register: response is not valid JSON: %v; body: %s", err, truncate(string(body), 400))
+	}
+	if rr.ClientID == "" {
+		fatalf("DCR register: response carried no client_id; body: %s", truncate(string(body), 400))
+	}
+	if strings.HasPrefix(strings.ToLower(rr.ClientID), "http") {
+		fatalf("DCR register: client_id must be an opaque handle, not a URL: %q", rr.ClientID)
+	}
+	if rr.ClientSecret != "" || strings.Contains(string(body), "client_secret") {
+		fatalf("DCR register: a PUBLIC client must NOT receive a client_secret; body: %s", truncate(string(body), 400))
+	}
+	if rr.TokenEndpointAuthMethod != "none" {
+		fatalf("DCR register: token_endpoint_auth_method must be \"none\", got %q", rr.TokenEndpointAuthMethod)
+	}
+	step("3 DCR register", "registered public client_id=%s… (no secret; token_endpoint_auth_method=none)", head(rr.ClientID, 8))
+	return rr.ClientID
 }
 
 // waitForReady polls the unauthenticated AS-metadata document until the proxy ->
@@ -189,6 +272,7 @@ type asMetadata struct {
 	Issuer                            string   `json:"issuer"`
 	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
 	TokenEndpoint                     string   `json:"token_endpoint"`
+	RegistrationEndpoint              string   `json:"registration_endpoint"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
 	ClientIDMetadataDocumentSupported bool     `json:"client_id_metadata_document_supported"`
@@ -223,8 +307,12 @@ func discover(ctx context.Context, c *http.Client, publicURL, prmURL string) (re
 	if !as.ClientIDMetadataDocumentSupported {
 		fatalf("step 2: AS metadata does not signal client_id_metadata_document_supported (CIMD)")
 	}
-	step("2 AS", "issuer=%s authorize=%s token=%s pkce=%v cimd=%v",
-		as.Issuer, as.AuthorizationEndpoint, as.TokenEndpoint, as.CodeChallengeMethodsSupported, as.ClientIDMetadataDocumentSupported)
+	// B-63: DCR and CIMD must COEXIST — registration_endpoint advertised alongside CIMD.
+	if as.RegistrationEndpoint == "" {
+		fatalf("step 2: AS metadata advertises no registration_endpoint — claude.ai's docs require DCR (B-63)")
+	}
+	step("2 AS", "issuer=%s authorize=%s token=%s register=%s pkce=%v cimd=%v",
+		as.Issuer, as.AuthorizationEndpoint, as.TokenEndpoint, as.RegistrationEndpoint, as.CodeChallengeMethodsSupported, as.ClientIDMetadataDocumentSupported)
 	return prm.Resource, as
 }
 

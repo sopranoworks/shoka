@@ -23,16 +23,27 @@ collapse):
 
 The client drives the COMPLETE flow against the public TLS proxy URL, exactly the
 way claude.ai does — and one step further, to the authenticated initialize
-claude.ai never reaches:
+claude.ai never reaches. It proves **both** client-registration paths the AS
+advertises: **CIMD** (`client_id` = an https metadata URL) and **DCR** (RFC 7591,
+**B-63** — `POST` client metadata to `registration_endpoint`, receive an opaque
+public `client_id`). claude.ai's connector docs *require* DCR, so the DCR path is
+the one the live connect uses.
 
 1. unauthenticated MCP `initialize` probe → **401 + `WWW-Authenticate: Bearer
    resource_metadata="…"`**
 2. discovery: Protected Resource Metadata + Authorization Server Metadata
-3. authorize: CIMD `client_id` + consent → capture the code from the 302
-4. token: `code` + PKCE verifier → **strict parse** of the response (Content-Type
-   incl. charset, `token_type`, `Cache-Control: no-store`, JSON fields)
-5. **authenticated MCP `initialize` with the bearer token → `tools/list` →
+   (asserts both `registration_endpoint` **and** `client_id_metadata_document_supported` — they coexist)
+3. *(DCR path only)* register: `POST` client metadata → **opaque public `client_id`
+   (no secret, `token_endpoint_auth_method: none`)**
+4. authorize: `client_id` + consent → capture the code from the 302
+5. token: `code` + PKCE verifier → **strict parse** of the response (Content-Type
+   incl. charset, `token_type`, `Cache-Control: no-store`, JSON fields) + refresh rotation
+6. **authenticated MCP `initialize` with the bearer token → `tools/list` →
    `tools/call`** round-trip, all through the TLS reverse proxy
+
+Steps 4–6 run once per path (CIMD, then DCR). **Without `/register` the DCR path
+cannot proceed** (no `registration_endpoint` advertised), so the harness fails —
+the B-63 "fail without `/register`, pass with it" bar.
 
 ## Run it
 
