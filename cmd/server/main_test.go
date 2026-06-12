@@ -232,6 +232,20 @@ func TestDescribeStartupPostures(t *testing.T) {
 		if !ok || p.Auth != "oauth-protected" {
 			t.Fatalf("oauth posture = %+v, ok=%v; want auth=oauth-protected", p, ok)
 		}
+		// B-63 §0.1: the posture names the advertised registration mode (default cimd).
+		if p.Policy != "cimd-registration" {
+			t.Fatalf("oauth posture policy = %q; want cimd-registration (default)", p.Policy)
+		}
+	})
+
+	t.Run("oauth dcr registration mode surfaced", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Server.MCP.OAuth.Listen = "oauth-listen-PLACEHOLDER"
+		cfg.Server.MCP.OAuth.RegistrationMode = "dcr"
+		p, ok := posture(describeStartupPostures(cfg), "mcp-oauth")
+		if !ok || p.Policy != "dcr-registration" {
+			t.Fatalf("oauth posture = %+v; want policy=dcr-registration", p)
+		}
 	})
 
 	t.Run("both ports plus web static-bearer", func(t *testing.T) {

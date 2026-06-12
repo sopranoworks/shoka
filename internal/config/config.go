@@ -135,6 +135,28 @@ type OAuthTransportConfig struct {
 	AccessTokenTTL       Duration `yaml:"access_token_ttl"`
 	RefreshTokenTTL      Duration `yaml:"refresh_token_ttl"`
 	AuthorizationCodeTTL Duration `yaml:"authorization_code_ttl"`
+	// RegistrationMode selects which client-registration posture the OAuth AS
+	// metadata advertises (B-63 §0.1). "cimd" (default, empty) advertises the CIMD
+	// signal (client_id_metadata_document_supported:true) and NO registration_endpoint;
+	// "dcr" advertises registration_endpoint (RFC 7591) and WITHHOLDS the CIMD signal.
+	// The two cannot both be advertised if DCR is to be reachable: Claude's selection
+	// rule skips Dynamic Client Registration whenever the CIMD signal is present, so
+	// claude.ai would keep choosing CIMD and never call /register. Both modes keep
+	// token_endpoint_auth_methods_supported:["none"] (public client). Both
+	// client-resolution code paths stay in the binary and /register stays mounted in
+	// either mode — only the advertised metadata differs, so the operator flips this
+	// switch and re-tests the live claude.ai connect each way with no logic rebuild.
+	RegistrationMode string `yaml:"registration_mode"`
+}
+
+// RegistrationModeOrDefault returns the effective registration posture, mapping an
+// empty value to "cimd" (today's behaviour). Validate() guarantees the stored value
+// is one of "", "cimd", "dcr".
+func (o OAuthTransportConfig) RegistrationModeOrDefault() string {
+	if o.RegistrationMode == "" {
+		return "cimd"
+	}
+	return o.RegistrationMode
 }
 
 // WebhookConfig describes one outbound webhook subscription. Events is any of
@@ -364,6 +386,13 @@ func (c *Config) Validate() error {
 	case "", "text", "json":
 	default:
 		return fmt.Errorf("server.log.format must be one of text|json, got %q", c.Server.Log.Format)
+	}
+	// B-63 §2.3: the registration posture is cimd (default) or dcr; any other value
+	// is a config error so a typo cannot silently leave the AS advertising neither.
+	switch c.Server.MCP.OAuth.RegistrationMode {
+	case "", "cimd", "dcr":
+	default:
+		return fmt.Errorf("server.mcp.oauth.registration_mode must be one of cimd|dcr, got %q", c.Server.MCP.OAuth.RegistrationMode)
 	}
 	if c.WALWorker.MinWorkers < 0 || c.WALWorker.MaxWorkers < 0 {
 		return errors.New("wal_worker.min_workers and wal_worker.max_workers must be non-negative")

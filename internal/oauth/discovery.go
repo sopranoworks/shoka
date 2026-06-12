@@ -4,12 +4,16 @@
 // Authorization Server Metadata, and provides the resource_metadata URL the auth
 // middleware advertises in its 401 challenge.
 //
-// This is discovery ONLY: it advertises the /authorize, /token, and /register
-// endpoints (built by directives (b) and B-63) and signals CIMD client
-// identification, but issues no tokens, runs no consent, and validates nothing.
-// Both DCR (registration_endpoint, RFC 7591) and CIMD
-// (client_id_metadata_document_supported) are advertised — they coexist (B-63).
-// HTTP-layer only: no go-git, no refs, no persistent state.
+// This is discovery ONLY: it advertises the /authorize, /token, and (in DCR mode)
+// /register endpoints (built by directives (b) and B-63), but issues no tokens, runs
+// no consent, and validates nothing. The advertised client-registration posture is a
+// config switch (B-63 §0.1): CIMD mode (default) signals
+// client_id_metadata_document_supported and NO registration_endpoint; DCR mode
+// advertises registration_endpoint (RFC 7591) and WITHHOLDS the CIMD signal. The two
+// CANNOT both be advertised if DCR is to be reachable — Claude's selection rule skips
+// Dynamic Client Registration whenever the CIMD signal is advertised, so a
+// CIMD-signalling AS is never asked to register. HTTP-layer only: no go-git, no refs,
+// no persistent state.
 package oauth
 
 import (
@@ -21,14 +25,42 @@ import (
 	"github.com/shoka/mcp-server/internal/serverurl"
 )
 
+// RegistrationMode selects which client-registration posture the AS metadata
+// advertises (B-63 §0.1). Both client-resolution code paths (CIMD https-URL client_id;
+// DCR issued handle) remain in the binary and /register stays mounted in either mode;
+// only the advertised metadata differs, because Claude's selection rule skips DCR
+// whenever the CIMD signal is advertised. The empty value is treated as CIMD.
+type RegistrationMode string
+
+const (
+	// RegistrationModeCIMD (default) advertises client_id_metadata_document_supported
+	// and NO registration_endpoint — today's behaviour; claude.ai selects CIMD.
+	RegistrationModeCIMD RegistrationMode = "cimd"
+	// RegistrationModeDCR advertises registration_endpoint (RFC 7591) and WITHHOLDS
+	// client_id_metadata_document_supported, so Claude's selection rule lands on DCR
+	// and POSTs its client metadata to /register. token_endpoint_auth_methods_supported
+	// stays ["none"] (the DCR client is still public).
+	RegistrationModeDCR RegistrationMode = "dcr"
+)
+
 // DiscoveryConfig configures the OAuth discovery handlers. ExternalURL is the
 // configured public origin authoritative for OAuth/MCP self-references
 // (Server.MCP.OAuth.ExternalURL); empty falls back to per-request forwarded headers.
 type DiscoveryConfig struct {
 	ExternalURL string
+	// RegistrationMode selects the advertised registration posture (B-63 §0.1). The
+	// empty value (and anything other than "dcr") is treated as CIMD — the default.
+	RegistrationMode RegistrationMode
 	// Logger records which discovery document was served (B-52), so a
 	// discovery-path failure is visible. Nil → slog.Default().
 	Logger *slog.Logger
+}
+
+// advertiseDCR reports whether AS metadata should advertise the DCR posture
+// (registration_endpoint present, CIMD signal withheld). Only the explicit "dcr"
+// value selects DCR; every other value (incl. empty and "cimd") is CIMD.
+func (c DiscoveryConfig) advertiseDCR() bool {
+	return c.RegistrationMode == RegistrationModeDCR
 }
 
 // logger resolves the configured logger, defaulting to slog.Default() (panic-safe).
@@ -48,20 +80,21 @@ type ProtectedResourceMetadata struct {
 }
 
 // AuthorizationServerMetadata is the RFC 8414 document for Shoka-as-AS. It
-// advertises PKCE S256 (mandatory), the authorization-code + refresh-token grants,
-// CIMD client identification, AND (B-63) the RFC 7591 Dynamic Client Registration
-// endpoint — claude.ai's connector docs require DCR. DCR and CIMD coexist:
-// registration_endpoint is advertised alongside client_id_metadata_document_supported.
+// advertises PKCE S256 (mandatory) and the authorization-code + refresh-token grants,
+// plus EITHER the CIMD signal OR (B-63) the RFC 7591 Dynamic Client Registration
+// endpoint — never both, selected by DiscoveryConfig.RegistrationMode (§0.1).
+// registration_endpoint and client_id_metadata_document_supported are both omitempty
+// so exactly the active posture's field is emitted.
 type AuthorizationServerMetadata struct {
 	Issuer                            string   `json:"issuer"`
 	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
 	TokenEndpoint                     string   `json:"token_endpoint"`
-	RegistrationEndpoint              string   `json:"registration_endpoint"`
+	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
 	ResponseTypesSupported            []string `json:"response_types_supported"`
 	GrantTypesSupported               []string `json:"grant_types_supported"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
-	ClientIDMetadataDocumentSupported bool     `json:"client_id_metadata_document_supported"`
+	ClientIDMetadataDocumentSupported bool     `json:"client_id_metadata_document_supported,omitempty"`
 }
 
 // ProtectedResourceMetadataHandler serves RFC 9728 PRM. Reachable without auth
@@ -99,18 +132,28 @@ func AuthorizationServerMetadataHandler(cfg DiscoveryConfig) http.Handler {
 			http.Error(w, "public URL not resolvable", http.StatusServiceUnavailable)
 			return
 		}
-		lg.Info("oauth discovery served", "document", "authorization_server_metadata")
-		writeJSON(w, AuthorizationServerMetadata{
+		md := AuthorizationServerMetadata{
 			Issuer:                            serverurl.IssuerURL(base),
 			AuthorizationEndpoint:             serverurl.AuthorizeURL(base),
 			TokenEndpoint:                     serverurl.TokenURL(base),
-			RegistrationEndpoint:              serverurl.RegistrationURL(base),
 			ResponseTypesSupported:            []string{"code"},
 			GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 			CodeChallengeMethodsSupported:     []string{"S256"},
 			TokenEndpointAuthMethodsSupported: []string{"none"},
-			ClientIDMetadataDocumentSupported: true,
-		})
+		}
+		// B-63 §0.1: advertise EXACTLY one registration posture. DCR mode →
+		// registration_endpoint, CIMD signal withheld; CIMD mode (default) → CIMD
+		// signal, registration_endpoint withheld. The two cannot coexist or Claude
+		// skips DCR. token_endpoint_auth_methods_supported stays ["none"] in both.
+		mode := "cimd"
+		if cfg.advertiseDCR() {
+			md.RegistrationEndpoint = serverurl.RegistrationURL(base)
+			mode = "dcr"
+		} else {
+			md.ClientIDMetadataDocumentSupported = true
+		}
+		lg.Info("oauth discovery served", "document", "authorization_server_metadata", "registration_mode", mode)
+		writeJSON(w, md)
 	})
 }
 

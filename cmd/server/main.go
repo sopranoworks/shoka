@@ -188,7 +188,13 @@ func main() {
 	// address is set). The former server.auth.oauth.enabled flag is gone. The
 	// per-port listener wiring is phase 2; phase 1 only repoints the reads.
 	oauthEnabled := cfg.Server.MCP.OAuth.Listen != ""
-	discoveryCfg := oauth.DiscoveryConfig{ExternalURL: cfg.Server.MCP.OAuth.ExternalURL, Logger: logger}
+	// B-63 §0.1: the advertised client-registration posture is a config switch. Both
+	// resolution code paths stay in the binary; only the advertised AS metadata differs.
+	discoveryCfg := oauth.DiscoveryConfig{
+		ExternalURL:      cfg.Server.MCP.OAuth.ExternalURL,
+		RegistrationMode: oauth.RegistrationMode(cfg.Server.MCP.OAuth.RegistrationModeOrDefault()),
+		Logger:           logger,
+	}
 	// authConfig carries ONLY the OAuth MCP transport's concerns — the RFC 9728
 	// challenge composer and the token-enforcement closure, both set below when the
 	// OAuth port is configured and consumed SOLELY by that port. server.auth's
@@ -687,7 +693,10 @@ func describeStartupPostures(cfg *config.Config) []startupPosture {
 		out = append(out, startupPosture{Surface: "mcp-plain", Auth: authPosture})
 	}
 	if cfg.Server.MCP.OAuth.Listen != "" {
-		out = append(out, startupPosture{Surface: "mcp-oauth", Auth: "oauth-protected"})
+		// B-63 §0.1: surface the advertised client-registration posture (cimd|dcr) as a
+		// category, so the operator confirms which signal the AS metadata advertises
+		// before a live claude.ai connect. A fixed category — never an address or secret.
+		out = append(out, startupPosture{Surface: "mcp-oauth", Auth: "oauth-protected", Policy: cfg.Server.MCP.OAuth.RegistrationModeOrDefault() + "-registration"})
 	}
 	webPolicy := "open"
 	if cfg.Server.Auth.Enabled {

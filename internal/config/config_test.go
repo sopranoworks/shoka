@@ -125,6 +125,55 @@ storage:
 	assert.Equal(t, []string{"connector.example"}, cfg.Server.MCP.OAuth.TrustedClientMetadataDomains)
 	assert.Equal(t, 2*time.Hour, cfg.Server.MCP.OAuth.AccessTokenTTL.Std())
 	assert.False(t, cfg.Server.Auth.Enabled)
+	// B-63 §2.3: registration_mode defaults to cimd (today's behaviour) when absent.
+	assert.Equal(t, "", cfg.Server.MCP.OAuth.RegistrationMode)
+	assert.Equal(t, "cimd", cfg.Server.MCP.OAuth.RegistrationModeOrDefault())
+}
+
+// TestLoad_OAuthRegistrationMode is the B-63 §2.3 mode switch: registration_mode is
+// loaded verbatim, defaults to cimd when absent, and rejects any value other than
+// cimd|dcr so a typo cannot leave the AS advertising neither posture.
+func TestLoad_OAuthRegistrationMode(t *testing.T) {
+	write := func(t *testing.T, mode string) string {
+		t.Helper()
+		modeLine := ""
+		if mode != "" {
+			modeLine = "      registration_mode: \"" + mode + "\"\n"
+		}
+		body := "server:\n  http:\n    listen: \":8080\"\n  mcp:\n    oauth:\n      listen: \":8082\"\n" +
+			modeLine + "storage:\n  base_dir: \"/tmp/shoka\"\n"
+		f, err := os.CreateTemp(t.TempDir(), "config-regmode*.yaml")
+		require.NoError(t, err)
+		_, err = f.WriteString(body)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		return f.Name()
+	}
+
+	t.Run("dcr is loaded", func(t *testing.T) {
+		cfg, err := Load(write(t, "dcr"))
+		require.NoError(t, err)
+		assert.Equal(t, "dcr", cfg.Server.MCP.OAuth.RegistrationMode)
+		assert.Equal(t, "dcr", cfg.Server.MCP.OAuth.RegistrationModeOrDefault())
+	})
+
+	t.Run("cimd is loaded", func(t *testing.T) {
+		cfg, err := Load(write(t, "cimd"))
+		require.NoError(t, err)
+		assert.Equal(t, "cimd", cfg.Server.MCP.OAuth.RegistrationModeOrDefault())
+	})
+
+	t.Run("absent defaults to cimd", func(t *testing.T) {
+		cfg, err := Load(write(t, ""))
+		require.NoError(t, err)
+		assert.Equal(t, "cimd", cfg.Server.MCP.OAuth.RegistrationModeOrDefault())
+	})
+
+	t.Run("invalid value is rejected", func(t *testing.T) {
+		_, err := Load(write(t, "both"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "registration_mode must be one of cimd|dcr")
+	})
 }
 
 func TestLoad_PlainBearerAuth(t *testing.T) {

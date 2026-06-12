@@ -58,6 +58,16 @@ server:
       # access_token_ttl: "1h"
       # refresh_token_ttl: "720h"
       # authorization_code_ttl: "1m"
+      # Client-registration posture advertised in the AS metadata (B-63). One of:
+      #   cimd (default) — advertise client_id_metadata_document_supported, NO
+      #                    registration_endpoint. Claude selects CIMD.
+      #   dcr            — advertise registration_endpoint (RFC 7591) and WITHHOLD the
+      #                    CIMD signal, so Claude performs Dynamic Client Registration
+      #                    (POSTs its metadata to /register). The two CANNOT both be
+      #                    advertised: while the CIMD signal is present Claude skips DCR.
+      # token_endpoint_auth_methods_supported stays ["none"] (public client) in both.
+      # Flip this and re-test the live claude.ai connect each way; no rebuild needed.
+      # registration_mode: "cimd"
 
   # Structured logging (written to stderr). Optional — omit for info/text.
   log:

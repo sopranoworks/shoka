@@ -51,6 +51,19 @@ func TestASMetadataFields(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", code)
 	}
+	assertCommonASFields(t, m)
+	if m["client_id_metadata_document_supported"] != true {
+		t.Fatalf("client_id_metadata_document_supported must be true, got %v", m["client_id_metadata_document_supported"])
+	}
+	if _, present := m["registration_endpoint"]; present {
+		t.Fatalf("registration_endpoint MUST be absent in CIMD mode, got %v", m["registration_endpoint"])
+	}
+}
+
+// assertCommonASFields checks the mode-independent AS-metadata fields shared by both
+// the CIMD and DCR postures (B-63 §0.1).
+func assertCommonASFields(t *testing.T, m map[string]any) {
+	t.Helper()
 	if m["issuer"] != "https://public.example" {
 		t.Fatalf("issuer wrong: %v", m["issuer"])
 	}
@@ -65,14 +78,29 @@ func TestASMetadataFields(t *testing.T) {
 	if len(pkce) != 1 || pkce[0] != "S256" {
 		t.Fatalf("code_challenge_methods_supported must be [S256], got %v", m["code_challenge_methods_supported"])
 	}
-	// CIMD signalled (current spec field) — CIMD and DCR coexist (B-63).
-	if m["client_id_metadata_document_supported"] != true {
-		t.Fatalf("client_id_metadata_document_supported must be true, got %v", m["client_id_metadata_document_supported"])
+	// Public client: token_endpoint_auth_methods_supported is ["none"] in BOTH modes.
+	team, _ := m["token_endpoint_auth_methods_supported"].([]any)
+	if len(team) != 1 || team[0] != "none" {
+		t.Fatalf("token_endpoint_auth_methods_supported must be [none], got %v", m["token_endpoint_auth_methods_supported"])
 	}
-	// DCR (B-63): registration_endpoint MUST be advertised — claude.ai's connector
-	// docs require DCR — AND it coexists with CIMD (both present, neither removed).
+}
+
+// TestASMetadataFields_DCRMode is the B-63 §0.1 DCR posture: registration_endpoint is
+// advertised and the CIMD signal is WITHHELD, so Claude's selection rule lands on DCR
+// and POSTs to /register. (While the CIMD signal is present Claude skips DCR — that is
+// why the two cannot coexist.)
+func TestASMetadataFields_DCRMode(t *testing.T) {
+	h := AuthorizationServerMetadataHandler(DiscoveryConfig{ExternalURL: extURL, RegistrationMode: RegistrationModeDCR})
+	code, _, m := getJSON(t, h, "/.well-known/oauth-authorization-server")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	assertCommonASFields(t, m)
 	if m["registration_endpoint"] != "https://public.example/register" {
 		t.Fatalf("registration_endpoint must be advertised at <origin>/register, got %v", m["registration_endpoint"])
+	}
+	if _, present := m["client_id_metadata_document_supported"]; present {
+		t.Fatalf("client_id_metadata_document_supported MUST be absent in DCR mode (Claude skips DCR while it is present), got %v", m["client_id_metadata_document_supported"])
 	}
 }
 
