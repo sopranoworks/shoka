@@ -82,15 +82,18 @@ server:
 
   # Operator-only diagnostics. OFF by default.
   debug:
-    # Verbatim HTTP request/response dump (B-56). When true, EVERY request and EVERY
+    # Verbatim HTTP request/response dump (B-56/B-59). When true, EVERY request and EVERY
     # response on all three surfaces (web / mcp-plain / mcp-oauth) is logged in full —
-    # method, path, ALL headers, the full body, and the status — at INFO, as
-    # `http request dump` / `http response dump`, correlated to the rest of the trace by
-    # `request_id`. Secrets are redacted: token values (incl. a `?token=` query and the
-    # Authorization header, shown as presence + a one-way fingerprint), authorization
-    # codes, code_verifier/code_challenge, and the consent credential. The only omission
-    # is the long-lived MCP SSE stream BODY (logged as `body_omitted=streaming`; its
-    # headers + status are still dumped) so streaming is unaffected.
+    # method, path, ALL headers, the full body, and the status — at INFO, as a guaranteed
+    # `http request dump` / `http response dump` pair with NO exception (boring,
+    # unparseable, error, SSE — all of it), correlated by `request_id`.
+    #
+    # The dump is RAW and UNREDACTED (B-59): tokens, authorization codes,
+    # code_verifier/code_challenge, the consent credential, and the Authorization header
+    # value are dumped VERBATIM, like every other byte — no masking, no fingerprint. (The
+    # earlier redaction was removed because it dropped the /token request dump.) So the
+    # log contains LIVE SECRETS: this is a LOCAL debug switch you own — enable it, read
+    # the log, turn it back off, and do not ship the log.
     #
     # Intended for connect/debug sessions, not steady-state: it logs full bodies. Enable
     # it, restart, and confirm via the startup line `startup http dump enabled=true`.

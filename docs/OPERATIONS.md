@@ -271,29 +271,32 @@ INFO startup http dump enabled=true
 
 With it on, **every** request and **every** response on **all three** surfaces
 (`web`, `mcp-plain`, `mcp-oauth`) is logged in full, at INFO, correlated to the rest
-of the trace by `request_id`:
+of the trace by `request_id`, as a **guaranteed pair** — no request or response is ever
+dropped (boring, secret-bearing, unparseable, error, SSE — all of it):
 
-- `http request dump` — `surface`, `http_method`, `url`, all `headers`, and the full
-  request `body`.
+- `http request dump` — `surface`, `http_method`, `url` (path + full query), all
+  `headers`, and the full request `body`.
 - `http response dump` — `surface`, `status`, all `headers`, and the full response
   `body`.
 
-**Secrets are redacted** (the value is replaced in place by `«redacted»`, every other
-byte verbatim): token values (including a `?token=` query value, and the
-`Authorization` header — shown as `present; fingerprint=<…>`, a one-way fingerprint,
-never the token), authorization `code`, `code_verifier`/`code_challenge`, and the
-`consent_credential`. Everything else — the self-referential URLs, the discovery
-documents, the `/token` JSON minus the token values, content types, status — is
-emitted unprocessed.
+**The dump is RAW and UNREDACTED** (B-59). Tokens, authorization codes,
+`code_verifier`/`code_challenge`, the consent credential, a `?token=` query value, and
+the `Authorization` header value are all dumped **verbatim**, like every other byte —
+no masking, no `«redacted»` marker, no fingerprint substitution. The earlier redaction
+was removed deliberately: it was dropping the `/token` request dump (the single most
+important request in an OAuth connect debug), and for a local, default-OFF switch the
+secret values have no protection value that outweighs being able to debug. **Because the
+log then contains live secrets, treat it as sensitive: this is a local debug switch you
+own — enable it for a debug session, read the log, then turn it back off, and do not
+ship the log.**
 
-**One omission:** the long-lived MCP SSE response stream's BODY is not buffered (it
-would alter flush timing and grow unbounded); it is logged as `body_omitted=streaming`
-with its headers + status still dumped. All non-streaming responses (OAuth discovery,
-the `/token` JSON, the `/authorize` redirect, web responses) are captured in full.
+The request body is buffered and restored before any downstream reader consumes it, so
+a request is **never** missing its dump because its body was read by the MCP message
+path or the OAuth form parser. SSE/streaming responses are **captured too** (teed as
+they flush, so the client's stream is unaffected) — there is no body omission.
 
-It logs full bodies on every request — enable it for a connect/debug session, then
-turn it back off. Confirm it is working by the `startup http dump enabled=true` line
-and by an `http request dump` / `http response dump` pair appearing for your connect.
+Confirm it is working by the `startup http dump enabled=true` line and by an
+`http request dump` / `http response dump` pair appearing for your connect.
 
 ## TLS
 

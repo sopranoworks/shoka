@@ -100,9 +100,10 @@ func TestB57_ConfigParse_DumpFlagReachesField(t *testing.T) {
 // LIVE-PATH PROOF on the OAuth surface: a representative OAuth MCP request (valid
 // bearer, JSON body) driven through the real oauth chain (httplog + the OAuth
 // authenticator + oauthListenerHandler) wrapped by tracedHandler with the
-// config-loaded flag emits BOTH dump lines with B-56 completeness (method, all
-// headers, full body, status) and the fixed secrets redacted.
-func TestB57_LivePath_OAuth_DumpFiresWithCompletenessAndRedaction(t *testing.T) {
+// config-loaded flag emits BOTH dump lines with completeness (method, all headers,
+// full body, status). B-59: the dump is now RAW — secrets appear VERBATIM and the
+// «redacted» marker / Authorization fingerprint substitution never appear.
+func TestB59_LivePath_OAuth_DumpFiresVerbatimNoRedaction(t *testing.T) {
 	cfg := loadDumpConfig(t, true)
 
 	const validToken = "LIVE-SECRET-TOKEN"
@@ -128,7 +129,8 @@ func TestB57_LivePath_OAuth_DumpFiresWithCompletenessAndRedaction(t *testing.T) 
 	oauthInner := httplog.Middleware(slog.Default())(oauthListenerHandler(oauth.DiscoveryConfig{}, nil, inner, oauthAuth))
 
 	// A representative OAuth MCP request: POST to the catch-all with a valid bearer and
-	// a body that carries a redactable secret (code_verifier) plus non-secret content.
+	// a body that carries a (formerly redacted) code_verifier plus non-secret content —
+	// B-59 dumps it verbatim.
 	body := `{"jsonrpc":"2.0","method":"initialize","code_verifier":"SECRET-VERIFIER","client_id":"live-client"}`
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+validToken)
@@ -162,18 +164,23 @@ func TestB57_LivePath_OAuth_DumpFiresWithCompletenessAndRedaction(t *testing.T) 
 		t.Errorf("response dump body missing non-secret content:\n%v", respDump["body"])
 	}
 
-	// Redaction: no secret value anywhere; the Authorization is a fingerprint, not the
-	// token; the redaction marker is present.
+	// B-59: NO redaction — every secret is dumped VERBATIM (the request bearer + the
+	// request-body code_verifier + the response access_token), the Authorization header
+	// appears in clear, and neither the «redacted» marker nor a fingerprint substitution
+	// appears.
 	for _, secret := range []string{validToken, "SECRET-VERIFIER", "SECRET-ACCESS"} {
-		if strings.Contains(full, secret) {
-			t.Errorf("secret %q leaked into the live dump:\n%s", secret, full)
+		if !strings.Contains(full, secret) {
+			t.Errorf("expected secret %q dumped VERBATIM on the live path:\n%s", secret, full)
 		}
 	}
-	if !strings.Contains(full, "fingerprint=") {
-		t.Errorf("Authorization not rendered as presence+fingerprint:\n%s", full)
+	if !strings.Contains(full, "Authorization: Bearer "+validToken) {
+		t.Errorf("Authorization header not dumped verbatim:\n%s", full)
 	}
-	if !strings.Contains(full, "«redacted»") {
-		t.Errorf("redaction marker absent (secret not masked in place):\n%s", full)
+	if strings.Contains(full, "«redacted»") {
+		t.Errorf("redaction marker present — the dump must be raw:\n%s", full)
+	}
+	if strings.Contains(full, "fingerprint=") {
+		t.Errorf("Authorization fingerprint substitution present — the dump must be raw:\n%s", full)
 	}
 }
 

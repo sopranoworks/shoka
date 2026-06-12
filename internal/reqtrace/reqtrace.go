@@ -76,11 +76,12 @@ func Route(name string, next http.Handler) http.Handler {
 // response record with status + reason category + route (§2.5) — all under the one
 // id. A nil logger is replaced with a discard logger.
 //
-// When dumpHTTP is true (the B-56 server.debug.dump_http switch), it ALSO emits a
-// verbatim dump of the full request and full response (method, path, all headers,
-// full body, status) under the same id — secrets redacted to a fixed marker, nothing
-// else processed. dumpHTTP is false in every existing call path, so the default
-// behaviour and existing logs are unchanged.
+// When dumpHTTP is true (the server.debug.dump_http switch), it ALSO emits a verbatim
+// dump of the full request and full response (method, path, all headers, full body,
+// status) under the same id. B-59: the dump is RAW and UNREDACTED and is emitted as a
+// guaranteed PAIR per request_id with no exception — every request and every response,
+// every surface, every method/path, parseable or not, including SSE. dumpHTTP is false
+// in every existing call path, so the default behaviour and existing logs are unchanged.
 func Middleware(logger *slog.Logger, surface string, dumpHTTP bool) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -113,10 +114,14 @@ func Middleware(logger *slog.Logger, surface string, dumpHTTP bool) func(http.Ha
 				slog.String("content_type", r.Header.Get("Content-Type")),
 			)
 
-			// B-56: verbatim request dump (secrets redacted), then capture the response
-			// body via the recorder for the verbatim response dump. The request body is
-			// read fully and RESTORED so the handler sees it unmodified — behaviour
-			// preserving. Default OFF; when ON it is complete (no field selection).
+			// B-56/B-59: verbatim request dump, then capture the response body via the
+			// recorder for the verbatim response dump. The request body is read fully and
+			// RESTORED here — BEFORE any downstream reader (the MCP message path, the OAuth
+			// form parser) — so the dump ALWAYS has the full request body AND the handler
+			// still sees it unmodified (behaviour preserving). This is why a request can
+			// never be missing its dump because its body was consumed downstream. B-59:
+			// raw and unredacted — every header (incl. Authorization), the full URL with
+			// query, and the full body verbatim. Default OFF; when ON it is complete.
 			if dumpHTTP {
 				var reqBody []byte
 				if r.Body != nil {
@@ -128,9 +133,9 @@ func Middleware(logger *slog.Logger, surface string, dumpHTTP bool) func(http.Ha
 					slog.String("request_id", id),
 					slog.String("surface", surface),
 					slog.String("http_method", r.Method),
-					slog.String("url", redactURL(r.URL)),
-					slog.String("headers", redactHeaders(r.Header)),
-					slog.String("body", string(redactBody(reqBody))),
+					slog.String("url", r.URL.RequestURI()),
+					slog.String("headers", headersVerbatim(r.Header)),
+					slog.String("body", string(reqBody)),
 				)
 			}
 
@@ -138,21 +143,17 @@ func Middleware(logger *slog.Logger, surface string, dumpHTTP bool) func(http.Ha
 			next.ServeHTTP(sr, r)
 
 			if dumpHTTP {
-				attrs := []slog.Attr{
+				// B-59: the response is ALWAYS dumped with its captured body — no exception,
+				// SSE included. statusRecorder tees every Write into sr.body while forwarding
+				// it to the client unchanged and preserving Flush, so the streamed bytes are
+				// captured as they flush without altering the stream the client receives.
+				logger.LogAttrs(ctx, slog.LevelInfo, "http response dump",
 					slog.String("request_id", id),
 					slog.String("surface", surface),
 					slog.Int("status", sr.status),
-					slog.String("headers", redactHeaders(sr.Header())),
-				}
-				if sr.streaming {
-					// The MCP SSE stream is long-lived; buffering its body would alter flush
-					// timing and grow unbounded — the documented capture limit. Headers +
-					// status are still dumped.
-					attrs = append(attrs, slog.String("body", ""), slog.String("body_omitted", "streaming"))
-				} else {
-					attrs = append(attrs, slog.String("body", bodyForDump(sr.body)))
-				}
-				logger.LogAttrs(ctx, slog.LevelInfo, "http response dump", attrs...)
+					slog.String("headers", headersVerbatim(sr.Header())),
+					slog.String("body", bodyForDump(sr.body)),
+				)
 			}
 
 			// §2.5 response: status + (on non-2xx) a reason category + the routing
@@ -230,21 +231,18 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
-	// B-56: when dump is set, Write tees the response body into body for the verbatim
-	// dump — EXCEPT once the response is detected as an SSE stream (streaming), where
-	// teeing the unbounded long-lived body is skipped to preserve flush behaviour.
-	dump      bool
-	streaming bool
-	body      *bytes.Buffer
+	// B-56/B-59: when dump is set, Write tees the response body into body for the
+	// verbatim dump. B-59 removed the SSE exception — the stream is teed like any other
+	// response (the bytes are still forwarded immediately and Flush still passes
+	// through, so the client's stream is unaffected), so no response is dumped bodyless.
+	dump bool
+	body *bytes.Buffer
 }
 
 func (w *statusRecorder) WriteHeader(code int) {
 	if !w.wroteHeader {
 		w.status = code
 		w.wroteHeader = true
-		if w.dump && isEventStream(w.Header()) {
-			w.streaming = true
-		}
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
@@ -253,11 +251,8 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
 		w.status = http.StatusOK
 		w.wroteHeader = true
-		if w.dump && isEventStream(w.Header()) {
-			w.streaming = true
-		}
 	}
-	if w.dump && !w.streaming {
+	if w.dump {
 		if w.body == nil {
 			w.body = &bytes.Buffer{}
 		}

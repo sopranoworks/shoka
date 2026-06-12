@@ -85,9 +85,11 @@ error. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Strict config decoding*)
 
 **Debugging a connect?** Set `server.debug.dump_http: true` (default off) and
 restart — every HTTP request and response on all three surfaces is then logged
-verbatim (method, headers, full body, status; secrets redacted), correlated by
-`request_id`, as `http request dump` / `http response dump`. The startup line
-`startup http dump enabled=true` confirms it is on. See
+**verbatim and unredacted** (method, headers, full body, status — including tokens and
+codes in clear), correlated by `request_id`, as a guaranteed `http request dump` /
+`http response dump` pair with no exception. The startup line `startup http dump
+enabled=true` confirms it is on. The log then contains live secrets — it is a local
+debug switch you own: enable it, read it, turn it off, don't ship the log. See
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Verbatim HTTP dump*).
 
 **TLS is outsourced — by design.** Shoka terminates no TLS (it avoids the
