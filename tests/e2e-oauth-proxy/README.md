@@ -1,4 +1,4 @@
-# B-61 — Docker multi-host OAuth + MCP end-to-end harness
+# B-61 / B-63 — Docker multi-host OAuth + MCP end-to-end harness
 
 A local reproduction of the production posture **Cloudflare → reverse proxy →
 Shoka**, built so the complete proxied OAuth 2.1 + PKCE + MCP connect can be
@@ -23,17 +23,31 @@ collapse):
 
 The client drives the COMPLETE flow against the public TLS proxy URL, exactly the
 way claude.ai does — and one step further, to the authenticated initialize
-claude.ai never reaches. It proves **both** client-registration paths the AS
-advertises: **CIMD** (`client_id` = an https metadata URL) and **DCR** (RFC 7591,
-**B-63** — `POST` client metadata to `registration_endpoint`, receive an opaque
-public `client_id`). claude.ai's connector docs *require* DCR, so the DCR path is
-the one the live connect uses.
+claude.ai never reaches.
+
+### Two registration modes, one per run (B-63 §0.1)
+
+The AS advertises **one** client-registration posture at a time — the two **cannot
+coexist**, because Claude's selection rule *skips* Dynamic Client Registration
+whenever the CIMD signal (`client_id_metadata_document_supported:true`) is
+advertised. So `run.sh` runs the whole stack **twice**, once per mode, configuring
+shoka via `REGISTRATION_MODE` (a config switch, `server.mcp.oauth.registration_mode`):
+
+| Mode | AS metadata advertises | Client path driven |
+|------|------------------------|--------------------|
+| `cimd` (default) | `client_id_metadata_document_supported:true`, **no** `registration_endpoint` | CIMD — `client_id` = an https metadata URL |
+| `dcr` (B-63, RFC 7591) | `registration_endpoint`, **withholds** the CIMD signal | DCR — `POST` client metadata to `/register` → opaque public `client_id` |
+
+Both modes keep `token_endpoint_auth_methods_supported:["none"]` (public client).
+Each run asserts shoka advertises **exactly** that mode's posture, then drives only
+that mode's path. The per-mode flow:
 
 1. unauthenticated MCP `initialize` probe → **401 + `WWW-Authenticate: Bearer
    resource_metadata="…"`**
-2. discovery: Protected Resource Metadata + Authorization Server Metadata
-   (asserts both `registration_endpoint` **and** `client_id_metadata_document_supported` — they coexist)
-3. *(DCR path only)* register: `POST` client metadata → **opaque public `client_id`
+2. discovery: Protected Resource Metadata + Authorization Server Metadata; assert
+   THIS mode's posture (cimd: CIMD signal present + `registration_endpoint` absent;
+   dcr: `registration_endpoint` present + CIMD signal absent)
+3. *(dcr only)* register: `POST` client metadata → **opaque public `client_id`
    (no secret, `token_endpoint_auth_method: none`)**
 4. authorize: `client_id` + consent → capture the code from the 302
 5. token: `code` + PKCE verifier → **strict parse** of the response (Content-Type
@@ -41,22 +55,31 @@ the one the live connect uses.
 6. **authenticated MCP `initialize` with the bearer token → `tools/list` →
    `tools/call`** round-trip, all through the TLS reverse proxy
 
-Steps 4–6 run once per path (CIMD, then DCR). **Without `/register` the DCR path
-cannot proceed** (no `registration_endpoint` advertised), so the harness fails —
-the B-63 "fail without `/register`, pass with it" bar.
+**In dcr mode, without `/register` the path cannot proceed** (no
+`registration_endpoint` advertised), so the harness fails — the B-63 "fail without
+`/register`, pass with it" bar.
 
 ## Run it
 
 ```bash
 cd tests/e2e-oauth-proxy
-./run.sh            # build + run; exit code is the client's PASS/FAIL verdict
-./run.sh logs       # same, plus print the shoka container log (B-59 dump) at the end
+./run.sh            # build + run BOTH modes (cimd then dcr); exit non-zero if either fails
+./run.sh logs       # same, plus print the shoka container log (B-59 dump) per mode
 ```
 
-`run.sh` generates a local test CA (idempotent), then
-`docker compose up --build --exit-code-from client`. Exit `0` = the full proxied
-OAuth + MCP connect works end-to-end; non-zero = the failing step is named on the
-`[FAIL]` line (re-run with `logs` for the verbatim dump of what crossed the proxy).
+`run.sh` generates a local test CA (idempotent), then runs
+`docker compose ... up --build --exit-code-from client` once per mode. Exit `0` =
+the full proxied OAuth + MCP connect works end-to-end in **both** modes; non-zero =
+the failing step is named on the `[FAIL]` line (re-run with `logs` for the verbatim
+dump of what crossed the proxy).
+
+### Container scope (never touches other containers)
+
+Every compose command is scoped to a **dedicated project** (`-p shoka-b63-e2e`), so
+build / up / down / teardown only ever affect this harness's own stack. The harness
+never runs an unscoped `docker compose down`, `docker stop $(docker ps -q)`,
+`docker system prune`, or any broad name glob — unrelated containers on the same
+host are left untouched.
 
 ### Requirements
 - Docker + Docker Compose (the harness builds three images and one network).

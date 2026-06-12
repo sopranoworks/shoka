@@ -1,4 +1,8 @@
-# Shoka config for the B-61 OAuth e2e harness.
+# Shoka config TEMPLATE for the B-61 / B-63 OAuth e2e harness.
+#
+# This is a template: the shoka image's entrypoint substitutes __REGISTRATION_MODE__
+# (from the REGISTRATION_MODE env, default cimd) before launching, so run.sh can run
+# the same image once per registration posture (cimd, then dcr) — B-63 §2.3.
 #
 # Production posture: TLS terminates at the Apache proxy, Shoka speaks plain HTTP,
 # and external_url is the public origin the proxy serves. The OAuth MCP transport
@@ -21,6 +25,10 @@ server:
       access_token_ttl: "1h"
       refresh_token_ttl: "720h"
       authorization_code_ttl: "5m"
+      # B-63 §0.1: cimd advertises the CIMD signal + no registration_endpoint; dcr
+      # advertises registration_endpoint + withholds the CIMD signal. Substituted by
+      # the entrypoint from REGISTRATION_MODE so one image serves both runs.
+      registration_mode: "__REGISTRATION_MODE__"
 
   log:
     level: "debug"

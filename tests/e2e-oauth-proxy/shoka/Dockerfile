@@ -26,8 +26,12 @@ FROM debian:bookworm-slim
 COPY tests/e2e-oauth-proxy/certs/ca.crt /etc/ssl/certs/ca-certificates.crt
 
 COPY --from=build /out/shoka /usr/local/bin/shoka
-COPY tests/e2e-oauth-proxy/shoka/shoka.yaml /etc/shoka/shoka.yaml
-RUN mkdir -p /data
+# The config is a TEMPLATE; the entrypoint substitutes the registration posture
+# (REGISTRATION_MODE, default cimd) before launch, so one image serves both the cimd
+# and dcr e2e runs (B-63 §2.3).
+COPY tests/e2e-oauth-proxy/shoka/shoka.yaml /etc/shoka/shoka.yaml.tmpl
+COPY tests/e2e-oauth-proxy/shoka/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh && mkdir -p /data
 
 EXPOSE 8082
-ENTRYPOINT ["/usr/local/bin/shoka", "--config", "/etc/shoka/shoka.yaml"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

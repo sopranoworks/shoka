@@ -12,7 +12,10 @@
 # the client's metadata document. A non-private subnet lets the REAL, unmodified
 # SSRF policy pass exactly as it would for a genuinely public CIMD host. This is a
 # harness network choice, not a product change.
-name: shoka-b61-e2e
+# Project name: a DEDICATED scope so every up/down/teardown touches ONLY this
+# harness's own stack — never the operator's unrelated containers on the same host
+# (B-63 §3 hard constraint). run.sh always passes `-p shoka-b63-e2e` to match.
+name: shoka-b63-e2e
 
 networks:
   shokanet:
@@ -25,6 +28,10 @@ services:
     build:
       context: ../..
       dockerfile: tests/e2e-oauth-proxy/shoka/Dockerfile
+    environment:
+      # B-63 §2.3: the entrypoint renders the config template with this posture
+      # (cimd|dcr). run.sh sets it per run; default cimd preserves today's behaviour.
+      REGISTRATION_MODE: "${REGISTRATION_MODE:-cimd}"
     networks:
       - shokanet
     expose:
@@ -59,5 +66,7 @@ services:
       REDIRECT_URI: "https://client.test/callback"
       CONSENT_CREDENTIAL: "b61-e2e-consent-credential-not-a-secret"
       CA_CERT: "/etc/tls/ca.crt"
+      # B-63 §2.3: drive the path matching shoka's mode and assert that mode's posture.
+      REGISTRATION_MODE: "${REGISTRATION_MODE:-cimd}"
     networks:
       - shokanet

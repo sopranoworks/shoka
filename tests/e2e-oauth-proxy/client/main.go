@@ -3,18 +3,23 @@
 // flow against the public TLS proxy URL exactly the way claude.ai does — and one
 // step further, to the AUTHENTICATED MCP initialize claude.ai never reaches.
 //
-// It proves BOTH client-registration paths the AS advertises:
+// It proves the ONE client-registration path the AS advertises for the configured
+// mode (B-63 §0.1 — the two postures CANNOT coexist, so each run drives exactly one).
+// REGISTRATION_MODE (cimd|dcr) selects it, matching the mode shoka is configured in;
+// run.sh runs the stack once per mode so both are proven across the two runs:
 //
-//   - CIMD path (the pre-B-63 flow): client_id is an https metadata URL.
-//   - DCR path (B-63, RFC 7591): POST client metadata to registration_endpoint,
-//     receive an opaque public client_id, then run the flow with it. claude.ai's
-//     connector docs REQUIRE DCR, so this is the path the live connect uses.
+//   - cimd mode: AS signals client_id_metadata_document_supported and WITHHOLDS
+//     registration_endpoint; client_id is the https metadata URL (the CIMD flow).
+//   - dcr mode (B-63, RFC 7591): AS advertises registration_endpoint and WITHHOLDS the
+//     CIMD signal; the client POSTs metadata to /register, receives an opaque public
+//     client_id, then runs the flow with it. This is the path the live connect uses.
 //
-// Per path:
+// The flow:
 //
 //  1. unauthenticated MCP initialize probe         -> expect 401 + WWW-Authenticate
-//  2. discovery: Protected Resource Metadata + AS metadata (incl. registration_endpoint)
-//  3. (DCR only) register: POST metadata             -> opaque public client_id (no secret)
+//  2. discovery: Protected Resource Metadata + AS metadata; assert THIS mode's posture
+//     (cimd: CIMD signal present + registration_endpoint absent; dcr: the inverse)
+//  3. (dcr only) register: POST metadata             -> opaque public client_id (no secret)
 //  4. authorize: client_id + consent               -> capture the code from the 302
 //  5. token: code + PKCE verifier                  -> STRICT parse of the response
 //     5b. refresh rotation                            -> new pair + old refresh invalidated
@@ -23,9 +28,9 @@
 // It parses the /token response strictly (Content-Type incl. charset, token_type,
 // JSON fields) so a spec deviation fails HERE, locally and repeatably, instead of
 // only inside claude.ai. Any failed step exits non-zero: that exit code IS the
-// end-to-end assertion the harness asserts on. Without the /register endpoint the
-// DCR path cannot proceed (no registration_endpoint advertised / 404 POST), so the
-// harness fails — exactly the B-63 "fail without /register, pass with it" bar.
+// end-to-end assertion the harness asserts on. In dcr mode, without the /register
+// endpoint the path cannot proceed (no registration_endpoint advertised / 404 POST),
+// so the harness fails — exactly the B-63 "fail without /register, pass with it" bar.
 //
 // Everything is a test fixture (placeholder hostnames, a local CA, a throwaway
 // consent credential supplied by the harness) — no operator deployment value.
@@ -67,9 +72,10 @@ func main() {
 		redirectURI = env("REDIRECT_URI")                             // https://client.test/callback
 		consentCred = env("CONSENT_CREDENTIAL")
 		caPath      = env("CA_CERT")
+		mode        = registrationMode() // cimd | dcr — must match shoka's config
 	)
 
-	step("config", "public=%s client_id=%s redirect_uri=%s", publicURL, clientID, redirectURI)
+	step("config", "public=%s client_id=%s redirect_uri=%s registration_mode=%s", publicURL, clientID, redirectURI, mode)
 
 	// Trust the harness's local CA for every TLS call to the proxy.
 	caClient := newCAClient(caPath, "")
@@ -84,26 +90,67 @@ func main() {
 	// --- 1. unauthenticated MCP initialize probe -> 401 + WWW-Authenticate ---
 	prmURL := probeUnauthenticated(ctx, caClient, publicURL)
 
-	// --- 2. discovery: PRM + AS metadata (incl. registration_endpoint) ------
+	// --- 2. discovery: PRM + AS metadata (mode-independent fields) -----------
 	resource, asMeta := discover(ctx, caClient, publicURL, prmURL)
 
-	// --- CIMD path: client_id is the https metadata URL (pre-B-63 flow) ------
-	step("PATH", "=== CIMD path (client_id = metadata URL) ===")
-	connectAndProve(ctx, caClient, caPath, publicURL, asMeta, resource, clientID, redirectURI, consentCred)
-
-	// --- DCR path (B-63): register first, then run with the issued client_id -
-	// claude.ai's connector docs REQUIRE DCR — this is the path the live connect
-	// uses. Without /register this step cannot start (no registration_endpoint /
-	// 404 POST), so the harness fails: the B-63 "fail without /register" bar.
-	step("PATH", "=== DCR path (RFC 7591 register -> issued client_id) ===")
-	if asMeta.RegistrationEndpoint == "" {
-		fatalf("DCR: AS metadata advertises no registration_endpoint — claude.ai's docs require DCR (B-63)")
+	// --- 3+. assert THIS mode's advertised posture, then drive ONLY that mode's
+	// registration path — exactly as claude.ai's selection rule would (B-63 §0.1).
+	// run.sh runs the stack once per mode (cimd, then dcr); shoka is configured in
+	// the matching mode and this client proves the corresponding path end-to-end.
+	switch mode {
+	case "cimd":
+		assertCIMDPosture(asMeta)
+		step("PATH", "=== CIMD path (client_id = metadata URL) ===")
+		connectAndProve(ctx, caClient, caPath, publicURL, asMeta, resource, clientID, redirectURI, consentCred)
+	case "dcr":
+		assertDCRPosture(asMeta)
+		step("PATH", "=== DCR path (RFC 7591 register -> issued client_id) ===")
+		dcrClientID := registerDCRClient(ctx, caClient, asMeta.RegistrationEndpoint, redirectURI)
+		connectAndProve(ctx, caClient, caPath, publicURL, asMeta, resource, dcrClientID, redirectURI, consentCred)
+	default:
+		fatalf("unknown REGISTRATION_MODE %q (want cimd|dcr)", mode)
 	}
-	dcrClientID := registerDCRClient(ctx, caClient, asMeta.RegistrationEndpoint, redirectURI)
-	connectAndProve(ctx, caClient, caPath, publicURL, asMeta, resource, dcrClientID, redirectURI, consentCred)
 
-	step("DONE", "the complete proxied OAuth + MCP flow succeeded end-to-end on BOTH the CIMD and DCR paths")
-	fmt.Println("\nB-63 E2E: PASS")
+	step("DONE", "the complete proxied OAuth + MCP flow succeeded end-to-end on the %s path", strings.ToUpper(mode))
+	fmt.Printf("\nB-63 E2E: PASS (%s mode)\n", mode)
+}
+
+// registrationMode returns the registration posture this run drives, from
+// REGISTRATION_MODE (default cimd). It MUST match the mode shoka is configured in —
+// run.sh runs the stack once per mode and passes the same value to shoka and client.
+func registrationMode() string {
+	m := strings.ToLower(strings.TrimSpace(os.Getenv("REGISTRATION_MODE")))
+	if m == "" {
+		return "cimd"
+	}
+	return m
+}
+
+// assertCIMDPosture asserts the AS advertises the CIMD selection signal and WITHHOLDS
+// registration_endpoint (B-63 §0.1) — the posture under which claude.ai chooses CIMD
+// and never calls /register.
+func assertCIMDPosture(as asMetadata) {
+	if !as.ClientIDMetadataDocumentSupported {
+		fatalf("CIMD mode: AS metadata does not signal client_id_metadata_document_supported (CIMD)")
+	}
+	if as.RegistrationEndpoint != "" {
+		fatalf("CIMD mode: AS metadata MUST withhold registration_endpoint, got %q (the mode switch is misconfigured)", as.RegistrationEndpoint)
+	}
+	step("2 posture", "CIMD mode confirmed: cimd=true, registration_endpoint withheld -> CIMD path drives")
+}
+
+// assertDCRPosture asserts the AS advertises registration_endpoint and WITHHOLDS the
+// CIMD signal (B-63 §0.1). The ABSENCE of the CIMD signal is load-bearing: while it is
+// present Claude skips DCR, so a DCR-mode AS that still advertised CIMD would never be
+// asked to register.
+func assertDCRPosture(as asMetadata) {
+	if as.RegistrationEndpoint == "" {
+		fatalf("DCR mode: AS metadata advertises no registration_endpoint — claude.ai's docs require DCR (B-63)")
+	}
+	if as.ClientIDMetadataDocumentSupported {
+		fatalf("DCR mode: AS metadata MUST withhold client_id_metadata_document_supported — while present Claude skips DCR (B-63 §0.1)")
+	}
+	step("2 posture", "DCR mode confirmed: registration_endpoint present, cimd withheld -> DCR path drives")
 }
 
 // connectAndProve runs one full registration-path-agnostic flow: authorize (with
@@ -304,14 +351,13 @@ func discover(ctx context.Context, c *http.Client, publicURL, prmURL string) (re
 	if !contains(as.CodeChallengeMethodsSupported, "S256") {
 		fatalf("step 2: AS metadata does not advertise S256 PKCE (a strict client refuses): %v", as.CodeChallengeMethodsSupported)
 	}
-	if !as.ClientIDMetadataDocumentSupported {
-		fatalf("step 2: AS metadata does not signal client_id_metadata_document_supported (CIMD)")
+	// Public client in BOTH modes: token_endpoint_auth_methods_supported is ["none"].
+	if !contains(as.TokenEndpointAuthMethodsSupported, "none") {
+		fatalf("step 2: AS metadata does not advertise token_endpoint_auth_methods_supported:[none]: %v", as.TokenEndpointAuthMethodsSupported)
 	}
-	// B-63: DCR and CIMD must COEXIST — registration_endpoint advertised alongside CIMD.
-	if as.RegistrationEndpoint == "" {
-		fatalf("step 2: AS metadata advertises no registration_endpoint — claude.ai's docs require DCR (B-63)")
-	}
-	step("2 AS", "issuer=%s authorize=%s token=%s register=%s pkce=%v cimd=%v",
+	// The mode-specific posture (CIMD signal vs registration_endpoint) is asserted by
+	// the caller (assertCIMDPosture / assertDCRPosture) — they cannot both be present.
+	step("2 AS", "issuer=%s authorize=%s token=%s register=%q pkce=%v cimd=%v",
 		as.Issuer, as.AuthorizationEndpoint, as.TokenEndpoint, as.RegistrationEndpoint, as.CodeChallengeMethodsSupported, as.ClientIDMetadataDocumentSupported)
 	return prm.Resource, as
 }
