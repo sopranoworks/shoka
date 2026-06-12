@@ -18,7 +18,7 @@ func jsonLogger() (*slog.Logger, *strings.Builder) {
 
 func TestMiddleware_EntryAndResponse_ShareOneID(t *testing.T) {
 	logger, buf := jsonLogger()
-	h := Middleware(logger, "mcp-oauth")(Route("mcp-dispatch", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Middleware(logger, "mcp-oauth", false)(Route("mcp-dispatch", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})))
 
@@ -47,7 +47,7 @@ func TestMiddleware_RejectCarriesReasonAndID(t *testing.T) {
 	logger, buf := jsonLogger()
 	// Handler that 401s WITHOUT being tagged → response must show route=unrouted +
 	// reason=unauthorized (the live pre-routing 401 shape).
-	h := Middleware(logger, "mcp-oauth")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Middleware(logger, "mcp-oauth", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
@@ -63,7 +63,7 @@ func TestMiddleware_RejectCarriesReasonAndID(t *testing.T) {
 
 func TestMiddleware_NeverLogsAuthHeaderOrToken(t *testing.T) {
 	logger, buf := jsonLogger()
-	h := Middleware(logger, "web")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Middleware(logger, "web", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/ws/ui?token=SUPERSECRET", nil)
@@ -88,7 +88,7 @@ func TestMiddleware_StaleSessionRejectNamesSession(t *testing.T) {
 	// server 404s. The response line must name the stale session (recovering what
 	// httplog's removed reject line carried) under the shared id.
 	logger, buf := jsonLogger()
-	h := Middleware(logger, "mcp-oauth")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Middleware(logger, "mcp-oauth", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 	}))
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
@@ -106,7 +106,7 @@ func TestMiddleware_StaleSessionRejectNamesSession(t *testing.T) {
 
 func TestID_RoundTripsThroughContext(t *testing.T) {
 	var seen string
-	h := Middleware(slog.New(slog.DiscardHandler), "mcp-plain")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Middleware(slog.New(slog.DiscardHandler), "mcp-plain", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = ID(r.Context())
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
@@ -128,7 +128,7 @@ func TestSetRoute_NoopWithoutCell(t *testing.T) {
 
 func TestMiddleware_PreservesFlusher(t *testing.T) {
 	flushed := false
-	h := Middleware(slog.New(slog.DiscardHandler), "mcp-oauth")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Middleware(slog.New(slog.DiscardHandler), "mcp-oauth", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 			flushed = true
@@ -141,7 +141,7 @@ func TestMiddleware_PreservesFlusher(t *testing.T) {
 }
 
 func TestMiddleware_NilLoggerDoesNotPanic(t *testing.T) {
-	h := Middleware(nil, "web")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	h := Middleware(nil, "web", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 }
 

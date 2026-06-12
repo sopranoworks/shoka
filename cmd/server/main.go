@@ -355,7 +355,8 @@ func main() {
 	// wrapped by httplog, so without this its routes (/api, /ws/ui, /drafts, /) had
 	// no entry-to-exit trace at all. The surface label is a fixed category, never the
 	// listen address.
-	tracedWeb := reqtrace.Middleware(logger, "web")(webHandler)
+	dumpHTTP := cfg.Server.Debug.DumpHTTP
+	tracedWeb := reqtrace.Middleware(logger, "web", dumpHTTP)(webHandler)
 	g.Go(func() error {
 		return runServer(ctx, "Web", cfg.Server.HTTP, tracedWeb, logger)
 	})
@@ -397,7 +398,7 @@ func main() {
 		// reqtrace outermost (B-53): one correlation id per request, raw-inbound entry
 		// record, and response record (status+reason+route) — shared by httplog/auth's
 		// lines via the context id.
-		plainHandler := reqtrace.Middleware(logger, "mcp-plain")(
+		plainHandler := reqtrace.Middleware(logger, "mcp-plain", dumpHTTP)(
 			httplog.Middleware(logger)(plainAuth.Middleware(reqtrace.Route("mcp-dispatch", newMCPHandler()))))
 		g.Go(func() error {
 			return runServer(ctx, "MCP-plain", plainSettings, plainHandler, logger)
@@ -423,7 +424,7 @@ func main() {
 		// reqtrace outermost (B-53): correlates the discovery / /authorize / /token /
 		// MCP lines under one per-request id and adds the entry + response records — so
 		// the live token-bearing initialize that 401s on path=/ is traceable end to end.
-		oauthHandler := reqtrace.Middleware(logger, "mcp-oauth")(
+		oauthHandler := reqtrace.Middleware(logger, "mcp-oauth", dumpHTTP)(
 			httplog.Middleware(logger)(oauthListenerHandler(discoveryCfg, authServer, newMCPHandler(), oauthAuth)))
 		g.Go(func() error {
 			return runServer(ctx, "MCP-oauth", oauthSettings, oauthHandler, logger)

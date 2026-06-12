@@ -14,9 +14,11 @@
 package reqtrace
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -73,7 +75,13 @@ func Route(name string, next http.Handler) http.Handler {
 // the request context, logs the raw-inbound entry record (§2.3), and logs the
 // response record with status + reason category + route (§2.5) — all under the one
 // id. A nil logger is replaced with a discard logger.
-func Middleware(logger *slog.Logger, surface string) func(http.Handler) http.Handler {
+//
+// When dumpHTTP is true (the B-56 server.debug.dump_http switch), it ALSO emits a
+// verbatim dump of the full request and full response (method, path, all headers,
+// full body, status) under the same id — secrets redacted to a fixed marker, nothing
+// else processed. dumpHTTP is false in every existing call path, so the default
+// behaviour and existing logs are unchanged.
+func Middleware(logger *slog.Logger, surface string, dumpHTTP bool) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -105,8 +113,47 @@ func Middleware(logger *slog.Logger, surface string) func(http.Handler) http.Han
 				slog.String("content_type", r.Header.Get("Content-Type")),
 			)
 
-			sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			// B-56: verbatim request dump (secrets redacted), then capture the response
+			// body via the recorder for the verbatim response dump. The request body is
+			// read fully and RESTORED so the handler sees it unmodified — behaviour
+			// preserving. Default OFF; when ON it is complete (no field selection).
+			if dumpHTTP {
+				var reqBody []byte
+				if r.Body != nil {
+					reqBody, _ = io.ReadAll(r.Body)
+					_ = r.Body.Close()
+					r.Body = io.NopCloser(bytes.NewReader(reqBody))
+				}
+				logger.LogAttrs(ctx, slog.LevelInfo, "http request dump",
+					slog.String("request_id", id),
+					slog.String("surface", surface),
+					slog.String("http_method", r.Method),
+					slog.String("url", redactURL(r.URL)),
+					slog.String("headers", redactHeaders(r.Header)),
+					slog.String("body", string(redactBody(reqBody))),
+				)
+			}
+
+			sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK, dump: dumpHTTP}
 			next.ServeHTTP(sr, r)
+
+			if dumpHTTP {
+				attrs := []slog.Attr{
+					slog.String("request_id", id),
+					slog.String("surface", surface),
+					slog.Int("status", sr.status),
+					slog.String("headers", redactHeaders(sr.Header())),
+				}
+				if sr.streaming {
+					// The MCP SSE stream is long-lived; buffering its body would alter flush
+					// timing and grow unbounded — the documented capture limit. Headers +
+					// status are still dumped.
+					attrs = append(attrs, slog.String("body", ""), slog.String("body_omitted", "streaming"))
+				} else {
+					attrs = append(attrs, slog.String("body", bodyForDump(sr.body)))
+				}
+				logger.LogAttrs(ctx, slog.LevelInfo, "http response dump", attrs...)
+			}
 
 			// §2.5 response: status + (on non-2xx) a reason category + the routing
 			// stage, under the same id. The route is "unrouted" when the request never
@@ -183,12 +230,21 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
+	// B-56: when dump is set, Write tees the response body into body for the verbatim
+	// dump — EXCEPT once the response is detected as an SSE stream (streaming), where
+	// teeing the unbounded long-lived body is skipped to preserve flush behaviour.
+	dump      bool
+	streaming bool
+	body      *bytes.Buffer
 }
 
 func (w *statusRecorder) WriteHeader(code int) {
 	if !w.wroteHeader {
 		w.status = code
 		w.wroteHeader = true
+		if w.dump && isEventStream(w.Header()) {
+			w.streaming = true
+		}
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
@@ -197,6 +253,15 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
 		w.status = http.StatusOK
 		w.wroteHeader = true
+		if w.dump && isEventStream(w.Header()) {
+			w.streaming = true
+		}
+	}
+	if w.dump && !w.streaming {
+		if w.body == nil {
+			w.body = &bytes.Buffer{}
+		}
+		w.body.Write(b)
 	}
 	return w.ResponseWriter.Write(b)
 }

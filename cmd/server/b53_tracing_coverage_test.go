@@ -27,7 +27,7 @@ func buildAndRun(t *testing.T, surface string, wrap func(*slog.Logger, http.Hand
 	t.Helper()
 	var buf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	h := reqtrace.Middleware(logger, surface)(wrap(logger, inner))
+	h := reqtrace.Middleware(logger, surface, false)(wrap(logger, inner))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	var lines []map[string]any

@@ -54,6 +54,15 @@ type ServerSettings struct {
 	TLS         TLSConfig `yaml:"tls"`
 }
 
+// DebugConfig gates verbose, operator-only diagnostics. DumpHTTP (B-56) enables a
+// verbatim dump of every HTTP request and response on the three listeners
+// (secrets redacted to a fixed marker). It is OFF by default: when off, behaviour
+// and the existing logs are unchanged; when on, the dump is complete (no field
+// selection) so no future connect failure can hide in an un-logged field.
+type DebugConfig struct {
+	DumpHTTP bool `yaml:"dump_http"`
+}
+
 // AuthConfig configures static Bearer-token authentication and the WebSocket
 // origin policy. As of B-50 this is NO LONGER a global MCP gate: MCP access is
 // decided per transport by which port a request arrives on (see MCPConfig).
@@ -244,10 +253,11 @@ type IdentityConfig struct {
 
 type Config struct {
 	Server struct {
-		HTTP ServerSettings `yaml:"http"`
-		MCP  MCPConfig      `yaml:"mcp"`
-		Auth AuthConfig     `yaml:"auth"`
-		Log  LogConfig      `yaml:"log"`
+		HTTP  ServerSettings `yaml:"http"`
+		MCP   MCPConfig      `yaml:"mcp"`
+		Auth  AuthConfig     `yaml:"auth"`
+		Log   LogConfig      `yaml:"log"`
+		Debug DebugConfig    `yaml:"debug"`
 	} `yaml:"server"`
 	Identity IdentityConfig `yaml:"identity"`
 	Storage  struct {
