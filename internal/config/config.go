@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -381,7 +383,18 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// Strict decoding (B-58): an unknown or misplaced key is a HARD error naming the
+	// offending key + line, not silently dropped. Before B-58 yaml.Unmarshal ignored
+	// unrecognised keys, so a typo'd / wrongly-nested setting (e.g. dump_http outside
+	// server.debug) took effect nowhere with no error — discoverable only by restart
+	// and trial-connect (the B-57 debug cycle). KnownFields(true) turns that into a
+	// load failure that names the offending key. The full legitimate key set is the
+	// yaml tags on Config and its nested structs; shoka.example.yaml decodes cleanly.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		// io.EOF means an empty document (no keys); that is an all-defaults config, so
+		// Validate below reports the missing required fields exactly as it did before.
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
 	}
 

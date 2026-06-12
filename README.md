@@ -77,6 +77,12 @@ Authentication is **off** by default (single-operator local mode). See
 `shoka.example.yaml` for the full annotated configuration (auth, translation,
 webhooks).
 
+**Check a config before restarting.** The config is decoded strictly — an unknown or
+misplaced key fails startup loudly, naming the key, instead of being silently ignored.
+Run `shoka --config-check --config shoka.yaml` to load + validate it without starting
+the server or binding a port: exit `0` and `config OK`, or non-zero with the exact
+error. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Strict config decoding*).
+
 **Debugging a connect?** Set `server.debug.dump_http: true` (default off) and
 restart — every HTTP request and response on all three surfaces is then logged
 verbatim (method, headers, full body, status; secrets redacted), correlated by

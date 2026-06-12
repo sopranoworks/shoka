@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -59,8 +60,20 @@ func main() {
 	}
 
 	configPath := flag.String("config", "shoka.yaml", "Path to configuration file")
+	configCheck := flag.Bool("config-check", false, "Load and validate the config (strict — unknown/misplaced keys are errors), print 'config OK' or the exact error, and EXIT without starting the server or binding any port (Apache configtest-style).")
 	profileAddr := flag.String("profile-addr", "", "If set, serve net/http/pprof on this loopback address (e.g. localhost:9060). Empty disables profiling.")
 	flag.Parse()
+
+	// B-58 config dry-run: validate the config and exit, binding no port and starting
+	// no server, so the operator can confirm a config (including a key's placement)
+	// BEFORE a restart instead of discovering a silent miss by trial-connect.
+	if *configCheck {
+		if err := runConfigCheck(*configPath, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "config check failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -622,6 +635,35 @@ func webAuthConfig(a config.AuthConfig) auth.Config {
 // CATEGORIES only. Confidentiality is load-bearing — a startupPosture never carries
 // a listen address, port, host, domain, external_url, token, or secret; Surface and
 // Auth (and the optional web Policy) are fixed enumerated strings, not config values.
+// runConfigCheck implements the B-58 dry-run (`shoka --config-check`): it loads and
+// validates the config under STRICT decoding and reports the result WITHOUT starting
+// the server or binding any port (Apache `apachectl configtest`-style). config.Load
+// binds nothing, so this is pure config validation. It returns the exact load error
+// (an unknown/misplaced key named with its line, a bad value, or a failed Validate)
+// on any problem, or nil after printing `config OK` plus a terse summary. The summary
+// reuses describeStartupPostures + the dump flag, so it names ONLY categories and
+// booleans — never a listen address, host, token, or other secret.
+func runConfigCheck(configPath string, out io.Writer) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "config OK")
+	for _, p := range describeStartupPostures(cfg) {
+		if p.Policy != "" {
+			fmt.Fprintf(out, "  transport: %s (auth=%s, %s)\n", p.Surface, p.Auth, p.Policy)
+		} else {
+			fmt.Fprintf(out, "  transport: %s (auth=%s)\n", p.Surface, p.Auth)
+		}
+	}
+	dumpState := "disabled"
+	if cfg.Server.Debug.DumpHTTP {
+		dumpState = "enabled"
+	}
+	fmt.Fprintf(out, "  http dump: %s\n", dumpState)
+	return nil
+}
+
 type startupPosture struct {
 	Surface string // "mcp-plain", "mcp-oauth", "web"
 	Auth    string // "unauthenticated" | "static-bearer" | "oauth-protected" | "oauth-free"

@@ -135,6 +135,36 @@ Validation: the server refuses to start without `storage.base_dir`,
 `server.mcp.oauth.listen`), and rejects an invalid `server.log.level`/`format` or
 a `wal_worker` min/max inversion. (Source: `internal/config/config.go`.)
 
+### Strict config decoding (unknown / misplaced keys fail loudly)
+
+The config is decoded **strictly**: an **unknown key** (a typo like `storagee:`) or a
+**known key in the wrong block** (e.g. `dump_http:` placed directly under `server:`
+instead of under `server.debug:`) is a **hard load error** that names the offending key
+and its line — the server does **not** start. Before this, such keys were silently
+dropped and took effect nowhere, with no error, discoverable only by restarting and
+trial-connecting. Every valid config (including `shoka.example.yaml`) is unaffected.
+
+### Checking a config before restart (`--config-check`)
+
+To confirm a config **without** starting the server or binding any port — the
+equivalent of `apachectl configtest` — run:
+
+```sh
+shoka --config-check --config /path/to/shoka.yaml
+```
+
+It runs the same strict decode + validation the server does at startup and then exits:
+
+- **valid** → exit `0`, prints `config OK` and a terse, address-free summary (which
+  transport surfaces would open, their auth posture, and whether the HTTP dump is on —
+  category names and booleans only, never an address or secret);
+- **invalid** → exit non-zero, prints the exact error to **stderr** (the unknown/misplaced
+  key with its line, a bad value, or a failed validation such as the neither-MCP-port
+  rule).
+
+Run it before every restart so a misplaced or typo'd key is caught up front instead of
+after a failed connect.
+
 ## Logging
 
 Shoka emits structured log lines to **stderr**; stdout is reserved for the MCP
