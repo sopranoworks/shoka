@@ -77,6 +77,13 @@ Authentication is **off** by default (single-operator local mode). See
 `shoka.example.yaml` for the full annotated configuration (auth, translation,
 webhooks).
 
+**Debugging a connect?** Set `server.debug.dump_http: true` (default off) and
+restart — every HTTP request and response on all three surfaces is then logged
+verbatim (method, headers, full body, status; secrets redacted), correlated by
+`request_id`, as `http request dump` / `http response dump`. The startup line
+`startup http dump enabled=true` confirms it is on. See
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Verbatim HTTP dump*).
+
 **TLS is outsourced — by design.** Shoka terminates no TLS (it avoids the
 certificate lifecycle: issuance, renewal, reload synchronisation, revocation).
 Run it behind an external TLS-terminating reverse proxy (nginx, etc.). The plain

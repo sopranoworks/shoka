@@ -78,6 +78,7 @@ section is optional and falls back to a built-in default.
 set (both is valid; neither is a startup error). There are **no `tls` fields** on
 either MCP transport — Shoka terminates no TLS (see *TLS*).
 | `server.log.level` / `server.log.format` | string | no | `info` / `text` | Structured logging — see *Logging* below. |
+| `server.debug.dump_http` | bool | no | `false` | Operator-only verbatim HTTP request/response dump for connect/debug sessions. See *Verbatim HTTP dump* below. |
 
 ### `identity` — commit author (single-user, provisional)
 
@@ -217,6 +218,52 @@ signal: the client presented a session id this process does not know (typically
 because Shoka restarted). The client should re-initialize automatically; see § 2
 of `docs/contracts/mcp-v1.md`. Comparing these events against the Streamable HTTP
 flow in that section pinpoints where a session diverges.
+
+### Verbatim HTTP dump (`server.debug.dump_http`)
+
+When the redacted protocol traces above are not enough — e.g. a connect fails
+*after* the OAuth `/token` step and you need the exact bytes a client sent and
+received — enable the verbatim HTTP dump. It is an operator-only diagnostic, **off by
+default**, set under `server.debug`:
+
+```yaml
+server:
+  debug:
+    dump_http: true   # default false
+```
+
+Restart the server. At startup it prints a one-line state indicator so you can confirm
+the running build has it on without a trial connect:
+
+```
+INFO startup http dump enabled=true
+```
+
+With it on, **every** request and **every** response on **all three** surfaces
+(`web`, `mcp-plain`, `mcp-oauth`) is logged in full, at INFO, correlated to the rest
+of the trace by `request_id`:
+
+- `http request dump` — `surface`, `http_method`, `url`, all `headers`, and the full
+  request `body`.
+- `http response dump` — `surface`, `status`, all `headers`, and the full response
+  `body`.
+
+**Secrets are redacted** (the value is replaced in place by `«redacted»`, every other
+byte verbatim): token values (including a `?token=` query value, and the
+`Authorization` header — shown as `present; fingerprint=<…>`, a one-way fingerprint,
+never the token), authorization `code`, `code_verifier`/`code_challenge`, and the
+`consent_credential`. Everything else — the self-referential URLs, the discovery
+documents, the `/token` JSON minus the token values, content types, status — is
+emitted unprocessed.
+
+**One omission:** the long-lived MCP SSE response stream's BODY is not buffered (it
+would alter flush timing and grow unbounded); it is logged as `body_omitted=streaming`
+with its headers + status still dumped. All non-streaming responses (OAuth discovery,
+the `/token` JSON, the `/authorize` redirect, web responses) are captured in full.
+
+It logs full bodies on every request — enable it for a connect/debug session, then
+turn it back off. Confirm it is working by the `startup http dump enabled=true` line
+and by an `http request dump` / `http response dump` pair appearing for your connect.
 
 ## TLS
 

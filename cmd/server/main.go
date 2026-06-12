@@ -356,7 +356,7 @@ func main() {
 	// no entry-to-exit trace at all. The surface label is a fixed category, never the
 	// listen address.
 	dumpHTTP := cfg.Server.Debug.DumpHTTP
-	tracedWeb := reqtrace.Middleware(logger, "web", dumpHTTP)(webHandler)
+	tracedWeb := tracedHandler(logger, "web", dumpHTTP, webHandler)
 	g.Go(func() error {
 		return runServer(ctx, "Web", cfg.Server.HTTP, tracedWeb, logger)
 	})
@@ -398,7 +398,7 @@ func main() {
 		// reqtrace outermost (B-53): one correlation id per request, raw-inbound entry
 		// record, and response record (status+reason+route) — shared by httplog/auth's
 		// lines via the context id.
-		plainHandler := reqtrace.Middleware(logger, "mcp-plain", dumpHTTP)(
+		plainHandler := tracedHandler(logger, "mcp-plain", dumpHTTP,
 			httplog.Middleware(logger)(plainAuth.Middleware(reqtrace.Route("mcp-dispatch", newMCPHandler()))))
 		g.Go(func() error {
 			return runServer(ctx, "MCP-plain", plainSettings, plainHandler, logger)
@@ -424,7 +424,7 @@ func main() {
 		// reqtrace outermost (B-53): correlates the discovery / /authorize / /token /
 		// MCP lines under one per-request id and adds the entry + response records — so
 		// the live token-bearing initialize that 401s on path=/ is traceable end to end.
-		oauthHandler := reqtrace.Middleware(logger, "mcp-oauth", dumpHTTP)(
+		oauthHandler := tracedHandler(logger, "mcp-oauth", dumpHTTP,
 			httplog.Middleware(logger)(oauthListenerHandler(discoveryCfg, authServer, newMCPHandler(), oauthAuth)))
 		g.Go(func() error {
 			return runServer(ctx, "MCP-oauth", oauthSettings, oauthHandler, logger)
@@ -446,6 +446,14 @@ func main() {
 			logger.Info("startup transport posture", "surface", p.Surface, "auth", p.Auth)
 		}
 	}
+
+	// B-57: make the verbatim HTTP-dump switch (server.debug.dump_http, B-56) state
+	// VISIBLE at startup, so the operator confirms at a glance whether the dump is ON
+	// without a trial connect — the gap that left B-56 "tests green, live silent" was
+	// that the switch was undiscoverable and its state invisible. A bool only; never an
+	// address or secret. When enabled=true the live log emits `http request dump` /
+	// `http response dump` per request on all three surfaces, correlated by request_id.
+	logger.Info("startup http dump", "enabled", dumpHTTP)
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("server error", "error", err)
@@ -774,6 +782,19 @@ func startMetricsServer(ctx context.Context, addr string, src metrics.Source, lo
 			logger.Error("metrics server error", "error", err)
 		}
 	}()
+}
+
+// tracedHandler applies the outermost reqtrace layer (B-53) to a listener's
+// handler, threading the B-56 server.debug.dump_http switch. All three listeners
+// (web / mcp-plain / mcp-oauth) wrap through this ONE helper, so the HTTP-dump
+// enable is single-sourced — and the B-57 live-path test drives a request through
+// THIS function with a config-loaded flag, proving the switch actually reaches the
+// dump. That closes the "tests green, live silent" gap: the B-56 unit test
+// constructed the middleware with dumpHTTP=true directly, bypassing the
+// config-load + wiring path where the live silence actually originated. Pure
+// observability wiring — behaviour-identical to the prior inline reqtrace wraps.
+func tracedHandler(logger *slog.Logger, surface string, dumpHTTP bool, inner http.Handler) http.Handler {
+	return reqtrace.Middleware(logger, surface, dumpHTTP)(inner)
 }
 
 // oauthListenerHandler assembles the OAuth MCP listener's HTTP handler. The RFC
