@@ -38,6 +38,73 @@ func TestNewHandle_UniqueAndOpaque(t *testing.T) {
 	}
 }
 
+// A DCR-registered client (B-63) round-trips: PutClient persists it, GetClient
+// resolves it, and an unknown id is ErrNotFound (the /token re-register signal).
+func TestRegisteredClient_PutGetAndUnknown(t *testing.T) {
+	s := openTemp(t)
+	issued := time.Unix(1_700_000_000, 0).UTC()
+	rec := RegisteredClient{
+		ClientID:                "dcr-handle-abc",
+		RedirectURIs:            []string{"https://app.example/callback"},
+		TokenEndpointAuthMethod: "none",
+		ClientName:              "Example App",
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		ClientIDIssuedAt:        issued,
+	}
+	if err := s.PutClient(rec); err != nil {
+		t.Fatalf("PutClient: %v", err)
+	}
+	got, err := s.GetClient("dcr-handle-abc")
+	if err != nil {
+		t.Fatalf("GetClient: %v", err)
+	}
+	if got.ClientID != rec.ClientID || got.TokenEndpointAuthMethod != "none" ||
+		len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://app.example/callback" ||
+		got.ClientName != "Example App" || !got.ClientIDIssuedAt.Equal(issued) {
+		t.Fatalf("GetClient round-trip mismatch: %+v", got)
+	}
+	if _, err := s.GetClient("never-registered"); err != ErrNotFound {
+		t.Fatalf("unknown client must be ErrNotFound, got %v", err)
+	}
+}
+
+// A registered client survives a store reopen — the directive's hard constraint
+// (B-54's lesson: an issued artefact its own later Lookup cannot find is the
+// failure class to avoid). /authorize and /token on a later process must resolve it.
+func TestRegisteredClient_DurableAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oauth.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	rec := RegisteredClient{
+		ClientID:                "dcr-persist-xyz",
+		RedirectURIs:            []string{"https://app.example/cb"},
+		TokenEndpointAuthMethod: "none",
+		ClientIDIssuedAt:        time.Unix(1_700_000_500, 0).UTC(),
+	}
+	if err := s.PutClient(rec); err != nil {
+		t.Fatalf("PutClient: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+	got, err := s2.GetClient("dcr-persist-xyz")
+	if err != nil {
+		t.Fatalf("GetClient after reopen: %v", err)
+	}
+	if got.ClientID != rec.ClientID || len(got.RedirectURIs) != 1 {
+		t.Fatalf("registered client not durable across reopen: %+v", got)
+	}
+}
+
 // Multiple connections produce multiple independent series, each enumerable and
 // individually revocable; revoking one leaves the others intact (premise 2).
 func TestMultipleSeries_EnumerateAndRevokeIndividually(t *testing.T) {

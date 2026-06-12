@@ -114,6 +114,11 @@ func IssuerURL(base string) string { return base }
 func AuthorizeURL(base string) string { return base + "/authorize" }
 func TokenURL(base string) string     { return base + "/token" }
 
+// RegistrationURL is the RFC 7591 Dynamic Client Registration endpoint advertised
+// as registration_endpoint in the AS metadata (B-63). claude.ai's connector docs
+// require DCR; the endpoint coexists with CIMD.
+func RegistrationURL(base string) string { return base + "/register" }
+
 // ProtectedResourceMetadataPath / AuthorizationServerMetadataPath are the request
 // paths the discovery handlers mount at (path-only, for http.ServeMux).
 func ProtectedResourceMetadataPath() string     { return protectedResourceWellKnown + MCPEndpointPath }

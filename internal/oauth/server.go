@@ -127,6 +127,10 @@ func (s *AuthServer) RegisterEndpoints(mux *http.ServeMux) {
 	// the B-51/B-52 reason-rich lines (which now also carry the id from context).
 	mux.Handle("/authorize", reqtrace.Route("oauth-authorize", http.HandlerFunc(s.handleAuthorize)))
 	mux.Handle("/token", reqtrace.Route("oauth-token", http.HandlerFunc(s.handleToken)))
+	// /register is the RFC 7591 Dynamic Client Registration endpoint (B-63),
+	// required by claude.ai's connector docs. Like /authorize and /token it is
+	// reachable without a bearer (registration is how a client becomes known).
+	mux.Handle("/register", reqtrace.Route("oauth-register", http.HandlerFunc(s.handleRegister)))
 }
 
 // reqLogger returns s.logger with the request's correlation id (B-53) attached, so
@@ -188,33 +192,17 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		"code_challenge_method", req.CodeChallengeMethod,
 	)
 
-	// Validate the client via CIMD and the redirect_uri against its metadata
-	// BEFORE we are willing to redirect anywhere — an unverified redirect_uri must
-	// never receive a redirect (open-redirect / error-leak protection).
-	md, err := s.verifier.Verify(r.Context(), req.ClientID)
-	if err != nil {
-		// Make the rejection self-diagnosing: an operator reading the log learns
-		// the received client_id, the domain evaluated (or the stage reached),
-		// why it was denied, and how many trusted domains are configured — so the
-		// empty-list and wrong-domain cases reveal what to add. The wire response
-		// is unchanged (the caller still gets invalid_client); only the diagnostic
-		// payload goes to the operator's log. Secrets and the trusted-domain
-		// VALUES are never logged (only the count).
-		trustedCount := s.verifier.TrustedCount()
-		lg.Warn("oauth client verification rejected",
-			"client_id", req.ClientID,
-			"evaluated_domain", clientIDDomain(req.ClientID),
-			"reason", cimdRejectCategory(err, trustedCount),
-			"trusted_domains_configured", trustedCount,
-		)
-		s.authError(w, "invalid_client", "client verification failed: "+cimdReason(err))
+	// Resolve the client and the redirect_uri it is allowed to use BEFORE we are
+	// willing to redirect anywhere — an unverified redirect_uri must never receive a
+	// redirect (open-redirect / error-leak protection). Two registration paths
+	// coexist (B-63): a DCR client_id (an opaque handle) resolves via the persisted
+	// registration; a CIMD client_id (an https URL) is verified by fetching its
+	// metadata document. The discriminator is isDCRClientID; the CIMD branch is
+	// byte-identical to its pre-B-63 form.
+	md, ok := s.resolveAuthorizeClient(w, r, lg, req.ClientID)
+	if !ok {
 		return
 	}
-	// Success is equally observable: confirm which client_id/domain was accepted.
-	lg.Info("oauth client verification accepted",
-		"client_id", req.ClientID,
-		"evaluated_domain", clientIDDomain(req.ClientID),
-	)
 	if !RedirectURIAllowed(req.RedirectURI, md.RedirectURIs) {
 		lg.Warn("oauth authorize rejected",
 			"client_id", req.ClientID, "redirect_uri", req.RedirectURI,
@@ -305,6 +293,64 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			"client_id", req.ClientID, "reason", "no-approve-or-deny")
 		s.renderConsent(w, req, md, "Choose approve or deny.")
 	}
+}
+
+// resolveAuthorizeClient resolves the authorize-request client_id to a
+// ClientMetadata (for the redirect_uri binding + consent rendering), handling both
+// registration paths (B-63). On failure it writes the on-page invalid_client error
+// itself and returns ok=false (no redirect — the redirect_uri is not yet trusted).
+//
+//   - DCR (the client_id is an opaque handle): resolve the persisted registration;
+//     an unknown id is invalid_client.
+//   - CIMD (the client_id is an https URL): fetch + verify the metadata document —
+//     unchanged from the pre-B-63 behaviour, including the self-diagnosing logging.
+func (s *AuthServer) resolveAuthorizeClient(w http.ResponseWriter, r *http.Request, lg *slog.Logger, clientID string) (*ClientMetadata, bool) {
+	if isDCRClientID(clientID) {
+		rc, err := s.store.GetClient(clientID)
+		if err != nil {
+			lg.Warn("oauth authorize rejected",
+				"client_id", clientID, "registration", "dcr", "reason", "dcr-client-unknown")
+			s.authError(w, "invalid_client", "unknown client_id (not registered)")
+			return nil, false
+		}
+		lg.Info("oauth client resolved",
+			"client_id", clientID, "registration", "dcr", "client_name", rc.ClientName)
+		return &ClientMetadata{
+			ClientID:                rc.ClientID,
+			ClientName:              rc.ClientName,
+			RedirectURIs:            rc.RedirectURIs,
+			GrantTypes:              rc.GrantTypes,
+			ResponseTypes:           rc.ResponseTypes,
+			TokenEndpointAuthMethod: rc.TokenEndpointAuthMethod,
+		}, true
+	}
+
+	// CIMD path (unchanged): verify the client by fetching its metadata URL.
+	md, err := s.verifier.Verify(r.Context(), clientID)
+	if err != nil {
+		// Make the rejection self-diagnosing: an operator reading the log learns
+		// the received client_id, the domain evaluated (or the stage reached),
+		// why it was denied, and how many trusted domains are configured — so the
+		// empty-list and wrong-domain cases reveal what to add. The wire response
+		// is unchanged (the caller still gets invalid_client); only the diagnostic
+		// payload goes to the operator's log. Secrets and the trusted-domain
+		// VALUES are never logged (only the count).
+		trustedCount := s.verifier.TrustedCount()
+		lg.Warn("oauth client verification rejected",
+			"client_id", clientID,
+			"evaluated_domain", clientIDDomain(clientID),
+			"reason", cimdRejectCategory(err, trustedCount),
+			"trusted_domains_configured", trustedCount,
+		)
+		s.authError(w, "invalid_client", "client verification failed: "+cimdReason(err))
+		return nil, false
+	}
+	// Success is equally observable: confirm which client_id/domain was accepted.
+	lg.Info("oauth client verification accepted",
+		"client_id", clientID,
+		"evaluated_domain", clientIDDomain(clientID),
+	)
+	return md, true
 }
 
 // resolveResource validates the RFC 8707 resource indicator: if present it must
@@ -475,6 +521,21 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 			"grant_type", "authorization_code", "error", "invalid_request", "reason", reason)
 		s.tokenError(w, http.StatusBadRequest, "invalid_request", "code, client_id and code_verifier are required")
 		return
+	}
+	// Deleted-client signal (B-63): if the presented client_id is a DCR handle whose
+	// registration is gone (store reset, or the client was removed), reply 401
+	// invalid_client so claude.ai re-registers (per the help-center article +
+	// RFC 6749). The CIMD path (client_id is an https URL) is untouched — it is not
+	// store-backed, so it never hits this check. The code is NOT consumed here: an
+	// unknown client should re-register, not burn the code on an error.
+	if isDCRClientID(clientID) {
+		if _, gerr := s.store.GetClient(clientID); gerr != nil {
+			lg.Warn("oauth token rejected",
+				"grant_type", "authorization_code", "client_id", clientID,
+				"error", "invalid_client", "reason", "dcr-client-unknown")
+			s.tokenError(w, http.StatusUnauthorized, "invalid_client", "client is not registered")
+			return
+		}
 	}
 	rec, err := s.store.TakeCode(code, s.now())
 	if err != nil {

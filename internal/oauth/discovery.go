@@ -4,10 +4,12 @@
 // Authorization Server Metadata, and provides the resource_metadata URL the auth
 // middleware advertises in its 401 challenge.
 //
-// This is discovery ONLY: it advertises the /authorize and /token endpoints (built
-// by directive (b)) and signals CIMD client identification, but issues no tokens,
-// runs no consent, and validates nothing. CIMD-only — no DCR registration_endpoint
-// is ever advertised. HTTP-layer only: no go-git, no refs, no persistent state.
+// This is discovery ONLY: it advertises the /authorize, /token, and /register
+// endpoints (built by directives (b) and B-63) and signals CIMD client
+// identification, but issues no tokens, runs no consent, and validates nothing.
+// Both DCR (registration_endpoint, RFC 7591) and CIMD
+// (client_id_metadata_document_supported) are advertised — they coexist (B-63).
+// HTTP-layer only: no go-git, no refs, no persistent state.
 package oauth
 
 import (
@@ -47,12 +49,14 @@ type ProtectedResourceMetadata struct {
 
 // AuthorizationServerMetadata is the RFC 8414 document for Shoka-as-AS. It
 // advertises PKCE S256 (mandatory), the authorization-code + refresh-token grants,
-// and CIMD client identification. It deliberately omits registration_endpoint
-// (CIMD-only — no DCR).
+// CIMD client identification, AND (B-63) the RFC 7591 Dynamic Client Registration
+// endpoint — claude.ai's connector docs require DCR. DCR and CIMD coexist:
+// registration_endpoint is advertised alongside client_id_metadata_document_supported.
 type AuthorizationServerMetadata struct {
 	Issuer                            string   `json:"issuer"`
 	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
 	TokenEndpoint                     string   `json:"token_endpoint"`
+	RegistrationEndpoint              string   `json:"registration_endpoint"`
 	ResponseTypesSupported            []string `json:"response_types_supported"`
 	GrantTypesSupported               []string `json:"grant_types_supported"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
@@ -100,6 +104,7 @@ func AuthorizationServerMetadataHandler(cfg DiscoveryConfig) http.Handler {
 			Issuer:                            serverurl.IssuerURL(base),
 			AuthorizationEndpoint:             serverurl.AuthorizeURL(base),
 			TokenEndpoint:                     serverurl.TokenURL(base),
+			RegistrationEndpoint:              serverurl.RegistrationURL(base),
 			ResponseTypesSupported:            []string{"code"},
 			GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 			CodeChallengeMethodsSupported:     []string{"S256"},

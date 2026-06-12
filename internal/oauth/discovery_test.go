@@ -65,13 +65,14 @@ func TestASMetadataFields(t *testing.T) {
 	if len(pkce) != 1 || pkce[0] != "S256" {
 		t.Fatalf("code_challenge_methods_supported must be [S256], got %v", m["code_challenge_methods_supported"])
 	}
-	// CIMD signalled (current spec field).
+	// CIMD signalled (current spec field) — CIMD and DCR coexist (B-63).
 	if m["client_id_metadata_document_supported"] != true {
 		t.Fatalf("client_id_metadata_document_supported must be true, got %v", m["client_id_metadata_document_supported"])
 	}
-	// CIMD-only: NO DCR registration endpoint advertised, ever.
-	if _, present := m["registration_endpoint"]; present {
-		t.Fatalf("registration_endpoint must NOT be advertised (CIMD-only)")
+	// DCR (B-63): registration_endpoint MUST be advertised — claude.ai's connector
+	// docs require DCR — AND it coexists with CIMD (both present, neither removed).
+	if m["registration_endpoint"] != "https://public.example/register" {
+		t.Fatalf("registration_endpoint must be advertised at <origin>/register, got %v", m["registration_endpoint"])
 	}
 }
 
