@@ -1,0 +1,47 @@
+# Shoka config for the B-61 OAuth e2e harness.
+#
+# Production posture: TLS terminates at the Apache proxy, Shoka speaks plain HTTP,
+# and external_url is the public origin the proxy serves. The OAuth MCP transport
+# is the only one opened. dump_http is ON so the B-59 verbatim dump shows exactly
+# what crosses the proxy during a connect.
+#
+# Every value here is a TEST fixture (placeholder hostnames + a throwaway consent
+# credential) — no operator deployment value.
+server:
+  http:
+    listen: ":8080"            # required by config validation; web UI (unused here)
+
+  mcp:
+    oauth:
+      listen: ":8082"          # 0.0.0.0:8082 — reachable from the proxy container
+      external_url: "https://shoka.test"
+      consent_credential: "b61-e2e-consent-credential-not-a-secret"
+      trusted_client_metadata_domains:
+        - "client.test"
+      access_token_ttl: "1h"
+      refresh_token_ttl: "720h"
+      authorization_code_ttl: "5m"
+
+  log:
+    level: "debug"
+    format: "text"
+
+  debug:
+    dump_http: true            # B-59 verbatim dump — read what crosses the proxy
+
+identity:
+  user:
+    name: "B61 Operator"
+    email: "operator@shoka.test"
+  agent_default:
+    name: "shoka-agent"
+    worker: ""
+
+storage:
+  base_dir: "/data"
+  drift_scan:
+    on_startup: false
+  lost_found:
+    enabled: false
+  index:
+    enabled: false

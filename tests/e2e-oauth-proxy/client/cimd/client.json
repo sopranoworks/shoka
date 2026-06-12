@@ -1,0 +1,9 @@
+{
+  "client_id": "https://client.test/cimd/client.json",
+  "client_name": "Shoka B-61 E2E Test Client",
+  "client_uri": "https://client.test/",
+  "redirect_uris": ["https://client.test/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

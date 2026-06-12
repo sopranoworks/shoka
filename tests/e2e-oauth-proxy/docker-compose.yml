@@ -1,0 +1,63 @@
+# B-61 Docker multi-host OAuth e2e harness.
+#
+# Three separate containers on one private network — the real proxied topology
+# (Cloudflare -> reverse proxy -> Shoka), NOT a localhost collapse:
+#   - shoka  : the built server, OAuth MCP transport, external_url = https://shoka.test
+#   - proxy  : Apache httpd terminating TLS, forwarding plain HTTP to shoka:8082
+#   - client : the strict OAuth + PKCE + MCP test driver (its exit code is the assertion)
+#
+# The network uses the TEST-NET-1 range 192.0.2.0/24 (NOT an RFC-1918 private
+# range): Shoka's CIMD fetch SSRF guard (internal/oauth/cimd.go blockedIP) rejects
+# private/loopback IPs, so a default Docker bridge (172.x) would block the fetch of
+# the client's metadata document. A non-private subnet lets the REAL, unmodified
+# SSRF policy pass exactly as it would for a genuinely public CIMD host. This is a
+# harness network choice, not a product change.
+name: shoka-b61-e2e
+
+networks:
+  shokanet:
+    ipam:
+      config:
+        - subnet: 192.0.2.0/24
+
+services:
+  shoka:
+    build:
+      context: ../..
+      dockerfile: tests/e2e-oauth-proxy/shoka/Dockerfile
+    networks:
+      - shokanet
+    expose:
+      - "8082"
+
+  proxy:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    depends_on:
+      - shoka
+    networks:
+      shokanet:
+        # Both placeholder hostnames resolve to the Apache proxy: shoka.test is the
+        # public OAuth/MCP origin; client.test hosts the client's CIMD document.
+        aliases:
+          - shoka.test
+          - client.test
+    expose:
+      - "443"
+
+  client:
+    build:
+      context: ../..
+      dockerfile: tests/e2e-oauth-proxy/client/Dockerfile
+    depends_on:
+      - proxy
+      - shoka
+    environment:
+      SHOKA_PUBLIC_URL: "https://shoka.test"
+      CLIENT_ID: "https://client.test/cimd/client.json"
+      REDIRECT_URI: "https://client.test/callback"
+      CONSENT_CREDENTIAL: "b61-e2e-consent-credential-not-a-secret"
+      CA_CERT: "/etc/tls/ca.crt"
+    networks:
+      - shokanet
