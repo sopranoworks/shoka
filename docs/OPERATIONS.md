@@ -26,6 +26,64 @@ verified on the host, while the devcontainer test leg has not yet been run on a
 Docker-capable environment (maintenance backlog B-12 remains open). (Source:
 `.devcontainer/Dockerfile`.)
 
+### Running as a service (systemd / launchd)
+
+Shoka runs in the **foreground** and has no `--daemon`/fork mode — by design. It
+handles `SIGTERM`/`SIGINT` with a full graceful shutdown (HTTP in-flight drain →
+leftover-relocation wait → WAL worker-pool drain → store/index close → webhook
+drain), which is exactly what a service manager needs. So you run Shoka *as a
+managed foreground process* under **systemd** (Linux) or **launchd** (macOS), and
+let it own backgrounding, restart, and log capture. Two ready-to-edit templates
+ship in [`docs/operations/`](operations/): `shoka.service` (systemd) and
+`com.shoka.server.plist` (launchd). Every host/path/user value in them is a
+placeholder to fill in.
+
+> **The load-bearing setting — `TimeoutStopSec`.** Shoka's graceful stop can take
+> up to ~35s (the WAL worker pool alone drains for up to **30s** —
+> `internal/storage/fs_git.go:329` — on top of the 5s HTTP drain). The systemd
+> unit sets **`TimeoutStopSec=45`** so systemd does not `SIGKILL` Shoka mid-drain
+> and leave a half-flushed WAL. **Do not lower it below ~40s.** (macOS launchd has
+> no exact equivalent — see the caveat below.)
+
+**systemd (Linux):**
+
+```sh
+# Edit the placeholders (binary path, --config path, User/Group, WorkingDirectory):
+sudo install -m 0644 docs/operations/shoka.service /etc/systemd/system/shoka.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now shoka     # start now + on boot
+systemctl status shoka
+journalctl -u shoka -f                # logs (Shoka -> stderr -> journald)
+sudo systemctl stop shoka            # graceful stop within TimeoutStopSec
+```
+
+The unit is `Type=simple` (foreground), `Restart=on-failure`, and relies on
+systemd's default `SIGTERM` stop signal — the one Shoka handles.
+
+**launchd (macOS):**
+
+```sh
+# Edit the placeholders (ProgramArguments, log paths, WorkingDirectory):
+cp docs/operations/com.shoka.server.plist ~/Library/LaunchAgents/
+launchctl load   ~/Library/LaunchAgents/com.shoka.server.plist   # start
+launchctl unload ~/Library/LaunchAgents/com.shoka.server.plist   # stop
+```
+
+`RunAtLoad` + `KeepAlive` start and restart Shoka; `StandardErrorPath` captures
+its stderr to a log file.
+
+> **macOS caveat (no systemd parity).** launchd `SIGTERM`s then `SIGKILL`s after a
+> fixed grace (~20s by default), which is **shorter** than the up-to-30s WAL pool
+> drain. A large WAL backlog could be cut short on macOS. The plist sets
+> `ExitTimeOut=45` to request more, but launchd may cap it. This is fine for a dev
+> or secondary host; the fully-graceful deployment is Linux/systemd.
+
+**Logs.** Under either manager Shoka logs to **stderr**, captured by journald
+(systemd) or `StandardErrorPath` (launchd). Alternatively, have Shoka write a
+**self-rotating log file** itself by setting `server.log.output: file` in
+`shoka.yaml` — see [*Logging*](#logging) (B-66). Either path works under a service
+manager; pick one.
+
 ## Connecting clients
 
 Shoka serves MCP over **Streamable HTTP** at the `/mcp` path of an MCP transport's

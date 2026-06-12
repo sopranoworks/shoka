@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shoka — launchd service (macOS) TEMPLATE.
+
+  Shoka runs in the FOREGROUND and handles SIGTERM gracefully; launchd owns
+  backgrounding, restart (KeepAlive), and log capture. Edit every placeholder,
+  then install:
+    cp com.shoka.server.plist ~/Library/LaunchAgents/      # per-user agent
+        # or, system-wide:  sudo cp ... /Library/LaunchDaemons/
+    launchctl load   ~/Library/LaunchAgents/com.shoka.server.plist   # start
+    launchctl unload ~/Library/LaunchAgents/com.shoka.server.plist   # stop
+
+  Placeholders to edit: the ProgramArguments binary + config path,
+  WorkingDirectory, the StandardError/Out log paths, and (LaunchDaemon only)
+  UserName/GroupName.
+
+  CAVEAT — macOS graceful-stop window (no parity with systemd). launchd sends
+  SIGTERM, then SIGKILLs after a fixed grace (~20s by default) — SHORTER than
+  Shoka's up-to-30s WAL pool drain (internal/storage/fs_git.go:329). A large WAL
+  backlog could therefore be cut short on macOS. This is acceptable for a dev /
+  secondary host; the primary, fully-graceful deployment is Linux/systemd, where
+  TimeoutStopSec=45 covers the whole drain (see shoka.service). ExitTimeOut below
+  requests a longer grace, but launchd may still cap it — surfaced honestly
+  rather than implying systemd parity.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shoka.server</string>
+
+    <!-- Foreground binary + config path. EDIT these placeholders. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/shoka</string>
+        <string>--config</string>
+        <string>/usr/local/etc/shoka/shoka.yaml</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/usr/local/var/shoka</string>
+
+    <!-- Start at load, and restart when the process exits. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Shoka logs to stderr; capture it here. (To have Shoka write a
+         self-rotating log file itself instead, set server.log.output: file in
+         shoka.yaml — see docs/OPERATIONS.md "Logging" / B-66.) -->
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/shoka/shoka.log</string>
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/shoka/shoka.out</string>
+
+    <!-- Best-effort longer stop grace; see the CAVEAT in the header comment. -->
+    <key>ExitTimeOut</key>
+    <integer>45</integer>
+
+    <!-- LaunchDaemon (system-wide) only: run as a dedicated user. Uncomment and
+         set when installing under /Library/LaunchDaemons. -->
+    <!--
+    <key>UserName</key>
+    <string>shoka</string>
+    <key>GroupName</key>
+    <string>shoka</string>
+    -->
+</dict>
+</plist>

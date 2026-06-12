@@ -1,0 +1,66 @@
+# Shoka — systemd service unit (TEMPLATE)
+#
+# Shoka runs in the FOREGROUND and handles SIGTERM/SIGINT with a graceful
+# shutdown; systemd owns backgrounding, restart, and log capture. This is the
+# standard Go-service shape — Shoka has no --daemon/fork mode and needs none.
+#
+# Fill in every placeholder below for your deployment, then install:
+#   sudo cp shoka.service /etc/systemd/system/shoka.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now shoka
+#   systemctl status shoka
+#   journalctl -u shoka -f            # logs: Shoka writes to stderr -> journald
+#   sudo systemctl stop shoka         # graceful stop (see TimeoutStopSec below)
+#
+# Placeholders to edit: the ExecStart binary + config path, User/Group, and
+# WorkingDirectory. Everything else has a working default.
+
+[Unit]
+Description=Shoka Markdown MCP Server
+Documentation=https://github.com/shoka/mcp-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Foreground binary + config path. EDIT these two placeholders.
+ExecStart=/usr/local/bin/shoka --config /etc/shoka/shoka.yaml
+
+# Dedicated unprivileged service account and state dir. Create the account
+# (e.g. `sudo useradd --system --home /var/lib/shoka shoka`) or change these.
+User=shoka
+Group=shoka
+WorkingDirectory=/var/lib/shoka
+
+# Restart on a crash, not on a clean exit.
+Restart=on-failure
+RestartSec=5
+
+# CRITICAL — graceful-shutdown window. systemd stops the service by sending
+# SIGTERM (the KillSignal default), which is exactly the signal Shoka handles.
+# On stop Shoka drains IN ORDER:
+#   HTTP in-flight requests (up to 5s)
+#     -> leftover-relocation wait (B-42)
+#     -> WAL worker pool drain (UP TO 30s — internal/storage/fs_git.go:329)
+#     -> store/index close
+#     -> webhook delivery drain.
+# A TimeoutStopSec shorter than ~35s lets systemd SIGKILL mid-drain and risk a
+# dirty stop (a half-flushed WAL). 45s = 30s pool + 5s HTTP + margin.
+# DO NOT lower this below ~40s.
+TimeoutStopSec=45
+
+# --- Optional hardening: uncomment after confirming paths/permissions ---
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=true
+# PrivateTmp=true
+# ReadWritePaths=/var/lib/shoka
+#
+# Logging: by default Shoka writes to stderr, which journald captures (see
+# `journalctl -u shoka`). To have Shoka write a self-rotating log file instead,
+# set `server.log.output: file` in shoka.yaml — see docs/OPERATIONS.md
+# "Logging" (B-66).
+
+[Install]
+WantedBy=multi-user.target
