@@ -7,6 +7,7 @@
 //  2. discovery: Protected Resource Metadata + AS metadata
 //  3. authorize: CIMD client_id + consent          -> capture the code from the 302
 //  4. token: code + PKCE verifier                  -> STRICT parse of the response
+//     4b. refresh rotation                            -> new pair + old refresh invalidated
 //  5. authenticated MCP initialize + a tool call round-trip (the proof)
 //
 // It parses the /token response strictly (Content-Type incl. charset, token_type,
@@ -78,7 +79,15 @@ func main() {
 	code := authorize(ctx, caClient, asMeta.AuthorizationEndpoint, clientID, redirectURI, challenge, resource, consentCred)
 
 	// --- 4. token: code + verifier -> STRICT parse --------------------------
-	accessToken := exchangeToken(ctx, caClient, asMeta.TokenEndpoint, clientID, redirectURI, code, verifier)
+	accessToken, refreshToken := exchangeToken(ctx, caClient, asMeta.TokenEndpoint, clientID, redirectURI, code, verifier)
+
+	// --- 4b. refresh rotation: new pair + old refresh invalidated -----------
+	// OAuth 2.1 requires public clients (CIMD registers Claude as one) to rotate or
+	// sender-constrain refresh tokens, returning the new refresh in the same response
+	// that invalidates the old one. Assert that here, end-to-end through the proxy, and
+	// carry the ROTATED access token forward so the authenticated MCP step proves the
+	// rotated token works.
+	accessToken = rotateRefresh(ctx, caClient, asMeta.TokenEndpoint, refreshToken)
 
 	// --- 5. authenticated MCP initialize + tool round-trip (the proof) ------
 	authenticatedMCP(ctx, caPath, publicURL, accessToken)
@@ -310,9 +319,10 @@ type tokenResponse struct {
 
 // exchangeToken POSTs the code + PKCE verifier and parses the response STRICTLY:
 // the exact Content-Type (a strict consumer keys on application/json — optionally
-// with a charset), token_type=Bearer, Cache-Control: no-store, and the JSON fields.
-// A deviation fails here, locally, instead of only inside claude.ai.
-func exchangeToken(ctx context.Context, c *http.Client, tokenEndpoint, clientID, redirectURI, code, verifier string) string {
+// with a charset), token_type=Bearer, Cache-Control: no-store, Pragma: no-cache, and
+// the JSON fields. A deviation fails here, locally, instead of only inside claude.ai.
+// Returns the access AND refresh tokens (the refresh feeds the rotation assertion).
+func exchangeToken(ctx context.Context, c *http.Client, tokenEndpoint, clientID, redirectURI, code, verifier string) (access, refresh string) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
@@ -330,47 +340,105 @@ func exchangeToken(ctx context.Context, c *http.Client, tokenEndpoint, clientID,
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	ctHeader := resp.Header.Get("Content-Type")
-	cacheControl := resp.Header.Get("Cache-Control")
-	step("4 token-resp", "status=%d Content-Type=%q Cache-Control=%q", resp.StatusCode, ctHeader, cacheControl)
+	step("4 token-resp", "status=%d Content-Type=%q Cache-Control=%q Pragma=%q",
+		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Cache-Control"), resp.Header.Get("Pragma"))
 
 	if resp.StatusCode != http.StatusOK {
 		fatalf("step 4: token endpoint returned %d (expected 200); body: %s", resp.StatusCode, truncate(string(body), 400))
 	}
+	tr := strictTokenResponse(resp, body, "step 4")
+	step("4 token", "STRICT parse OK: token_type=%q expires_in=%d access_token=%s… refresh_token_present=%v",
+		tr.TokenType, tr.ExpiresIn, head(tr.AccessToken, 6), tr.RefreshToken != "")
+	if tr.RefreshToken == "" {
+		fatalf("step 4: token response has empty refresh_token (public-client rotation needs one)")
+	}
+	return tr.AccessToken, tr.RefreshToken
+}
 
-	// STRICT Content-Type: RFC 6749 §5.1 mandates application/json. A strict
-	// consumer (e.g. a conformant httpx-style client) parses the media type and
-	// rejects anything whose essence is not application/json. We also require the
-	// charset to be absent or utf-8 (JSON is always UTF-8; a different charset is a
-	// red flag).
+// rotateRefresh exercises the OAuth 2.1 public-client refresh-token rotation
+// requirement end-to-end: it exchanges the refresh token, strictly parses the new
+// response, asserts a NEW access+refresh pair was returned, and asserts the OLD
+// refresh token is now INVALIDATED (a second use is rejected with invalid_grant).
+// It returns the rotated access token so the caller can prove it authenticates.
+func rotateRefresh(ctx context.Context, c *http.Client, tokenEndpoint, oldRefresh string) string {
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", oldRefresh)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+	must(err, "build refresh POST")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.Do(req)
+	must(err, "send refresh POST")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	step("4b refresh-resp", "status=%d Content-Type=%q Cache-Control=%q",
+		resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Cache-Control"))
+	if resp.StatusCode != http.StatusOK {
+		fatalf("step 4b: refresh grant returned %d (expected 200); body: %s", resp.StatusCode, truncate(string(body), 400))
+	}
+	tr := strictTokenResponse(resp, body, "step 4b")
+	if tr.RefreshToken == "" {
+		fatalf("step 4b: rotation returned no new refresh_token (OAuth 2.1 public-client rotation)")
+	}
+	if tr.AccessToken == "" || tr.RefreshToken == oldRefresh {
+		fatalf("step 4b: rotation did not issue a NEW refresh token (got same handle back)")
+	}
+
+	// The OLD refresh token must be invalidated by that same rotation (return the new
+	// refresh in the same response that invalidates the old one).
+	form2 := url.Values{}
+	form2.Set("grant_type", "refresh_token")
+	form2.Set("refresh_token", oldRefresh)
+	req2, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form2.Encode()))
+	must(err, "build old-refresh-reuse POST")
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp2, err := c.Do(req2)
+	must(err, "send old-refresh-reuse POST")
+	reuseBody, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest || !strings.Contains(string(reuseBody), "invalid_grant") {
+		fatalf("step 4b: OLD refresh token was NOT invalidated by rotation: reuse got %d (%s); want 400 invalid_grant",
+			resp2.StatusCode, truncate(string(reuseBody), 400))
+	}
+	step("4b refresh", "rotation OK: new pair issued, old refresh invalidated (OAuth 2.1 public-client rotation)")
+	return tr.AccessToken
+}
+
+// strictTokenResponse parses a 200 /token response STRICTLY against RFC 6749 §5.1:
+// Content-Type application/json (charset absent or utf-8), Cache-Control: no-store,
+// Pragma: no-cache, token_type=Bearer, expires_in>0, non-empty access_token. A
+// deviation fails here, locally, instead of only inside claude.ai.
+func strictTokenResponse(resp *http.Response, body []byte, where string) tokenResponse {
+	ctHeader := resp.Header.Get("Content-Type")
 	if err := strictJSONContentType(ctHeader); err != nil {
-		fatalf("step 4: STRICT token-response Content-Type rejected: %v (raw %q); body: %s", err, ctHeader, truncate(string(body), 400))
+		fatalf("%s: STRICT token-response Content-Type rejected: %v (raw %q); body: %s", where, err, ctHeader, truncate(string(body), 400))
 	}
-	if !strings.Contains(strings.ToLower(cacheControl), "no-store") {
-		fatalf("step 4: token response missing Cache-Control: no-store (RFC 6749 §5.1); got %q", cacheControl)
+	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(strings.ToLower(cc), "no-store") {
+		fatalf("%s: token response missing Cache-Control: no-store (RFC 6749 §5.1); got %q", where, cc)
+	}
+	if pragma := resp.Header.Get("Pragma"); strings.ToLower(strings.TrimSpace(pragma)) != "no-cache" {
+		fatalf("%s: token response missing Pragma: no-cache (RFC 6749 §5.1); got %q", where, pragma)
 	}
 
-	// STRICT JSON: reject unknown nonsense by decoding into the typed struct and
-	// validating each field a strict client depends on.
 	var tr tokenResponse
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	if err := dec.Decode(&tr); err != nil {
-		fatalf("step 4: token response is not valid JSON: %v; body: %s", err, truncate(string(body), 400))
+		fatalf("%s: token response is not valid JSON: %v; body: %s", where, err, truncate(string(body), 400))
 	}
 	if tr.AccessToken == "" {
-		fatalf("step 4: token response has empty access_token; body: %s", truncate(string(body), 400))
+		fatalf("%s: token response has empty access_token; body: %s", where, truncate(string(body), 400))
 	}
-	// RFC 6749 §7.1: the token_type for a bearer token is "Bearer" (case-insensitive
-	// per spec, but a strict client compares case-insensitively to exactly Bearer).
 	if !strings.EqualFold(tr.TokenType, "Bearer") {
-		fatalf("step 4: token_type=%q, strict client requires \"Bearer\"", tr.TokenType)
+		fatalf("%s: token_type=%q, strict client requires \"Bearer\"", where, tr.TokenType)
 	}
 	if tr.ExpiresIn <= 0 {
-		fatalf("step 4: expires_in=%d, expected a positive lifetime", tr.ExpiresIn)
+		fatalf("%s: expires_in=%d, expected a positive lifetime", where, tr.ExpiresIn)
 	}
-	step("4 token", "STRICT parse OK: token_type=%q expires_in=%d access_token=%s… refresh_token_present=%v",
-		tr.TokenType, tr.ExpiresIn, head(tr.AccessToken, 6), tr.RefreshToken != "")
-	return tr.AccessToken
+	return tr
 }
 
 // strictJSONContentType validates that ct's media type is application/json with no
