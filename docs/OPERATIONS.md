@@ -49,6 +49,48 @@ The `http://localhost:8081/mcp` shown is a **placeholder** matching
 `shoka.example.yaml`'s default `server.mcp.plain.listen` (`:8081`); substitute your own
 address. (Source: maintenance backlog B-01; `shoka.example.yaml`.)
 
+### Connecting claude.ai behind a CDN / WAF / bot-defense (Cloudflare etc.) — allowlist Anthropic's egress
+
+If you put Shoka behind Cloudflare (or any other CDN / WAF / bot-defense / firewall)
+and the **claude.ai** connector fails *after* OAuth appears to succeed, the cause is
+almost certainly the edge, **not** Shoka's OAuth code. This is worth recognising
+immediately because the error wording sends you in the wrong direction.
+
+**Symptom signature.** The OAuth flow completes normally — discovery, authorize,
+`POST /token` returns **200** with a token issued (PKCE matches, everything in the
+logs looks healthy). Then claude.ai reports:
+
+> Authorization with the MCP server failed. You can check your credentials and
+> permissions. … ofid_…
+
+…and crucially **no authenticated `/mcp` request appears in the server logs at all —
+not even at the reverse proxy.** That combination — the last response succeeded, the
+very next request never arrived — points at the **edge (CDN/WAF/bot-defense) in front
+of the server**, not at Shoka. The "credentials/permissions" wording is misleading:
+the token is fine; the request that would have used it was dropped before it reached
+anything Shoka or the proxy could log.
+
+**Cause.** After `/token`, Anthropic's broker makes the authenticated MCP request as a
+**server-to-server `POST /mcp` with `Authorization: Bearer …` and no browser cookies
+or browser fingerprint.** That profile is exactly what a bot-defense product is built
+to drop — e.g. Cloudflare **Bot Fight Mode** kills it at the edge, upstream of your
+reverse proxy and Shoka.
+
+**Fix — allowlist Anthropic's egress at the edge.** Permit Anthropic's published
+egress IP range, which was **`160.79.104.0/21`** as of 2026-06:
+
+- **Cloudflare:** add an **IP Access Rule = Allow** for that range, **and** exempt it
+  from **Bot Fight Mode**, the WAF, and any managed/bot challenge.
+- **Any other CDN / WAF / firewall:** the equivalent allow rule for that range.
+
+Anthropic publishes (and may update) its current egress ranges — treat their
+connector/IP-address documentation as the authoritative source and confirm the
+current published range rather than hard-trusting `160.79.104.0/21` forever. The
+Cloudflare specifics above are just the concrete instance of the general rule:
+**allowlist Anthropic's egress at whatever edge defense sits in front of Shoka.**
+
+(This is an operator/edge-side configuration note; Shoka itself needs no change.)
+
 ## Configuration reference
 
 Configuration is a YAML file (Source: `internal/config/config.go`). A fully

@@ -73,6 +73,13 @@ Claude Desktop) connects through the `mcp-remote` bridge — add an `mcpServers`
 entry that runs `npx mcp-remote http://localhost:8081/mcp`. See
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Connecting clients*) for the detail.
 
+**Behind Cloudflare or another CDN/WAF?** If the claude.ai connector fails *after*
+OAuth succeeds (`/token` 200, then "Authorization … failed … ofid_…", and no `/mcp`
+request reaches the server), the edge bot-defense is dropping Anthropic's cookie-less
+server-to-server request — allowlist Anthropic's egress range. See
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Connecting claude.ai behind a CDN / WAF /
+bot-defense*).
+
 Authentication is **off** by default (single-operator local mode). See
 `shoka.example.yaml` for the full annotated configuration (auth, translation,
 webhooks).
