@@ -585,7 +585,7 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "write_file",
-		Description: "Write a file to a project with atomic Git commit",
+		Description: "Create a new file OR overwrite an existing one, as one atomic Git commit (the prior content stays recoverable via get_history / read_file_at_version). Writing to an existing path replaces it; there is no separate delete needed. if_match is an OPTIONAL optimistic-concurrency guard: omit it and the overwrite always proceeds; pass the file's current etag (from read_file) and the write is rejected with a conflict if the file has changed since. Fails if the project does not exist.",
 	}, tools.LoggedTool(logger, "write_file", tools.WriteFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{

@@ -357,8 +357,15 @@ Apply to every tool unless noted:
   `internal/storage/fs_git.go` `ReadFileAtVersion`.)
 
 ### 4.7 `write_file`
-- **Purpose:** create or overwrite a file. The file system is updated
-  synchronously; the git commit is performed in the background (§ 7).
+- **Purpose:** create a new file **or overwrite an existing one** — writing to a
+  path that already exists replaces its whole content (no separate `delete_file`
+  is needed). The overwrite is safe because git is the backstop: every write is an
+  atomic commit, so the prior content stays recoverable via `get_history` /
+  `read_file_at_version`. `if_match` is the **optional** optimistic-concurrency
+  guard, not an existing-path gate — omit it and the overwrite always proceeds;
+  supply the file's current etag and the write is rejected with a conflict if the
+  file changed since (§ 5). The file system is updated synchronously; the git
+  commit is performed in the background (§ 7).
 - **Input:** `namespace` (opt), `project_name` (**required**), `path`
   (**required**), `content` (string, **required**), `if_match` (string, optional
   — the etag the file is expected to be at; omit to skip the check; see § 5),
