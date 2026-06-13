@@ -15,7 +15,7 @@ readable documents out over MCP.
 ## Components
 
 Shoka is a single Go binary running two HTTP listeners (Source:
-`cmd/server/main.go:95-116`).
+`cmd/shoka/main.go:95-116`).
 
 - **Storage (Git-backed filesystem)** — `internal/storage`. Each project is a Git
   repository at `<base_dir>/<namespace>/<project>`. A write or delete is an atomic
@@ -44,18 +44,18 @@ Shoka is a single Go binary running two HTTP listeners (Source:
   `2025-03-26`) on up to two listeners selected by config presence: the plain
   `server.mcp.plain.listen` (unauthenticated, or static-bearer when
   `bearer_auth`) and the OAuth-protected `server.mcp.oauth.listen` — one shared
-  MCP server behind per-port authenticators. (Source: `cmd/server/main.go`,
+  MCP server behind per-port authenticators. (Source: `cmd/shoka/main.go`,
   `setupMCPServer`.)
 - **Web UI (WebSocket + draft persistence)** — `internal/ui`, `internal/drafts`,
   plus an embedded React build served on the `server.http.listen` port. Drafts are
   persisted over a WebSocket (`/drafts/{namespace}/{project}`) and replayed on
   reconnect so unstable/mobile clients do not lose work. (Source:
-  `cmd/server/main.go:210-239`; `internal/drafts/manager.go`.)
+  `cmd/shoka/main.go:210-239`; `internal/drafts/manager.go`.)
 - **Webhook notifier** — `internal/webhooks`. Registered as the storage change
   handler, so *every* write path (MCP and web UI) emits `file_written`,
   `file_deleted`, or `project_created` to subscribed URLs — asynchronously,
   best-effort, signed with HMAC-SHA256 when a secret is set. (Source:
-  `internal/storage/fs_git.go:41-51`; `cmd/server/main.go:47-57`;
+  `internal/storage/fs_git.go:41-51`; `cmd/shoka/main.go:47-57`;
   `internal/webhooks/webhooks.go`.)
 - **Auth (Bearer + OAuth 2.1 AS)** — `internal/auth`, `internal/oauth`. Optional
   Bearer-token authentication and WebSocket origin policy, disabled by default;
@@ -121,7 +121,7 @@ REST API.
 
 ## Sources
 
-- Source: `cmd/server/main.go` (composition, listeners, wiring),
+- Source: `cmd/shoka/main.go` (composition, listeners, wiring),
   `internal/storage/fs_git.go` (storage/versioning), `internal/storage/wal` +
   `internal/storage/walworker` (WAL + async commit),
   `internal/storage/catalog_store.go` (catalog), `internal/storage/index_sweep.go`

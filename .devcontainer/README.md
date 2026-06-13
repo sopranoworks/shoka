@@ -23,7 +23,7 @@ The embedded frontend (`server/dist`) is committed, so `go build` works without 
 A ready-to-use config ships at the repo root as `shoka.example.yaml`:
 
 ```bash
-go build -o shoka ./cmd/server
+go build -o shoka ./cmd/shoka
 ./shoka --config shoka.example.yaml
 ```
 

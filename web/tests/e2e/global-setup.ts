@@ -130,7 +130,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   const binPath = join(tmpdir(), 'shoka-e2e-bin')
   // Build the binary; it embeds the current server/dist (built by `npm run
   // build` in the test:e2e script before Playwright runs).
-  execFileSync('go', ['build', '-o', binPath, './cmd/server'], {
+  execFileSync('go', ['build', '-o', binPath, './cmd/shoka'], {
     cwd: repoRoot,
     stdio: 'inherit',
   })

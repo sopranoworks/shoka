@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	bin := filepath.Join(dir, "shoka-server")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/server")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/shoka")
 	build.Dir = ".." // repo root, relative to the tests/ package dir
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "live interop: build failed: %v\n%s\n", err, out)

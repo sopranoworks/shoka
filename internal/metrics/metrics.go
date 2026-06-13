@@ -1,7 +1,7 @@
 // Package metrics exposes Shoka's storage-redesign metrics in Prometheus text
 // exposition format. The collector reads live values from a Source (the storage
 // layer) on each scrape, so gauges are always current and counters never
-// double-count. The HTTP endpoint is wired in cmd/server: off by default,
+// double-count. The HTTP endpoint is wired in cmd/shoka: off by default,
 // loopback-only when enabled, mirroring the pprof endpoint.
 package metrics
 
@@ -75,7 +75,7 @@ type NotifyDropSource interface {
 // Nil-safety note: the oauth store is nil when OAuth is disabled. A nil
 // *oauthstore.Store must NOT be boxed into an extra — a typed-nil interface is
 // non-nil and would slip past the extras-loop nil guard, then panic in Collect.
-// cmd/server appends the store to the extras slice only when it is non-nil, so a
+// cmd/shoka appends the store to the extras slice only when it is non-nil, so a
 // disabled server simply emits no OAuth families (see Handler's callers).
 type OAuthSource interface {
 	OAuthActiveConnections() int64 // gauge: len(Store.List()), live series

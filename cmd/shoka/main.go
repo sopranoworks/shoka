@@ -502,7 +502,7 @@ func main() {
 
 // openLogDestination maps the log config onto a logging.Destination: stderr by
 // default (unchanged), or a bounded lumberjack-backed file. The mapping lives
-// here (cmd/server already depends on both config and logging) so internal/logging
+// here (cmd/shoka already depends on both config and logging) so internal/logging
 // stays decoupled from internal/config. Validation has already rejected an
 // unknown output or a file output with no path (config.Validate), so this only
 // builds the writer; it does not re-validate.

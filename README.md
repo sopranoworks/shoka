@@ -39,7 +39,7 @@ Beyond basic file CRUD, Shoka provides — see the linked docs for the detail:
 Shoka is a Go program. Build it and run it against a config file:
 
 ```sh
-go build -o shoka ./cmd/server
+go build -o shoka ./cmd/shoka
 cp shoka.example.yaml shoka.yaml      # then edit as needed
 ./shoka --config shoka.yaml
 ```

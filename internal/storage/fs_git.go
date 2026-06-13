@@ -322,7 +322,7 @@ func (s *FSGitStorage) Close() error {
 	// Await the non-blocking leftover-relocation goroutine (B-42) before tearing
 	// anything down: an object's Close should not return while a goroutine it
 	// spawned is still depositing into lost+found. This is the shutdown side of
-	// relocWG — production gains a clean shutdown (it rides cmd/server/main.go's
+	// relocWG — production gains a clean shutdown (it rides cmd/shoka/main.go's
 	// existing `defer s.Close()`); the startup gate is unaffected.
 	s.relocWG.Wait()
 	if s.pool != nil {

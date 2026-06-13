@@ -29,7 +29,7 @@ const (
 const dailyRotationInterval = 24 * time.Hour
 
 // FileConfig describes a bounded file log destination. It is the dependency-free
-// shape internal/logging accepts; the caller (cmd/server) maps its config onto
+// shape internal/logging accepts; the caller (cmd/shoka) maps its config onto
 // it, so internal/logging stays decoupled from internal/config.
 type FileConfig struct {
 	Path        string

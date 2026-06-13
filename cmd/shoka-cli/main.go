@@ -1,5 +1,5 @@
 // Command shoka-cli is the Shoka maintenance CLI for humans and agents (B-46b
-// foundation). It is a SEPARATE binary from the server (cmd/server) — deliberately
+// foundation). It is a SEPARATE binary from the server (cmd/shoka) — deliberately
 // so: a same-named/different-behaviour binary risks accidentally starting the
 // server, so the maintenance tool is kept distinct. Building or running shoka-cli
 // never starts a server.
@@ -24,7 +24,7 @@
 //	                    set by composing the per-phase subcommands (git init-like).
 //
 // The subcommand surface is small, so it stays on the repo's stdlib `flag`
-// convention (cmd/server uses it too) with hand-rolled dispatch — no
+// convention (cmd/shoka uses it too) with hand-rolled dispatch — no
 // subcommand-library dependency until the tree is deep enough to actually need
 // one.
 package main

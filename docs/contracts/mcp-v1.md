@@ -53,14 +53,14 @@ such cases are flagged inline.
 
 - **Protocol:** MCP over **Streamable HTTP**, spec `2025-03-26` (refined
   `2025-06-18`). SSE (the older `2024-11-05` HTTP+SSE transport) has been
-  **removed**; there is no SSE endpoint. (Source: `cmd/server/main.go:103-105` —
+  **removed**; there is no SSE endpoint. (Source: `cmd/shoka/main.go:103-105` —
   `mcp.NewStreamableHTTPHandler(...)`, SDK `go-sdk@v1.6.0/mcp/streamable.go:194`.)
 - **Endpoint:** Shoka opens up to **two** MCP listeners, selected by config
   presence: the **plain** transport `server.mcp.plain.listen` and the **OAuth**
   transport `server.mcp.oauth.listen` (at least one must be set; see § 3). Each
   serves the same MCP server over its own handler. The handler is the listener's
   root handler and is **path-agnostic**, but the canonical, documented endpoint
-  path on either port is **`/mcp`**. (Source: `cmd/server/main.go` MCP transport
+  path on either port is **`/mcp`**. (Source: `cmd/shoka/main.go` MCP transport
   wiring; `internal/config/config.go:84-127`.) A client registers it with:
 
   ```
@@ -113,7 +113,7 @@ such cases are flagged inline.
 
 [st]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
 
-(Source: `cmd/server/main.go:103-121`; SDK `go-sdk@v1.6.0/mcp/streamable.go`.)
+(Source: `cmd/shoka/main.go:103-121`; SDK `go-sdk@v1.6.0/mcp/streamable.go`.)
 
 ---
 
@@ -122,7 +122,7 @@ such cases are flagged inline.
 **MCP authentication is decided per transport — by which port a request arrives
 on**, not by a single global switch. The two MCP transports (§ 2) have distinct,
 non-mixable auth models (Source: `internal/config/config.go:84-127`;
-`cmd/server/main.go` per-port authenticator construction; `internal/auth/auth.go`):
+`cmd/shoka/main.go` per-port authenticator construction; `internal/auth/auth.go`):
 
 - **Plain transport (`server.mcp.plain`)** — the normal/internal port:
   - **`bearer_auth: false` (default):** no authentication; every request reaches
@@ -211,7 +211,7 @@ of being handed a static one.
     A request without a valid OAuth access token — including one carrying a static
     `server.auth.tokens` bearer — is refused with `401` and the `resource_metadata`
     challenge. (Source: `internal/auth/auth.go:109-122`; per-port authenticators in
-    `cmd/server/main.go`.)
+    `cmd/shoka/main.go`.)
   - **On the plain port** — no OAuth: `bearer_auth: false` ⇒ no auth;
     `bearer_auth: true` ⇒ `Authorization: Bearer <static token>` (validated against
     `server.auth.tokens`) on every request, per § 3. The OAuth token check is never
@@ -224,7 +224,7 @@ of being handed a static one.
 
 v1 exposes **18 tools**. Seventeen are always registered; `translate_file` is
 registered **only** when `services.google_cloud.project_id` is set. (Source:
-`cmd/server/main.go`.)
+`cmd/shoka/main.go`.)
 
 ```
 get_server_info  list_projects  create_project  list_files  read_file
@@ -570,7 +570,7 @@ Apply to every tool unless noted:
 
 ### 4.16 `translate_file` (conditional)
 - **Availability:** registered **only** when `services.google_cloud.project_id`
-  is configured. (Source: `cmd/server/main.go:75-83,200-205`.)
+  is configured. (Source: `cmd/shoka/main.go:75-83,200-205`.)
 - **Purpose:** translate a Markdown file and write the result as a sibling file.
 - **Input:** `namespace` (opt), `project_name` (**required**), `path`
   (**required**), `target_lang` (string, opt, default `"en"`).
@@ -620,7 +620,7 @@ Apply to every tool unless noted:
 Configured via `webhooks` in config (Source: `internal/config/config.go:32-39,55`).
 Emitted at the storage layer, so **every** write path (MCP tools and the web UI)
 triggers them. (Source: `internal/storage/fs_git.go:27-51,110-116,194-201,325-332`;
-`cmd/server/main.go:47-57`.)
+`cmd/shoka/main.go:47-57`.)
 
 - **HTTP method/target:** `POST` to each subscribed `url`.
 - **Headers:**
@@ -710,7 +710,7 @@ behaviour** to the MCP protocol — it is a separate, out-of-band scrape surface
   document content, identities, or credentials.
 
 (Source: `internal/metrics/metrics.go:56-84,145-360`; `internal/config/config.go:186-191`;
-`cmd/server/main.go:269-274,524-543`.)
+`cmd/shoka/main.go:269-274,524-543`.)
 
 ---
 
@@ -720,7 +720,7 @@ behaviour** to the MCP protocol — it is a separate, out-of-band scrape surface
   is an operator procedure — see `docs/operations/sensitive-data-removal.md`.
 - **MCP resource subscriptions / server push** are not implemented. Use **webhooks**
   for change notification. (No resources/subscriptions are registered in
-  `cmd/server/main.go`.)
+  `cmd/shoka/main.go`.)
 - **Diffing arbitrary commits** is not a tool. Fetch two versions with
   `read_file_at_version` and diff client-side.
 - **No multi-tenancy beyond namespaces**, and **no per-namespace ACLs**.
@@ -731,7 +731,7 @@ behaviour** to the MCP protocol — it is a separate, out-of-band scrape surface
 
 ## Sources
 
-- **Source files:** `cmd/server/main.go:75-216` (transport, tool registration,
+- **Source files:** `cmd/shoka/main.go:75-216` (transport, tool registration,
   auth/webhook wiring); `internal/auth/auth.go:39-89`; `internal/config/config.go:11-56`;
   `internal/storage/fs_git.go` (storage, locking, commits, events);
   `internal/storage/storage.go:6-11` (`CommitInfo`);

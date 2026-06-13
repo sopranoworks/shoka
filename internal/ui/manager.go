@@ -307,7 +307,7 @@ type OAuthConnectionStore interface {
 // OAuthSelfIssuer mints a fresh access token bound to the current-mode operator
 // (the "token to self" path, B-46b §2.2). It is a SEPARATE capability from
 // OAuthConnectionStore so the manager stays free of oauth/serverurl/identity
-// wiring: the concrete issuer is built in cmd/server (it holds the store, the
+// wiring: the concrete issuer is built in cmd/shoka (it holds the store, the
 // operator principal, the TTLs, and the resource deriver) and injected via
 // SetOAuthSelfIssuer. The request is passed so the issuer can derive the RFC 8707
 // resource exactly as /authorize does (forwarded-header aware). It returns the

@@ -83,7 +83,7 @@ func TestEndToEndCredentialPath(t *testing.T) {
 	mcpTS := httptest.NewServer(authn.Middleware(mcpHandler))
 	t.Cleanup(mcpTS.Close)
 
-	// --- The /ws/ui manager with the token-to-self mint (mirrors cmd/server) -----
+	// --- The /ws/ui manager with the token-to-self mint (mirrors cmd/shoka) -----
 	dm, err := drafts.NewManager(dir)
 	if err != nil {
 		t.Fatal(err)

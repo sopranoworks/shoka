@@ -7,14 +7,14 @@ How to run, configure, and maintain Shoka. For the design see
 ## Running
 
 ```sh
-go build -o shoka ./cmd/server
+go build -o shoka ./cmd/shoka
 ./shoka --config shoka.yaml
 ```
 
 The `--config` flag defaults to `shoka.yaml`. On startup Shoka creates
 `storage.base_dir` if absent and starts up to three listeners (web, MCP-plain,
 MCP-OAuth — see *Connecting clients*). (Source:
-`cmd/server/main.go:30-35`; `internal/storage/fs_git.go:64-76`.)
+`cmd/shoka/main.go:30-35`; `internal/storage/fs_git.go:64-76`.)
 
 ### Devcontainer
 
@@ -500,7 +500,7 @@ and binds **loopback-only**:
 - Posture: opt-in, **loopback-only** — scrape locally, or via your own collector
   reaching the loopback bind. "Loopback-only" is a posture, not an address.
 
-(Source: `internal/metrics/`, `cmd/server/main.go:259-274,524-543`.)
+(Source: `internal/metrics/`, `cmd/shoka/main.go:259-274,524-543`.)
 
 ## Backup
 
@@ -535,7 +535,7 @@ upgrade compatibility policy.
 ## Sources
 
 - Source: `internal/config/config.go:11-69` (schema + validation),
-  `cmd/server/main.go:29-116,200-216` (startup, listeners, conditional translate,
+  `cmd/shoka/main.go:29-116,200-216` (startup, listeners, conditional translate,
   auth wiring), `internal/storage/fs_git.go:64-118` (base_dir creation, project
   repos), `.devcontainer/Dockerfile`.
 - Documents: `shoka.example.yaml` (annotated config), `docs/contracts/mcp-v1.md`

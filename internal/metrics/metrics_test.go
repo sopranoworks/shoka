@@ -209,7 +209,7 @@ func TestMetrics_Bridge_OAuth(t *testing.T) {
 }
 
 // TestMetrics_Bridge_OAuthDisabledNoEmit asserts the OAuth-disabled case: with no
-// OAuth extra supplied (the shape cmd/server produces when oauthStore is nil — it
+// OAuth extra supplied (the shape cmd/shoka produces when oauthStore is nil — it
 // drops the typed-nil before boxing rather than passing it), no OAuth family is
 // emitted, while the notify-drop extra and the storage families still serve.
 func TestMetrics_Bridge_OAuthDisabledNoEmit(t *testing.T) {

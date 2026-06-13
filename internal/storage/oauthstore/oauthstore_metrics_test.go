@@ -104,7 +104,7 @@ func TestOAuthMetrics_ActiveConnectionsTracksLiveSet(t *testing.T) {
 }
 
 // A nil *Store (the OAuth-disabled shape) is safe to call — defence-in-depth, even
-// though cmd/server drops a nil store before boxing it as a metrics extra.
+// though cmd/shoka drops a nil store before boxing it as a metrics extra.
 func TestOAuthMetrics_NilReceiverSafe(t *testing.T) {
 	var s *Store
 	if got := s.OAuthActiveConnections(); got != 0 {

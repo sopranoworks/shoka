@@ -21,7 +21,7 @@ import (
 // These two methods are the *complete* recovery vocabulary the storage submodule
 // exposes; there is no caller-selected "mode" on the public API. The mode→intent
 // mapping (the Web UI dialog's radio button, the CLI's --accept-* flag) lives at
-// the user-input boundary (internal/adminapi, cmd/server), which translates a
+// the user-input boundary (internal/adminapi, cmd/shoka), which translates a
 // user choice into the one intent it means. The submodule receives only the
 // resolved intent. (2026-06-01 gitwrap directive: "take option choices away from
 // callers"; a mode flag is an option struct by another name.)

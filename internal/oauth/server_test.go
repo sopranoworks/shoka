@@ -220,7 +220,7 @@ func TestIssuedToken_ValidatesThroughOAuthPortAuthMiddleware(t *testing.T) {
 		t.Fatalf("decode token resp: %v", err)
 	}
 
-	// The OAuth-port authenticator, wired EXACTLY as cmd/server/main.go does: the
+	// The OAuth-port authenticator, wired EXACTLY as cmd/shoka/main.go does: the
 	// ValidateToken closure over the SAME store, behind auth.Middleware.
 	authn := auth.New(auth.Config{
 		ValidateToken: func(token string) (auth.Principal, auth.RejectReason, bool) {
