@@ -21,12 +21,16 @@ func TestLiveHTTPSessionCalls(t *testing.T) {
 	for _, level := range []string{"info", "debug"} {
 		level := level
 		t.Run(level, func(t *testing.T) {
-			httpPort := freePort(t)
-			mcpPort := freePort(t)
 			baseDir := t.TempDir()
-			cfgPath := writeLiveConfig(t, baseDir, httpPort, mcpPort, level, false, "")
-			logPath := filepath.Join(t.TempDir(), "server.log")
-			cleanup := startLiveServer(t, cfgPath, logPath, mcpPort)
+			var mcpPort int
+			var logPath string
+			cleanup := startLiveServer(t, func() liveLaunch {
+				httpPort := freePort(t)
+				mcpPort = freePort(t)
+				cfgPath := writeLiveConfig(t, baseDir, httpPort, mcpPort, level, false, "")
+				logPath = filepath.Join(t.TempDir(), "server.log")
+				return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, mcpPort}}
+			})
 			defer cleanup()
 			t.Logf("server log (level=%s): %s", level, logPath)
 

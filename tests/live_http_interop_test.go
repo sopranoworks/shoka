@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,9 +59,15 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// freePort returns a currently-free TCP port on the loopback interface. There is
-// an inherent TOCTOU race between closing the listener and the server re-binding,
-// but it is acceptable for a local test and keeps the test self-contained.
+// freePort returns a currently-free TCP port on the loopback interface by binding
+// :0, reading the assigned port, and releasing the listener. There is an
+// unavoidable window between releasing the listener here and the server re-binding
+// the port, during which a concurrent binder (another package's harness under the
+// whole-module `go test -race -count=30 ./...` gate) can steal it. That
+// close-before-rebind TOCTOU is closed STRUCTURALLY by startLiveServer, which
+// detects the resulting bind-failure process exit and relaunches on a freshly
+// chosen port (see startLiveServer / awaitReady) — never by widening this window
+// or sleeping.
 func freePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -118,44 +125,182 @@ services:
 	return path
 }
 
-// startLiveServer starts the built binary with the given config, captures its
-// stderr/stdout to logPath, waits until the MCP port accepts connections, and
-// returns a cleanup func that terminates the process.
-func startLiveServer(t *testing.T, cfgPath, logPath string, mcpPort int) func() {
+// maxLaunchAttempts bounds the retry that closes the freePort close-before-rebind
+// TOCTOU: when a launched server exits during startup because a chosen port was
+// stolen (a logged bind failure), the harness relaunches on freshly chosen ports
+// up to this many times. A server that dies for any OTHER reason fails fast (no
+// retry) and one that hangs while alive is never retried — so the retry can only
+// absorb an actual port steal, never a real defect.
+const maxLaunchAttempts = 6
+
+// liveReadyTimeout bounds how long the harness waits for a launched server to begin
+// serving. It is deliberately generous: under the whole-module
+// `go test -race -count=30 ./...` gate ~16 packages build and run at once and a
+// `-race` binary can take many seconds to start on a CPU-saturated host. It is NOT
+// a tuned timing knob (B-29) — readiness is decided by the real post-condition (the
+// ports accept) and process death is surfaced immediately, so this only caps a
+// genuine hang rather than standing in for the readiness signal.
+const liveReadyTimeout = 60 * time.Second
+
+// liveProc is a launched Shoka server process whose cmd.Wait is owned by a single
+// background goroutine. That single owner lets readiness polling observe liveness
+// (alive) without racing the reaper that stop() depends on.
+type liveProc struct {
+	cmd     *exec.Cmd
+	logFile *os.File
+	logPath string
+	waited  chan struct{} // closed when the background cmd.Wait() returns
+}
+
+// launchProc starts the built binary with cfgPath, tees stdout+stderr to logPath,
+// and starts the sole cmd.Wait() reaper. It does NOT wait for readiness.
+func launchProc(t *testing.T, cfgPath, logPath string) *liveProc {
 	t.Helper()
 	logFile, err := os.Create(logPath)
 	if err != nil {
-		t.Fatalf("startLiveServer: create log: %v", err)
+		t.Fatalf("launchProc: create log: %v", err)
 	}
 	cmd := exec.Command(builtServerBin, "-config", cfgPath)
-	cmd.Stderr = logFile
 	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		t.Fatalf("startLiveServer: start: %v", err)
+		t.Fatalf("launchProc: start: %v", err)
 	}
-
-	cleanup := func() {
-		_ = cmd.Process.Signal(os.Interrupt)
-		done := make(chan struct{})
-		go func() { _, _ = cmd.Process.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Kill()
-		}
-		logFile.Close()
-	}
-
-	if !waitMCPPort(mcpPort, 10*time.Second) {
-		cleanup()
-		t.Fatalf("startLiveServer: MCP port %d never came up (see %s)", mcpPort, logPath)
-	}
-	return cleanup
+	p := &liveProc{cmd: cmd, logFile: logFile, logPath: logPath, waited: make(chan struct{})}
+	go func() { _ = cmd.Wait(); close(p.waited) }()
+	return p
 }
 
-// waitMCPPort polls the loopback MCP port until it accepts a connection or the
-// timeout elapses.
+// alive reports whether the process has not yet exited.
+func (p *liveProc) alive() bool {
+	select {
+	case <-p.waited:
+		return false
+	default:
+		return true
+	}
+}
+
+// stop signals the server to exit, waits for the reaper up to a grace period, then
+// force-kills if needed, and closes the log file. Safe to call exactly once.
+func (p *liveProc) stop() {
+	_ = p.cmd.Process.Signal(os.Interrupt)
+	select {
+	case <-p.waited:
+	case <-time.After(5 * time.Second):
+		_ = p.cmd.Process.Kill()
+		<-p.waited
+	}
+	p.logFile.Close()
+}
+
+// allAccept reports whether every loopback port accepts a connection right now.
+func allAccept(ports []int) bool {
+	for _, port := range ports {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		conn.Close()
+	}
+	return true
+}
+
+// awaitReady polls until every port in ports accepts a connection (the server is
+// fully serving) or p exits (a crashed / bind-failed start), whichever happens
+// first, bounded by liveReadyTimeout. ready is true iff all ports accepted; died is
+// true iff the process exited before that. Both false means the generous bound
+// elapsed while the process was still alive — a genuine hang, not a port steal.
+//
+// Awaiting EVERY configured listener (not just one) is what makes a bind steal on
+// any of a server's ports trigger the retry: a single process exits on any
+// listener's bind failure, and waiting on all of them avoids proceeding in the
+// brief window where one port is briefly accepting while the process is already
+// tearing down because another failed to bind.
+func awaitReady(p *liveProc, ports []int) (ready, died bool) {
+	deadline := time.Now().Add(liveReadyTimeout)
+	for time.Now().Before(deadline) {
+		if allAccept(ports) {
+			return true, false
+		}
+		if !p.alive() {
+			return false, true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false, false
+}
+
+// looksLikeBindFailure reports whether the server log records a listener bind
+// failure (a stolen port). It distinguishes a port steal — which startLiveServer
+// retries on a fresh port — from any other startup death, which must NOT be masked.
+func looksLikeBindFailure(logPath string) bool {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	return strings.Contains(s, "address already in use") || strings.Contains(s, "bind:")
+}
+
+// liveLaunch is one launch attempt's specification: the config to run, where its
+// log goes, and the ports whose readiness is awaited (every listener the config
+// opens). A fresh one — with freshly chosen ports — is produced per attempt so a
+// stolen port is retried, not failed.
+type liveLaunch struct {
+	cfgPath    string
+	logPath    string
+	readyPorts []int
+}
+
+// startLiveServer launches the built binary and waits until it is actually serving
+// — every configured port accepts a connection AND the process is alive — then
+// returns a cleanup func that terminates it. build is invoked once per attempt and
+// must allocate fresh ports, write the config, and return the launch spec; callers
+// capture the chosen ports via the closure so a retry's fresh ports are visible.
+//
+// This addresses both harness root causes named in the 2026-06-13 live-harness
+// robustness directive: (1) the freePort close-before-rebind TOCTOU is closed
+// structurally — a server that exits during startup with a bind failure in its log
+// (a stolen port) is relaunched on freshly chosen ports, up to maxLaunchAttempts;
+// (2) the former fixed 10s readiness deadline is replaced by awaiting the real
+// post-condition with a generous-under-load bound, with process death surfaced
+// immediately rather than waited out. No synthetic timing, no sleep band-aid: a
+// non-bind startup death or a genuine hang fails fast with the server log.
+func startLiveServer(t *testing.T, build func() liveLaunch) func() {
+	t.Helper()
+	for attempt := 1; attempt <= maxLaunchAttempts; attempt++ {
+		spec := build()
+		p := launchProc(t, spec.cfgPath, spec.logPath)
+		ready, died := awaitReady(p, spec.readyPorts)
+		if ready {
+			return p.stop
+		}
+		p.stop()
+		if died && looksLikeBindFailure(spec.logPath) {
+			t.Logf("startLiveServer: attempt %d/%d: server exited with a bind failure on "+
+				"ports %v (stolen port); relaunching on fresh ports", attempt, maxLaunchAttempts, spec.readyPorts)
+			continue
+		}
+		if died {
+			t.Fatalf("startLiveServer: server exited during startup without a bind failure "+
+				"(a real defect, not a port steal); see %s", spec.logPath)
+		}
+		t.Fatalf("startLiveServer: ports %v never came up within %s while the server stayed "+
+			"alive (a genuine hang, not a port steal); see %s", spec.readyPorts, liveReadyTimeout, spec.logPath)
+	}
+	t.Fatalf("startLiveServer: server could not bind a free port after %d attempts "+
+		"(persistent port contention)", maxLaunchAttempts)
+	return func() {}
+}
+
+// waitMCPPort polls a loopback TCP port until it accepts a connection or the
+// timeout elapses. It is a bare port-presence probe used by the two-transport tests
+// to assert that a configured port DOES bind and an unconfigured one does NOT
+// (portBound). It is deliberately NOT the server-readiness path — that is
+// awaitReady, which also watches the child process so a crashed start is detected
+// immediately instead of waited out.
 func waitMCPPort(mcpPort int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	addr := fmt.Sprintf("127.0.0.1:%d", mcpPort)
@@ -245,12 +390,15 @@ func TestLiveHTTPInterop_NoAuth(t *testing.T) {
 	for _, level := range []string{"info", "debug"} {
 		level := level
 		t.Run(level, func(t *testing.T) {
-			httpPort := freePort(t)
-			mcpPort := freePort(t)
 			baseDir := t.TempDir()
-			cfgPath := writeLiveConfig(t, baseDir, httpPort, mcpPort, level, false, "")
-			logPath := filepath.Join(t.TempDir(), "server.log")
-			cleanup := startLiveServer(t, cfgPath, logPath, mcpPort)
+			var mcpPort int
+			cleanup := startLiveServer(t, func() liveLaunch {
+				httpPort := freePort(t)
+				mcpPort = freePort(t)
+				cfgPath := writeLiveConfig(t, baseDir, httpPort, mcpPort, level, false, "")
+				logPath := filepath.Join(t.TempDir(), "server.log")
+				return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, mcpPort}}
+			})
 			defer cleanup()
 
 			mcpURL := mcpEndpoint(mcpPort)
@@ -265,12 +413,15 @@ func TestLiveHTTPInterop_NoAuth(t *testing.T) {
 
 func TestLiveHTTPInterop_Auth(t *testing.T) {
 	const token = "live-interop-secret-token"
-	httpPort := freePort(t)
-	mcpPort := freePort(t)
 	baseDir := t.TempDir()
-	cfgPath := writeLiveConfig(t, baseDir, httpPort, mcpPort, "debug", true, token)
-	logPath := filepath.Join(t.TempDir(), "server.log")
-	cleanup := startLiveServer(t, cfgPath, logPath, mcpPort)
+	var mcpPort int
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort := freePort(t)
+		mcpPort = freePort(t)
+		cfgPath := writeLiveConfig(t, baseDir, httpPort, mcpPort, "debug", true, token)
+		logPath := filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, mcpPort}}
+	})
 	defer cleanup()
 
 	mcpURL := mcpEndpoint(mcpPort)

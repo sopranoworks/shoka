@@ -131,13 +131,16 @@ func getStatus(t *testing.T, port int, path, bearer string) int {
 // TestLiveMCP_PlainOnly_Presence: plain.listen set, oauth.listen absent → only the
 // plain port binds; no OAuth discovery is served on it.
 func TestLiveMCP_PlainOnly_Presence(t *testing.T) {
-	httpPort := freePort(t)
-	plainPort := freePort(t)
-	oauthPort := freePort(t) // never configured — must NOT bind
 	baseDir := t.TempDir()
-	cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, false, 0, nil)
-	logPath := filepath.Join(t.TempDir(), "server.log")
-	cleanup := startLiveServer(t, cfgPath, logPath, plainPort)
+	var httpPort, plainPort, oauthPort int
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort = freePort(t)
+		plainPort = freePort(t)
+		oauthPort = freePort(t) // never configured — must NOT bind
+		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, false, 0, nil)
+		logPath := filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, plainPort}}
+	})
 	defer cleanup()
 
 	assert.True(t, portBound(plainPort, 2*time.Second), "plain port must bind")
@@ -154,13 +157,16 @@ func TestLiveMCP_PlainOnly_Presence(t *testing.T) {
 // TestLiveMCP_OAuthOnly_Presence: oauth.listen set, plain.listen absent → only the
 // OAuth port binds; discovery + AS endpoints are reachable on it unauthenticated.
 func TestLiveMCP_OAuthOnly_Presence(t *testing.T) {
-	httpPort := freePort(t)
-	plainPort := freePort(t) // never configured — must NOT bind
-	oauthPort := freePort(t)
 	baseDir := t.TempDir()
-	cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, 0, false, oauthPort, nil)
-	logPath := filepath.Join(t.TempDir(), "server.log")
-	cleanup := startLiveServer(t, cfgPath, logPath, oauthPort)
+	var httpPort, plainPort, oauthPort int
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort = freePort(t)
+		plainPort = freePort(t) // never configured — must NOT bind
+		oauthPort = freePort(t)
+		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, 0, false, oauthPort, nil)
+		logPath := filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, oauthPort}}
+	})
 	defer cleanup()
 
 	assert.True(t, portBound(oauthPort, 2*time.Second), "oauth port must bind")
@@ -175,13 +181,16 @@ func TestLiveMCP_OAuthOnly_Presence(t *testing.T) {
 
 // TestLiveMCP_BothPorts_Presence: both listen addresses set → both ports bind.
 func TestLiveMCP_BothPorts_Presence(t *testing.T) {
-	httpPort := freePort(t)
-	plainPort := freePort(t)
-	oauthPort := freePort(t)
 	baseDir := t.TempDir()
-	cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, false, oauthPort, nil)
-	logPath := filepath.Join(t.TempDir(), "server.log")
-	cleanup := startLiveServer(t, cfgPath, logPath, plainPort)
+	var httpPort, plainPort, oauthPort int
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort = freePort(t)
+		plainPort = freePort(t)
+		oauthPort = freePort(t)
+		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, false, oauthPort, nil)
+		logPath := filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, plainPort, oauthPort}}
+	})
 	defer cleanup()
 
 	assert.True(t, portBound(plainPort, 2*time.Second), "plain port must bind")
@@ -198,12 +207,15 @@ func TestLiveMCP_BothPorts_Presence(t *testing.T) {
 // absent/wrong bearer and accepts the configured static token.
 func TestLiveMCP_PlainPort_BearerAuth(t *testing.T) {
 	const token = "plain-static-token"
-	httpPort := freePort(t)
-	plainPort := freePort(t)
 	baseDir := t.TempDir()
-	cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, true, 0, []string{token})
-	logPath := filepath.Join(t.TempDir(), "server.log")
-	cleanup := startLiveServer(t, cfgPath, logPath, plainPort)
+	var httpPort, plainPort int
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort = freePort(t)
+		plainPort = freePort(t)
+		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, true, 0, []string{token})
+		logPath := filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, plainPort}}
+	})
 	defer cleanup()
 
 	// Absent and wrong bearers are rejected with 401.
@@ -220,12 +232,15 @@ func TestLiveMCP_PlainPort_BearerAuth(t *testing.T) {
 // TestLiveMCP_PlainPort_NoAuth: with bearer_auth:false the plain port accepts a
 // request that carries no credential.
 func TestLiveMCP_PlainPort_NoAuth(t *testing.T) {
-	httpPort := freePort(t)
-	plainPort := freePort(t)
 	baseDir := t.TempDir()
-	cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, false, 0, nil)
-	logPath := filepath.Join(t.TempDir(), "server.log")
-	cleanup := startLiveServer(t, cfgPath, logPath, plainPort)
+	var httpPort, plainPort int
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort = freePort(t)
+		plainPort = freePort(t)
+		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, false, 0, nil)
+		logPath := filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, plainPort}}
+	})
 	defer cleanup()
 
 	// A bare GET reaches the MCP handler (not a 401) — auth let it through. The
@@ -240,17 +255,22 @@ func TestLiveMCP_PlainPort_NoAuth(t *testing.T) {
 // reachable unauthenticated, and a valid seeded OAuth access token passes.
 func TestLiveMCP_OAuthPort_Auth(t *testing.T) {
 	const staticToken = "a-static-bearer-not-oauth"
-	httpPort := freePort(t)
-	oauthPort := freePort(t)
 	baseDir := t.TempDir()
 
-	// Seed a valid OAuth token into the store the server will open.
+	// Seed a valid OAuth token into the store the server will open. baseDir is
+	// stable across launch retries (only the ports are re-picked), so the seeded
+	// token remains valid for whichever attempt finally binds.
 	accessToken := seedOAuthToken(t, baseDir)
 
-	// server.auth.tokens carries a static bearer that the OAuth port must NOT honor.
-	cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, 0, false, oauthPort, []string{staticToken})
-	logPath := filepath.Join(t.TempDir(), "server.log")
-	cleanup := startLiveServer(t, cfgPath, logPath, oauthPort)
+	var httpPort, oauthPort int
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort = freePort(t)
+		oauthPort = freePort(t)
+		// server.auth.tokens carries a static bearer that the OAuth port must NOT honor.
+		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, 0, false, oauthPort, []string{staticToken})
+		logPath := filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, oauthPort}}
+	})
 	defer cleanup()
 
 	// Discovery reachable unauthenticated.

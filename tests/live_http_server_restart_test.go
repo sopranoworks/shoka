@@ -29,7 +29,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,45 +37,30 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// startProc starts the built binary with cfgPath, sending stdout+stderr to
-// logPath, and waits until mcpPort accepts connections. It returns the running
-// command and an open log file (the caller closes both via stopProc).
-func startProc(t *testing.T, cfgPath, logPath string, mcpPort int) (*exec.Cmd, *os.File) {
+// startProc starts the built binary with cfgPath, awaits readiness on every port
+// in ports (port-accepts AND process-alive, generous bound — the shared awaitReady
+// path, NOT a fixed deadline), and returns the running proc. ok is false ONLY when
+// the process exited with a bind failure during startup (a stolen reused port),
+// signalling the caller to retry the whole scenario on fresh ports; a non-bind
+// startup death or a genuine hang is a hard t.Fatalf, never masked.
+func startProc(t *testing.T, cfgPath, logPath string, ports ...int) (*liveProc, bool) {
 	t.Helper()
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		t.Fatalf("startProc: create log: %v", err)
+	p := launchProc(t, cfgPath, logPath)
+	ready, died := awaitReady(p, ports)
+	if ready {
+		return p, true
 	}
-	cmd := exec.Command(builtServerBin, "-config", cfgPath)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		t.Fatalf("startProc: start: %v", err)
+	p.stop()
+	if died && looksLikeBindFailure(logPath) {
+		return nil, false
 	}
-	if !waitMCPPort(mcpPort, 10*time.Second) {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		logFile.Close()
-		t.Fatalf("startProc: MCP port %d never came up (see %s)", mcpPort, logPath)
+	if died {
+		t.Fatalf("startProc: server exited during startup without a bind failure "+
+			"(a real defect, not a port steal); see %s", logPath)
 	}
-	return cmd, logFile
-}
-
-// stopProc sends SIGTERM, waits for the process to exit (so the listener is
-// released before the next start reuses the port), and closes the log file.
-func stopProc(t *testing.T, cmd *exec.Cmd, logFile *os.File) {
-	t.Helper()
-	_ = cmd.Process.Signal(os.Interrupt)
-	done := make(chan struct{})
-	go func() { _, _ = cmd.Process.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
-	}
-	logFile.Close()
+	t.Fatalf("startProc: ports %v never came up within %s while the server stayed alive "+
+		"(a genuine hang, not a port steal); see %s", ports, liveReadyTimeout, logPath)
+	return nil, false
 }
 
 // callFirstNoArgTool discovers a no-argument tool on a fresh session and calls
@@ -98,8 +82,33 @@ func callFirstNoArgTool(ctx context.Context, t *testing.T, sess *mcp.ClientSessi
 }
 
 func TestLiveHTTPServerRestart(t *testing.T) {
-	// Reserve the ports ONCE; both server processes bind the same MCP port so the
-	// stale client reconnects to the new process exactly as Claude Code would.
+	// Both server processes deliberately bind the SAME reused port, so a fresh-port
+	// retry (the freePort close-before-rebind TOCTOU fix) must restart the WHOLE
+	// scenario, not an individual launch. runRestartScenario returns false only when
+	// a launch exits with a bind failure (a stolen reused port) before any
+	// assertion; loop on fresh ports up to maxLaunchAttempts.
+	for attempt := 1; attempt <= maxLaunchAttempts; attempt++ {
+		if runRestartScenario(t, attempt) {
+			return
+		}
+		t.Logf("restart scenario attempt %d/%d: a server exited with a bind failure "+
+			"(stolen reused port); retrying the whole scenario on fresh ports", attempt, maxLaunchAttempts)
+	}
+	t.Fatalf("restart scenario: could not secure a stable reused port after %d attempts "+
+		"(persistent port contention)", maxLaunchAttempts)
+}
+
+// runRestartScenario runs the full server-restart scenario once. It returns true
+// when the scenario ran to completion (every assertion executed — any failure
+// already raised via t.Fatalf), and false ONLY when a server process exited with a
+// bind failure during startup (a stolen reused port) before any assertion, telling
+// the caller to retry on fresh ports. Because both processes share one port, that
+// retry must redo the whole scenario rather than re-pick a port mid-flight.
+func runRestartScenario(t *testing.T, attempt int) bool {
+	t.Helper()
+	// Reserve the ports for this attempt; both server processes bind the same MCP
+	// port so the stale client reconnects to the new process exactly as Claude Code
+	// would.
 	httpPort := freePort(t)
 	mcpPort := freePort(t)
 	baseDir := t.TempDir() // shared data dir so the tool catalog is identical across restarts
@@ -109,12 +118,18 @@ func TestLiveHTTPServerRestart(t *testing.T) {
 	logPath1 := filepath.Join(t.TempDir(), "server1.log")
 	logPath2 := filepath.Join(t.TempDir(), "server2.log")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	// --- Step 1: server #1 up, stale client connects and a tool works. ---
-	cmd1, log1 := startProc(t, cfgPath, logPath1, mcpPort)
-	t.Logf("server #1 started (pid %d), log: %s", cmd1.Process.Pid, logPath1)
+	p1, ok := startProc(t, cfgPath, logPath1, httpPort, mcpPort)
+	if !ok {
+		return false // bind-failure on a stolen port → retry the scenario on fresh ports
+	}
+	t.Logf("attempt %d: server #1 started (pid %d), log: %s", attempt, p1.cmd.Process.Pid, logPath1)
+
+	// The client/RPC budget is created after #1 is serving so a generous (-race,
+	// saturated-host) startup never eats into it. It must span the #2 startup + the
+	// recovery RPCs that follow.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 
 	// DisableStandaloneSSE keeps the stale client to request/response POSTs only,
 	// so after the restart its tool-call POST deterministically hits process #2
@@ -123,20 +138,24 @@ func TestLiveHTTPServerRestart(t *testing.T) {
 	staleCli := mcp.NewClient(&mcp.Implementation{Name: "restart-stale-client", Version: "0.0.1"}, nil)
 	staleSess, err := staleCli.Connect(ctx, staleTransport, nil)
 	if err != nil {
-		stopProc(t, cmd1, log1)
+		p1.stop()
 		t.Fatalf("stale client Connect to server #1 failed: %v", err)
 	}
 	probeTool := callFirstNoArgTool(ctx, t, staleSess)
 	t.Logf("server #1: tool %q succeeded on the stale session", probeTool)
 
 	// --- Step 2: kill server #1, wait for exit (releases the port). ---
-	stopProc(t, cmd1, log1)
+	p1.stop()
 	t.Logf("server #1 terminated")
 
 	// --- Step 3: server #2 up on the SAME port (fresh, empty session map). ---
-	cmd2, log2 := startProc(t, cfgPath, logPath2, mcpPort)
-	defer stopProc(t, cmd2, log2)
-	t.Logf("server #2 started (pid %d) on the same port, log: %s", cmd2.Process.Pid, logPath2)
+	p2, ok := startProc(t, cfgPath, logPath2, httpPort, mcpPort)
+	if !ok {
+		_ = staleSess.Close()
+		return false // the just-freed reused port was stolen → retry the scenario
+	}
+	defer p2.stop()
+	t.Logf("server #2 started (pid %d) on the same port, log: %s", p2.cmd.Process.Pid, logPath2)
 
 	// --- Step 4: stale client's next tool call must hit a clean 404, surfaced as
 	// ErrSessionMissing — never the old "invalid during session initialization". ---
@@ -200,6 +219,8 @@ func TestLiveHTTPServerRestart(t *testing.T) {
 		strings.Join(rejected404, "\n"),
 		strings.Join(established, "\n"),
 		strings.Join(lastN(respSent, 3), "\n"))
+
+	return true // scenario completed; all assertions ran
 }
 
 // extractMatchingLines returns every line containing both substrings (the second
