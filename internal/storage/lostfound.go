@@ -116,6 +116,27 @@ func (s *FSGitStorage) sweepProject(namespace, projectName string) {
 		}
 		return // skip dangerous/corrupted projects
 	}
+
+	projectPath, perr := s.getProjectPath(namespace, projectName)
+	if perr != nil {
+		return
+	}
+
+	// Empty-directory reclamation backstop (B-48, Direction Y): reap empty
+	// directories the operation-time reap did not catch (e.g. an empty dir present
+	// before reclamation shipped, or one an operation left behind). This rides the
+	// WalkDir DetectDrift already ran — sum.EmptyDirs are dirs with no file
+	// descendant — and runs BEFORE the Added early-return below, since a perfectly
+	// clean project (no Added) is exactly where empty dirs are most likely. Each
+	// removal is dir-locked + rm-semantic (the same reapEmptyDir primitive the
+	// operation-time path uses), so it serialises identically against concurrent
+	// writers. One level per pass: a non-leaf candidate no-ops (ENOTEMPTY) until
+	// its subdirs are gone; the project root and derivative dirs are never
+	// candidates (reapableDir guards, and the walk never records them).
+	for _, dir := range sum.EmptyDirs {
+		s.reapEmptyDir(context.Background(), "", projectPath, dir)
+	}
+
 	if len(sum.Added) == 0 {
 		return
 	}
@@ -129,10 +150,6 @@ func (s *FSGitStorage) sweepProject(namespace, projectName string) {
 
 	now := time.Now()
 	target := namespace + "/" + projectName
-	projectPath, perr := s.getProjectPath(namespace, projectName)
-	if perr != nil {
-		return
-	}
 
 	for _, rel := range sum.Added {
 		if matcher.Match(splitDisposablePath(rel), false) {

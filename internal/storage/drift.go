@@ -19,6 +19,13 @@ type DriftSummary struct {
 	Added    []string // in the working tree, not in the catalog (external/noise; informational)
 	Modified []string // in both, content differs from the catalog etag
 	Deleted  []string // in the catalog, missing from the working tree (invariant violation)
+	// EmptyDirs lists absolute working-tree directories with NO file descendant
+	// anywhere beneath them — empty-directory reclaim candidates (B-48,
+	// Direction Y). Free by-product of the same working-tree walk that computes
+	// Added (the walk visits every directory; a dir with no file under it
+	// contributes no Added entry but is recorded here). The lost+found sweep
+	// reaps them one level per pass; informational for every other caller.
+	EmptyDirs []string
 }
 
 // HasDrift reports whether any path differs.
@@ -77,14 +84,17 @@ func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary,
 	}
 	// Added: working-tree files the catalog does not record. Informational only;
 	// they never change the state (the catalog deliberately filters this noise).
-	if wt, werr := workingTreeContentHashes(projectPath); werr == nil {
+	// EmptyDirs (B-48) rides the same walk — empty-directory reclaim candidates.
+	if wt, emptyDirs, werr := workingTreeContentHashes(projectPath); werr == nil {
 		for p := range wt {
 			if has, herr := cat.HasFile(p); herr == nil && !has {
 				sum.Added = append(sum.Added, p)
 			}
 		}
+		sum.EmptyDirs = emptyDirs
 	}
 	sort.Strings(sum.Added)
+	sort.Strings(sum.EmptyDirs)
 	sort.Strings(sum.Modified)
 	sort.Strings(sum.Deleted)
 
@@ -99,8 +109,19 @@ func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary,
 
 // workingTreeContentHashes maps each working-tree path to the sha256 of its
 // content, skipping .git/.shoka/.drafts and transient atomic-write temp files.
-func workingTreeContentHashes(projectPath string) (map[string]string, error) {
+//
+// It also returns the empty-directory reclaim candidates (B-48): every visited
+// directory (other than the project root and the derivative dirs it SkipDirs)
+// that has NO file descendant anywhere beneath it. This rides the same single
+// walk — the addendum's finding that WalkDir already VISITS every directory even
+// though the d.IsDir() branch omits dirs from the file map. A dir is a candidate
+// iff no file marks it as an ancestor; this identifies whole empty chains, but
+// the sweep reaps with rm semantics so non-leaf candidates simply no-op
+// (ENOTEMPTY) until their subdirs are gone — one level per pass.
+func workingTreeContentHashes(projectPath string) (map[string]string, []string, error) {
 	m := map[string]string{}
+	dirSeen := map[string]struct{}{}    // every visited non-root, non-derivative dir
+	hasFileDesc := map[string]struct{}{} // dirs with >=1 file anywhere beneath
 	err := filepath.WalkDir(projectPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -108,6 +129,9 @@ func workingTreeContentHashes(projectPath string) (map[string]string, error) {
 		if d.IsDir() {
 			if p != projectPath && derivativeWalkSkipDir(d.Name()) {
 				return filepath.SkipDir
+			}
+			if p != projectPath {
+				dirSeen[p] = struct{}{}
 			}
 			return nil
 		}
@@ -123,12 +147,23 @@ func workingTreeContentHashes(projectPath string) (map[string]string, error) {
 			return nil
 		}
 		m[filepath.ToSlash(rel)] = sha256Hex(data)
+		// Mark every ancestor directory (the file's parent up to, but excluding,
+		// the project root) as holding a file descendant.
+		for dir := filepath.Dir(p); dir != projectPath && len(dir) > len(projectPath); dir = filepath.Dir(dir) {
+			hasFileDesc[dir] = struct{}{}
+		}
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to walk working tree: %w", err)
+		return nil, nil, fmt.Errorf("failed to walk working tree: %w", err)
 	}
-	return m, nil
+	var emptyDirs []string
+	for dir := range dirSeen {
+		if _, ok := hasFileDesc[dir]; !ok {
+			emptyDirs = append(emptyDirs, dir)
+		}
+	}
+	return m, emptyDirs, nil
 }
 
 // StartDriftScan starts a background goroutine that re-runs drift detection over

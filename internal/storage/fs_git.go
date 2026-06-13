@@ -509,11 +509,22 @@ func (s *FSGitStorage) writeTransformed(ctx context.Context, sessionID, namespac
 		if terr != nil {
 			return terr
 		}
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-			return fmt.Errorf("failed to create directories for file: %w", err)
-		}
-		if err := atomicWriteFile(fullPath, newContent); err != nil {
-			return fmt.Errorf("failed to write file: %w", err)
+		// Parent-create + atomic write run under the directory-scoped lock (B-48):
+		// it serialises this MkdirAll+create against a concurrent empty-dir reaper
+		// on the same parent, closing the MkdirAll→CreateTemp window so the reaper
+		// can never delete the directory between its creation and the file landing
+		// in it. The dir-lock is INNER to the per-file lock already held here
+		// (file-outer, dir-inner — the deadlock-free order; see WithDirLock).
+		if werr := s.locks.WithDirLock(ctx, sessionID, filepath.Dir(fullPath), func() error {
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				return fmt.Errorf("failed to create directories for file: %w", err)
+			}
+			if err := atomicWriteFile(fullPath, newContent); err != nil {
+				return fmt.Errorf("failed to write file: %w", err)
+			}
+			return nil
+		}); werr != nil {
+			return werr
 		}
 		newEtag = sha256Hex(newContent)
 		id := identity.Resolve(ctx, s.identityDefaults)
@@ -701,6 +712,13 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to remove file from disk: %w", err)
 		}
+		// One-level empty-parent reap (B-48): the delete may have emptied the
+		// parent directory; reclaim it on the spot — one level only, rm semantics,
+		// dir-locked. The dir-lock is INNER to the per-file lock held here
+		// (file-outer, dir-inner). If the parent still holds other files the reap
+		// is a no-op (ENOTEMPTY); if removing it empties the grandparent, that is
+		// reaped only by a later operation or the sweep backstop (no chain ascent).
+		s.reapEmptyDir(ctx, sessionID, projectPath, filepath.Dir(fullPath))
 		return nil
 	})
 	if lockErr != nil {

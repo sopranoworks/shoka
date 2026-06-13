@@ -104,15 +104,32 @@ func (s *FSGitStorage) Move(ctx context.Context, sessionID, namespace, projectNa
 		// then remove the source last — so a crash mid-operation never leaves the
 		// content unreachable from both paths. No referrer files are touched (a move
 		// is a pure rename).
-		if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
-			return fmt.Errorf("move: create target dir: %w", err)
-		}
-		if err := atomicWriteFile(dstFull, movedContent); err != nil {
-			return fmt.Errorf("move: write target: %w", err)
+		// Destination parent-create + atomic write under the directory-scoped lock
+		// (B-48), exactly as writeTransformed: serialises against a concurrent
+		// empty-dir reaper on the destination parent, closing the
+		// MkdirAll→CreateTemp window. Dir-lock is INNER to the per-file locks
+		// (src+dst) already held here.
+		if werr := s.locks.WithDirLock(ctx, sessionID, filepath.Dir(dstFull), func() error {
+			if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
+				return fmt.Errorf("move: create target dir: %w", err)
+			}
+			if err := atomicWriteFile(dstFull, movedContent); err != nil {
+				return fmt.Errorf("move: write target: %w", err)
+			}
+			return nil
+		}); werr != nil {
+			return werr
 		}
 		if err := os.Remove(srcFull); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("move: remove source: %w", err)
 		}
+		// One-level empty-parent reap of the SOURCE's directory (B-48): the move
+		// just emptied it, so reclaim it on the spot — one level, rm semantics,
+		// dir-locked. The destination parent is NOT reaped (it now holds dstFull).
+		// A src parent that equals the dst parent stays (non-empty: holds dst).
+		// This runs sequentially after the dst write released its dir-lock, so at
+		// most one dir-lock is ever held at a time (the no-nested-dir-lock rule).
+		s.reapEmptyDir(ctx, sessionID, projectPath, filepath.Dir(srcFull))
 
 		// Catalog (best-effort, mirrors write/delete): disown source, adopt dest.
 		s.catalogDelete(namespace, projectName, srcRel)

@@ -57,6 +57,13 @@ type Manager struct {
 
 	stripes [numStripes]sync.Mutex
 
+	// dirStripes is a SEPARATE stripe array for directory-scoped locks (B-48
+	// empty-directory reclamation). It is deliberately disjoint from `stripes`:
+	// a file path and a directory path never share a mutex, even on a hash
+	// collision. That disjointness is what keeps the combined file+dir locking
+	// discipline deadlock-free — see WithDirLock.
+	dirStripes [numStripes]sync.Mutex
+
 	leasesMu sync.Mutex
 	leases   map[string]*lease
 
@@ -200,6 +207,53 @@ func (m *Manager) WithLocks(ctx context.Context, sessionID string, paths []strin
 			m.logger.Error("filelock: panic in locked function (multi)",
 				"paths", paths, "session", sessionID, "panic", r, "stack", string(debug.Stack()))
 			err = fmt.Errorf("filelock: panic in locked function for %v: %v", paths, r)
+		}
+	}()
+
+	return fn()
+}
+
+// WithDirLock runs fn while holding the DIRECTORY-scoped lock for dirPath.
+//
+// This is a SEPARATE lock namespace from the per-file stripe locks (a distinct
+// stripe array, m.dirStripes): a file path and a directory path never share a
+// mutex, even on a hash collision. That disjointness is what makes the combined
+// discipline deadlock-free — see the lock-ordering note below.
+//
+// B-48 (empty-directory reclamation) needs it: a file write creates its parent
+// directory (MkdirAll) and an empty-dir reaper removes it, and the two must
+// serialise on the PARENT DIRECTORY, which the per-file lock — keyed on the FILE
+// path — does not cover (B-48 investigation §2.4 / framing correction 2). Every
+// file-writing path takes this lock around its MkdirAll+create; every reaper
+// takes it around its empty-check-and-remove. With rm semantics (os.Remove
+// succeeds iff the directory is empty) both interleavings are correct:
+// remove→write recreates via MkdirAll; write→remove fails ENOTEMPTY and the
+// directory correctly stays — and the writer never sees a half-created directory
+// vanish (the MkdirAll→CreateTemp window is closed because the writer holds this
+// lock across it).
+//
+// Lock ordering (deadlock-free): the per-file stripe lock (WithLock/WithLocks) is
+// the OUTER lock and this directory lock is the INNER lock. Callers acquire
+// WithDirLock only while already holding the file lock, and hold AT MOST ONE
+// directory lock at a time (never two nested). Because the file-stripe and
+// dir-stripe arrays are disjoint, a goroutine holding a directory lock is never
+// waiting on a file lock, so no wait cycle can form.
+//
+// ctx cancellation and panic recovery behave exactly as WithLock. No lease is
+// recorded: a directory lock is held only across a single MkdirAll/create or
+// check-and-remove, far below the lease-expiry horizon.
+func (m *Manager) WithDirLock(ctx context.Context, sessionID, dirPath string, fn func() error) (err error) {
+	mu := &m.dirStripes[fnv32a(dirPath)%numStripes]
+	if lerr := lockCtx(ctx, mu); lerr != nil {
+		return lerr
+	}
+	defer mu.Unlock()
+
+	defer func() {
+		if r := recover(); r != nil {
+			m.logger.Error("filelock: panic in dir-locked function",
+				"dir", dirPath, "session", sessionID, "panic", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("filelock: panic in dir-locked function for %q: %v", dirPath, r)
 		}
 	}()
 
