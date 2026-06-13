@@ -99,7 +99,11 @@ func TestPool_PermanentFailureQuarantinesDepositsRemovesReturns(t *testing.T) {
 	assert.Equal(t, int64(0), st.QuarantineFailed)
 	assert.Equal(t, int64(1), st.CommitsTotal, "the healthy entry committed")
 	assert.Equal(t, 0, l.PendingCount(), "both entries left the WAL")
-	assert.Equal(t, 0, st.InFlightProjects, "the in-flight mark cleared")
+	// The in-flight mark clears one step AFTER the WAL drains: process() removes the
+	// entry, then RETURNS, then the deferred doneCh fires, then the dispatcher unmarks
+	// the project. waitDrained only gates on the WAL being empty, so await the real
+	// post-condition here rather than reading the snapshot a beat too early.
+	assert.Eventually(t, func() bool { return p.Stats().InFlightProjects == 0 }, 2*time.Second, 5*time.Millisecond, "the in-flight mark cleared")
 }
 
 // TestPool_NotSaturatedByPermanentFailures is the availability-hole regression — the
