@@ -67,7 +67,12 @@ func TestFixLinks_NotHealthyTruthScanRepairs(t *testing.T) {
 	_, _, err = s.Move(context.Background(), "sess", "ns", "proj", "old.md", "new.md", nil)
 	require.NoError(t, err)
 
-	// Index never reconciled → marker lags HEAD → IndexHealthy is false.
+	// Drain so HEAD advances past the writes+move; the incremental index updated
+	// records but never reconciled, so its marker still lags HEAD -> IndexHealthy
+	// is false. (Without the drain, HEAD never advances, marker == HEAD, and the
+	// index is correctly healthy — see TestIndexHealthy_FalseWhenStale.) This is
+	// what forces fixLinks down the truth-scan path the test means to exercise.
+	drain(t, s)
 	require.False(t, s.IndexHealthy("ns", "proj"))
 
 	s.fixLinks(context.Background(), "ns", "proj", "old.md", "new.md")

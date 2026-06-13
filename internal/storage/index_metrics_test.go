@@ -136,7 +136,11 @@ func TestFixLinksRepairStats_TruthscanLookupWhenUnhealthy(t *testing.T) {
 	_, _, err = s.Move(context.Background(), "sess", "ns", "proj", "old.md", "new.md", nil)
 	require.NoError(t, err)
 
-	// Index never reconciled -> unhealthy -> referrers come from the truth-scan.
+	// Drain so HEAD advances past the writes+move; the index was never reconciled,
+	// so its marker lags HEAD -> IndexHealthy is false -> referrers come from the
+	// truth-scan. (Without the drain, marker == HEAD and the index is correctly
+	// healthy — see TestIndexHealthy_FalseWhenStale.)
+	drain(t, s)
 	require.False(t, s.IndexHealthy("ns", "proj"))
 	s.fixLinks(context.Background(), "ns", "proj", "old.md", "new.md")
 
