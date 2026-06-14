@@ -1,9 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import type { RailView } from './ActivityRail'
 import { FileTree } from './FileTree'
-import { useProjectsQuery, useTreeQuery } from '../lib/queries'
-import type { ProjectInfo } from '../lib/types'
+import { useTreeQuery } from '../lib/queries'
 import styles from './Sidebar.module.css'
 
 // Pull the active namespace/project (if any) from the URL.
@@ -22,7 +21,6 @@ function useActiveFilePath(): string | null {
 
 export function Sidebar({ view }: { view: RailView }) {
   const ref = useActiveProjectRef()
-  if (view === 'namespaces') return <NamespacesView />
   if (view === 'search') return <SearchView projectRef={ref} />
   if (view === 'history') return <HistoryView />
   return <ExplorerView />
@@ -86,44 +84,6 @@ function ExplorerForProject({
             activePath={activePath}
           />
         )}
-      </div>
-    </div>
-  )
-}
-
-function NamespacesView() {
-  const { data: projects = [] } = useProjectsQuery()
-  const grouped = useMemo(() => {
-    const map = new Map<string, ProjectInfo[]>()
-    for (const p of projects) {
-      if (!map.has(p.namespace)) map.set(p.namespace, [])
-      map.get(p.namespace)!.push(p)
-    }
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-  }, [projects])
-
-  return (
-    <div className={styles.pane}>
-      <SectionHeader>Namespaces</SectionHeader>
-      <div className={styles.list}>
-        {grouped.map(([ns, nsProjects]) => (
-          <div key={ns} className={styles.nsGroup}>
-            <Link to="/" search={{ ns }} className={styles.nsLink}>
-              {ns}
-              <span className={styles.count}>{nsProjects.length}</span>
-            </Link>
-            {nsProjects.map((p) => (
-              <Link
-                key={p.name}
-                to="/p/$namespace/$project"
-                params={{ namespace: p.namespace, project: p.name }}
-                className={styles.nsProject}
-              >
-                {p.name}
-              </Link>
-            ))}
-          </div>
-        ))}
       </div>
     </div>
   )

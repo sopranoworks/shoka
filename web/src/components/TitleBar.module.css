@@ -40,19 +40,31 @@
 
 .brand {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  align-items: center;
+  gap: 5px;
   font-weight: 600;
   color: var(--c-text);
   flex: none;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
 .brand:hover {
+  background: var(--c-hover);
   text-decoration: none;
+}
+.brand:hover .brandWord {
+  color: var(--c-text);
 }
 .brandWord {
   font-size: var(--fs-sm);
-  color: var(--c-text-faint);
+  color: var(--c-text-dim);
   letter-spacing: 0.04em;
+}
+.brandChevron {
+  font-size: var(--fs-md);
+  line-height: 1;
+  color: var(--c-text-faint);
 }
 
 .crumbs {
@@ -138,9 +150,6 @@
     display: none;
   }
   .right {
-    display: none;
-  }
-  .brandWord {
     display: none;
   }
   .crumbLink {

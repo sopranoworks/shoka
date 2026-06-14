@@ -100,8 +100,17 @@ export function TitleBar({
           </svg>
         </button>
 
-        <Link to="/" className={styles.brand}>
-          蕉<span className={styles.brandWord}>shoka</span>
+        <Link
+          to="/"
+          activeOptions={{ exact: true }}
+          className={styles.brand}
+          title="Back to repositories"
+          aria-label="Back to repositories"
+        >
+          <span className={styles.brandWord}>Shoka</span>
+          <span className={styles.brandChevron} aria-hidden="true">
+            ›
+          </span>
         </Link>
 
         <nav className={styles.crumbs} aria-label="Breadcrumb">
