@@ -19,6 +19,15 @@ function useActiveFilePath(): string | null {
   return m ? m[1] : null
 }
 
+// The active file path across the file-bearing routes (blob view, editor, and
+// the history view itself), so the History panel can offer that file's history
+// whichever way the user arrived. Returns the raw (still URL-encoded) splat.
+function useActiveFileAnyView(): string | null {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const m = pathname.match(/^\/p\/[^/]+\/[^/]+\/(?:blob|edit|history)\/(.*)$/)
+  return m && m[1] ? decodeURIComponent(m[1]) : null
+}
+
 export function Sidebar({ view }: { view: RailView }) {
   const ref = useActiveProjectRef()
   if (view === 'search') return <SearchView projectRef={ref} />
@@ -144,11 +153,55 @@ function SearchView({ projectRef }: { projectRef: { ns: string; proj: string } |
   )
 }
 
+// The History panel is the entry point to the per-file History view (commit list
+// → version → diff), mirroring how the Search panel is an entry point to the
+// search route. History is per-file, so it needs a file in context; with one
+// open it links to /p/$ns/$proj/history/$path, otherwise it prompts to open a
+// file. (The full commit list / version / diff render on that route's page.)
 function HistoryView() {
+  const ref = useActiveProjectRef()
+  const file = useActiveFileAnyView()
+
+  if (!ref) {
+    return (
+      <div className={styles.pane}>
+        <SectionHeader>History</SectionHeader>
+        <div className={styles.empty}>
+          Open a project to view file history.
+          <br />
+          <Link to="/" className={styles.emptyLink}>
+            Choose a project →
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (!file) {
+    return (
+      <div className={styles.pane}>
+        <SectionHeader>History</SectionHeader>
+        <div className={styles.empty}>
+          Open a file to view its commit history.
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={styles.pane}>
       <SectionHeader>History</SectionHeader>
-      <div className={styles.empty}>Commit history lands in a later session.</div>
+      <div className={styles.empty}>
+        Commit history for <code>{file}</code>.
+        <br />
+        <Link
+          to="/p/$namespace/$project/history/$"
+          params={{ namespace: ref.ns, project: ref.proj, _splat: file }}
+          className={styles.emptyLink}
+        >
+          View history →
+        </Link>
+      </div>
     </div>
   )
 }

@@ -5,12 +5,19 @@ import (
 	"time"
 )
 
-// CommitInfo represents Git commit metadata.
+// CommitInfo represents Git commit metadata. Shoka's commits (commit.go) set the
+// author and committer to DIFFERENT identities: the Author is the agent (or the
+// owning user on a web SAVE_FILE), while the Committer is always the owning user.
+// Author/Date carry the author signature; Committer/CommitDate carry the
+// committer signature — both surfaced so a consumer can show whichever it needs
+// (the Web UI History view shows committer + commit date).
 type CommitInfo struct {
-	Hash    string    `json:"hash"`
-	Author  string    `json:"author"`
-	Date    time.Time `json:"date"`
-	Message string    `json:"message"`
+	Hash       string    `json:"hash"`
+	Author     string    `json:"author"`
+	Date       time.Time `json:"date"`
+	Message    string    `json:"message"`
+	Committer  string    `json:"committer"`
+	CommitDate time.Time `json:"commitDate"`
 }
 
 // FileDiff is the structured diff of a single file between two explicit,

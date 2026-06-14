@@ -927,10 +927,12 @@ func (s *FSGitStorage) GetHistory(namespace, projectName, path string, limit int
 			return nil, fmt.Errorf("failed to get next commit: %w", err)
 		}
 		history = append(history, CommitInfo{
-			Hash:    c.Hash.String(),
-			Author:  c.Author.Name,
-			Date:    c.Author.When,
-			Message: c.Message,
+			Hash:       c.Hash.String(),
+			Author:     c.Author.Name,
+			Date:       c.Author.When,
+			Message:    c.Message,
+			Committer:  c.Committer.Name,
+			CommitDate: c.Committer.When,
 		})
 	}
 	return history, nil

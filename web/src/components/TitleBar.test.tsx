@@ -31,8 +31,13 @@ function renderTitleBar(initialPath: string) {
     path: '/p/$namespace/$project',
     component: () => null,
   })
+  const historyRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/p/$namespace/$project/history/$',
+    component: () => null,
+  })
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute, projectRoute]),
+    routeTree: rootRoute.addChildren([indexRoute, projectRoute, historyRoute]),
     history: createMemoryHistory({ initialEntries: [initialPath] }),
   })
   // The test router is a distinct instance from the app's; cast to the
@@ -116,5 +121,17 @@ describe('TitleBar breadcrumb', () => {
     expect(proj).toHaveAttribute('aria-current', 'page')
     expect(within(nav).queryByRole('link', { name: 'design' })).toBeNull()
     expect(screen.queryByText('repositories')).toBeNull()
+  })
+
+  // B-31 phase 2: the History route is a mode of an open file, so the trail must
+  // still read ns(link) / proj(link) / file(current) — not collapse to bare
+  // "Shoka" (which the pre-fix regex, matching only blob|edit, would have caused).
+  it('keeps the full trail on a history route', async () => {
+    renderTitleBar('/p/shoka/design/history/spec.md')
+    const nav = await screen.findByRole('navigation', { name: 'Breadcrumb' })
+    expect(within(nav).getByRole('link', { name: 'shoka' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'design' })).toBeInTheDocument()
+    const file = within(nav).getByText('spec.md')
+    expect(file).toHaveAttribute('aria-current', 'page')
   })
 })

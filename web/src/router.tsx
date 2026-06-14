@@ -10,6 +10,7 @@ import { RouteFallback } from './components/RouteFallback'
 import { RepoListPage } from './pages/RepoListPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { BlobPage } from './pages/BlobPage'
+import { HistoryPage } from './pages/HistoryPage'
 
 // The editor route pulls in CodeMirror and the @codemirror/lang-* packages —
 // the heaviest part of the app. Lazy-loading it (and the search route) keeps
@@ -84,6 +85,33 @@ const blobRoute = createRoute({
   component: BlobPage,
 })
 
+// "/p/$namespace/$project/history/$" per-file History view (B-31 phase 2): the
+// file's commit list → a chosen version's content → a diff of two versions. The
+// selected version (?at=), the diff pair (?from=/?to=), and the panel mode
+// (?mode=version|diff) live in the URL so reload/back/forward restore the view.
+interface HistorySearch {
+  at?: string
+  from?: string
+  to?: string
+  mode?: 'version' | 'diff'
+}
+
+const historyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/p/$namespace/$project/history/$',
+  validateSearch: (search: Record<string, unknown>): HistorySearch => {
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+    const mode = search.mode === 'version' || search.mode === 'diff' ? search.mode : undefined
+    return {
+      ...(str(search.at) ? { at: str(search.at) } : {}),
+      ...(str(search.from) ? { from: str(search.from) } : {}),
+      ...(str(search.to) ? { to: str(search.to) } : {}),
+      ...(mode ? { mode } : {}),
+    }
+  },
+  component: HistoryPage,
+})
+
 // "/p/$namespace/$project/edit/$" editor for an existing file (session 3). Same
 // splat convention as blob, so view↔edit is a navigation between sibling routes.
 const editRoute = createRoute({
@@ -134,6 +162,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   projectRoute,
   blobRoute,
+  historyRoute,
   editRoute,
   searchRoute,
   newFileRoute,
@@ -163,10 +192,12 @@ export {
   indexRoute,
   projectRoute,
   blobRoute,
+  historyRoute,
   editRoute,
   searchRoute,
   newFileRoute,
   connectionsRoute,
   type IndexSearch,
   type SearchSearch,
+  type HistorySearch,
 }

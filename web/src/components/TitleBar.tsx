@@ -22,7 +22,9 @@ function useCrumbs(): Crumb[] {
   })
   const crumbs: Crumb[] = []
 
-  const m = pathname.match(/^\/p\/([^/]+)\/([^/]+)(?:\/(?:blob|edit)\/(.*))?$/)
+  const m = pathname.match(
+    /^\/p\/([^/]+)\/([^/]+)(?:\/(?:blob|edit|history)\/(.*))?$/,
+  )
   if (!m) {
     // List route ("/"). Reflect the ?ns= namespace filter as the current
     // position so the trail tracks the filter (`Shoka › <ns>`); bare "/" with

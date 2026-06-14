@@ -2,7 +2,14 @@ import { useQuery, useQueries } from '@tanstack/react-query'
 import { wsClient } from './wsClient'
 import { flattenFilePaths } from './tree'
 import { listConnections } from './oauthOps'
-import type { ProjectInfo, FileNode, FileContent } from './types'
+import type {
+  ProjectInfo,
+  FileNode,
+  FileContent,
+  HistoryPayload,
+  FileAtContent,
+  FileDiff,
+} from './types'
 
 // The OAuth connections list query key — invalidated after a revoke so the list
 // reflects the store. There is no oauth NOTIFY (the store emits none), so a
@@ -54,6 +61,72 @@ export function useFileQuery(namespace: string, project: string, path: string) {
         namespace,
         projectName: project,
         path,
+      }),
+  })
+}
+
+// --- History (B-31 phase 2) -------------------------------------------------
+// All three read over the same lock-free storage reads as the rest of the app.
+// Keys: ['history', ns, project, path], ['file-at', ns, project, path, hash],
+// ['diff', ns, project, path, from, to]. Immutable-commit reads, so once fetched
+// they need no invalidation (a commit's content never changes).
+
+// The commit list for one file (subject + commit date + committer, no file list).
+export function useHistoryQuery(
+  namespace: string,
+  project: string,
+  path: string,
+) {
+  return useQuery({
+    queryKey: ['history', namespace, project, path],
+    enabled: path !== '',
+    queryFn: () =>
+      wsClient().request<HistoryPayload>('GET_HISTORY', {
+        namespace,
+        projectName: project,
+        path,
+      }),
+  })
+}
+
+// A file's content at one explicit commit (read-only version view).
+export function useFileAtQuery(
+  namespace: string,
+  project: string,
+  path: string,
+  hash: string,
+) {
+  return useQuery({
+    queryKey: ['file-at', namespace, project, path, hash],
+    enabled: path !== '' && hash !== '',
+    queryFn: () =>
+      wsClient().request<FileAtContent>('GET_FILE_AT', {
+        namespace,
+        projectName: project,
+        path,
+        hash,
+      }),
+  })
+}
+
+// The structured diff of one file between two explicit commits.
+export function useDiffQuery(
+  namespace: string,
+  project: string,
+  path: string,
+  fromHash: string,
+  toHash: string,
+) {
+  return useQuery({
+    queryKey: ['diff', namespace, project, path, fromHash, toHash],
+    enabled: path !== '' && fromHash !== '' && toHash !== '',
+    queryFn: () =>
+      wsClient().request<FileDiff>('GET_DIFF', {
+        namespace,
+        projectName: project,
+        path,
+        fromHash,
+        toHash,
       }),
   })
 }

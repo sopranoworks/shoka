@@ -102,6 +102,60 @@ export interface OAuthDenied {
   message: string
 }
 
+// One commit row in the GET_HISTORY response (mirrors Go's ui.HistoryCommit).
+// The summary is subject + commit date + committer ONLY — Shoka commits one file
+// per commit, so there is no changed-file list. commitDate is an RFC3339 string.
+export interface HistoryCommit {
+  hash: string
+  subject: string
+  committer: string
+  commitDate: string
+}
+
+// The GET_HISTORY response payload (mirrors Go's ui.HistoryPayload).
+export interface HistoryPayload {
+  commits: HistoryCommit[]
+}
+
+// The GET_FILE_AT response payload (mirrors Go's ui.FileAtPayload): one version's
+// content at an explicit commit.
+export interface FileAtContent {
+  path: string
+  hash: string
+  content: string
+}
+
+// One line of a diff hunk (mirrors Go's storage.DiffLine). text carries no
+// trailing newline.
+export interface DiffLine {
+  op: 'equal' | 'add' | 'delete'
+  text: string
+}
+
+// One contiguous run of changed lines with context (mirrors Go's
+// storage.DiffHunk). A pure-add hunk has oldStart/oldLines 0; a pure-delete hunk
+// has newStart/newLines 0.
+export interface DiffHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: DiffLine[]
+}
+
+// The GET_DIFF response payload (mirrors Go's storage.FileDiff). When a cap is
+// hit the diff is omitted (hunks empty/absent) and the reason is in `suppressed`
+// — the UI shows a banner rather than implying an empty diff.
+export interface FileDiff {
+  path: string
+  fromHash: string
+  toHash: string
+  status: 'modified' | 'added' | 'deleted' | (string & {})
+  binary: boolean
+  suppressed?: '' | 'binary' | 'too_large' | 'timeout' | (string & {})
+  hunks?: DiffHunk[]
+}
+
 // react-arborist node, derived from FileNode via lib/tree.
 export interface TreeNode {
   id: string // unique within a project; for files this is the file path

@@ -494,6 +494,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleCreateProject(client, wsMsg.Payload)
 		case MsgSearchFiles:
 			m.handleSearchFiles(client, wsMsg.Payload)
+		case MsgGetHistory:
+			m.handleGetHistory(client, wsMsg.Payload)
+		case MsgGetFileAt:
+			m.handleGetFileAt(client, wsMsg.Payload)
+		case MsgGetDiff:
+			m.handleGetDiff(client, wsMsg.Payload)
 		case MsgMoveFile:
 			m.handleMoveFile(client, wsMsg.Payload)
 		case MsgOAuthList:
