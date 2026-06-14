@@ -13,6 +13,40 @@ type CommitInfo struct {
 	Message string    `json:"message"`
 }
 
+// FileDiff is the structured diff of a single file between two explicit,
+// immutable commits (see StorageService.DiffVersions). It is per-hunk rather
+// than raw unified text so both the WebUI diff view and a future get_diff MCP
+// tool can consume a typed result without parsing. When a cap is hit the diff
+// is omitted (Hunks empty) and the reason is surfaced via Suppressed — the
+// content is never silently truncated.
+type FileDiff struct {
+	Path       string     `json:"path"`
+	FromHash   string     `json:"fromHash"`
+	ToHash     string     `json:"toHash"`
+	Status     string     `json:"status"`               // "modified" | "added" | "deleted"
+	Binary     bool       `json:"binary"`               // true => Hunks empty, Suppressed set
+	Suppressed string     `json:"suppressed,omitempty"` // "" | "binary" | "too_large" | "timeout"
+	Hunks      []DiffHunk `json:"hunks,omitempty"`
+}
+
+// DiffHunk is a contiguous run of changed lines with surrounding context,
+// carrying 1-based start lines and line counts for each side (unified-diff
+// semantics: a pure-add hunk has OldStart/OldLines 0; a pure-delete hunk has
+// NewStart/NewLines 0).
+type DiffHunk struct {
+	OldStart int        `json:"oldStart"`
+	OldLines int        `json:"oldLines"`
+	NewStart int        `json:"newStart"`
+	NewLines int        `json:"newLines"`
+	Lines    []DiffLine `json:"lines"`
+}
+
+// DiffLine is one line of a hunk. Text carries no trailing newline.
+type DiffLine struct {
+	Op   string `json:"op"` // "equal" | "add" | "delete"
+	Text string `json:"text"`
+}
+
 // StorageService defines the interface for project and file management with Git support.
 type StorageService interface {
 	// CreateProject initializes a new project directory and a Git repository within it.
@@ -98,6 +132,14 @@ type StorageService interface {
 
 	// ReadFileAtVersion reads the content of a file at a specific Git commit hash.
 	ReadFileAtVersion(namespace, projectName, path, hash string) (string, error)
+
+	// DiffVersions computes the structured diff of path between two explicit,
+	// immutable commits (fromHash → toHash). It opens an independent PlainOpen
+	// handle and reads only immutable objects under a deadline, holding NO lock
+	// — the same lock-free model as GetHistory / ReadFileAtVersion. Caps
+	// (timeout/too_large/binary) are surfaced via FileDiff.Suppressed, never
+	// silently truncated. A bad/unknown hash returns a typed error.
+	DiffVersions(ctx context.Context, namespace, projectName, path, fromHash, toHash string) (FileDiff, error)
 
 	// New methods for Phase 3 (optimistic concurrency)
 
