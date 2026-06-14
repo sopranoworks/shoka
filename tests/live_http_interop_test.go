@@ -395,6 +395,20 @@ func runLifecycle(t *testing.T, mcpURL string, httpClient *http.Client, phase st
 		t.Fatalf("[%s] ListTools returned no tools", phase)
 	}
 
+	// B-31 phase 3 registration guard: the real server must advertise the History
+	// tools get_history and its diff sibling get_diff, so agents can list and diff
+	// versions over MCP. Asserted on the existing ListTools result (no extra
+	// round-trip).
+	advertised := make(map[string]bool, len(lt.Tools))
+	for _, tool := range lt.Tools {
+		advertised[tool.Name] = true
+	}
+	for _, must := range []string{"get_history", "get_diff"} {
+		if !advertised[must] {
+			t.Fatalf("[%s] advertised tool set is missing %q (have %d tools)", phase, must, len(lt.Tools))
+		}
+	}
+
 	// Select the first tool callable with empty arguments (no required fields).
 	var picked string
 	for _, tool := range lt.Tools {

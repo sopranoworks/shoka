@@ -624,6 +624,11 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	}, tools.LoggedTool(logger, "read_file_at_version", tools.ReadFileAtVersionHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "get_diff",
+		Description: "Diff two explicit versions of a SINGLE file (Shoka commits one file per commit), returning a structured per-hunk diff. Pass from_hash and to_hash as commit hashes obtained from get_history. The result carries status (modified/added/deleted) and per-line ops (equal/add/delete) with line numbers; if the diff is omitted the 'suppressed' field says why (binary/too_large/timeout) rather than returning an empty diff.",
+	}, tools.LoggedTool(logger, "get_diff", tools.GetDiffHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "read_summary",
 		Description: "Get a context-efficient summary of a Markdown file (frontmatter, first heading, short excerpt, size, etag, modified_at) without its full body",
 	}, tools.LoggedTool(logger, "read_summary", tools.ReadSummaryHandler(s)))

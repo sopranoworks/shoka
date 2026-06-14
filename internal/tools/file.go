@@ -526,3 +526,56 @@ func ReadFileAtVersionHandler(s storage.StorageService) func(context.Context, *m
 		return nil, ReadFileAtVersionOutput{Content: content}, nil
 	}
 }
+
+type GetDiffInput struct {
+	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
+	ProjectName string `json:"project_name" jsonschema:"required, the name of the project"`
+	Path        string `json:"path" jsonschema:"required, the path to the single file to diff"`
+	FromHash    string `json:"from_hash" jsonschema:"required, the 'from' version's Git commit hash (as returned by get_history)"`
+	ToHash      string `json:"to_hash" jsonschema:"required, the 'to' version's Git commit hash (as returned by get_history)"`
+}
+
+// GetDiffOutput carries the structured diff of one file between two explicit
+// versions. When a cap is hit the diff is omitted and Diff.Suppressed
+// (binary/too_large/timeout) says why — never an empty diff masquerading as "no
+// changes".
+type GetDiffOutput struct {
+	Diff storage.FileDiff `json:"diff"`
+}
+
+// GetDiffHandler is a THIN wrapper over the lock-free storage.DiffVersions: it
+// validates args and returns the structured FileDiff for one file between two
+// explicit commit hashes. All diffing / caps / immutable-object / lock-free
+// behaviour is inherited from phase 1 unchanged (Anchor 1: go-git stays in
+// internal/storage). Version hashes come from get_history. The single-file model
+// (Shoka commits one file per commit) means this diffs ONE file's two versions.
+func GetDiffHandler(s storage.StorageService) func(context.Context, *mcp.CallToolRequest, GetDiffInput) (*mcp.CallToolResult, GetDiffOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input GetDiffInput) (*mcp.CallToolResult, GetDiffOutput, error) {
+		if input.ProjectName == "" || input.Path == "" || input.FromHash == "" || input.ToHash == "" {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "project_name, path, from_hash, and to_hash are required"}},
+				IsError: true,
+			}, GetDiffOutput{}, nil
+		}
+		if input.Namespace == "" {
+			input.Namespace = "default"
+		}
+
+		if !utils.IsValidName(input.Namespace) || !utils.IsValidName(input.ProjectName) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "invalid namespace or project_name: only alphanumeric, hyphen, and underscore are allowed"}},
+				IsError: true,
+			}, GetDiffOutput{}, nil
+		}
+
+		diff, err := s.DiffVersions(ctx, input.Namespace, input.ProjectName, input.Path, input.FromHash, input.ToHash)
+		if err != nil {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to diff versions: %v", err)}},
+				IsError: true,
+			}, GetDiffOutput{}, nil
+		}
+
+		return nil, GetDiffOutput{Diff: diff}, nil
+	}
+}
