@@ -15,11 +15,14 @@
 package httplog
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -209,6 +212,19 @@ func (w *statusRecorder) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack keeps this recorder capability-symmetric with reqtrace.statusRecorder
+// (the WebSocket analog of the Flush above). It is PREVENTIVE, not load-bearing
+// today: this recorder wraps the MCP listeners only, which upgrade no WebSockets.
+// Forwarding Hijack here ensures a future reorder — or any WS served behind an
+// httplog-wrapped listener — cannot silently re-introduce the B-31 upgrade break.
+func (w *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("httplog: underlying ResponseWriter does not support hijacking")
+	}
+	return hj.Hijack()
 }
 
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }

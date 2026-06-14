@@ -14,12 +14,15 @@
 package reqtrace
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -265,6 +268,21 @@ func (w *statusRecorder) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack lets a terminal handler take over the connection — the WebSocket upgrade
+// path on the Web listener (/ws/ui and /drafts/). It is the WebSocket analog of the
+// Flush above: the recorder must stay transparent to the capabilities the underlying
+// writer offers, or it silently breaks them. gorilla/websocket's Upgrade asserts
+// http.Hijacker DIRECTLY on the writer it is handed (it does not walk Unwrap /
+// http.ResponseController), so without this method every upgrade through this
+// outermost middleware fails with "response does not implement http.Hijacker" (B-31).
+func (w *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("reqtrace: underlying ResponseWriter does not support hijacking")
+	}
+	return hj.Hijack()
 }
 
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }

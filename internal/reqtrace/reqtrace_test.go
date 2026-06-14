@@ -140,6 +140,21 @@ func TestMiddleware_PreservesFlusher(t *testing.T) {
 	}
 }
 
+func TestMiddleware_PreservesHijacker(t *testing.T) {
+	// The WebSocket-upgrade contract (B-31): the ResponseWriter the inner handler
+	// receives must expose http.Hijacker, or gorilla/websocket's Upgrade (a direct
+	// w.(http.Hijacker) assertion) 500s and /ws/ui + /drafts/ break. Sibling of
+	// TestMiddleware_PreservesFlusher above.
+	var ok bool
+	h := Middleware(slog.New(slog.DiscardHandler), "web", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, ok = w.(http.Hijacker)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ws/ui", nil))
+	if !ok {
+		t.Error("expected the wrapped ResponseWriter to expose http.Hijacker for WebSocket upgrades")
+	}
+}
+
 func TestMiddleware_NilLoggerDoesNotPanic(t *testing.T) {
 	h := Middleware(nil, "web", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
