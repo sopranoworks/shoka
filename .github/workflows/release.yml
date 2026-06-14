@@ -1,0 +1,59 @@
+name: release
+
+# Tag-triggered release: cross-build amd64+arm64, package a .deb per arch with
+# nfpm, and publish both to the GitHub Release for the tag.
+#
+# NOTE: this fires only when the operator pushes a `v*` tag to a reachable origin.
+# `main` is local-only today, so committing this file does not start any CI.
+#
+# The build relies on the COMMITTED server/dist (the web UI is embedded via
+# //go:embed) — there is no Vite step. Rebuild + commit server/dist before tagging
+# if the web UI changed.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # least-privilege: only needs to create/upload the Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'   # keep in sync with go.mod
+
+      - name: Cross-build binaries (cgo-free, one runner, no QEMU)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags '-s -w' -o dist/shoka ./cmd/shoka
+          go build -trimpath -ldflags '-s -w' -o dist/shoka-cli ./cmd/shoka-cli
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Package .deb
+        env:
+          ARCH: ${{ matrix.goarch }}
+        run: |
+          # Debian versions must not carry a leading 'v' (tag v1.2.3 -> 1.2.3).
+          VERSION="${GITHUB_REF_NAME#v}"
+          export ARCH VERSION
+          nfpm package -f nfpm.yaml -p deb -t "dist/shoka_${VERSION}_${ARCH}.deb"
+
+      - name: Publish .deb to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb

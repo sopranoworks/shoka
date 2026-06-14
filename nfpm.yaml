@@ -1,0 +1,55 @@
+# nfpm v2 manifest for the Shoka .deb (B-46 distribution line, step 2).
+# Built per-arch by .github/workflows/release.yml on a tag push. ARCH and VERSION
+# are supplied via the environment (nfpm expands ${VAR}); the binaries are
+# cross-built into ./dist first (CGO_ENABLED=0, no Vite — server/dist is embedded).
+#
+# Debian layout: binaries in /usr/bin (package-managed; the /usr/local/bin path in
+# docs/operations/shoka.service is the MANUAL-install template and is not used here).
+# Build locally with, e.g.:
+#   ARCH=amd64 VERSION=0.0.0 nfpm package -f nfpm.yaml -p deb -t dist/shoka.deb
+
+name: shoka
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Shoka maintainers <shoka@users.noreply.github.com>
+description: |
+  Shoka — Markdown MCP backend server.
+  Serves project documentation (milestones, specs, instructions) to coding agents
+  over MCP (Streamable HTTP), with filesystem namespace/project isolation, atomic
+  git-versioned writes, and a web UI. Ships the server (shoka) and the maintenance
+  CLI (shoka-cli).
+homepage: https://github.com/shoka/mcp-server
+
+contents:
+  - src: dist/shoka
+    dst: /usr/bin/shoka
+    file_info:
+      mode: 0755
+  - src: dist/shoka-cli
+    dst: /usr/bin/shoka-cli
+    file_info:
+      mode: 0755
+  - src: packaging/shoka.yaml
+    dst: /etc/shoka/shoka.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0644
+  - src: packaging/shoka.service
+    dst: /lib/systemd/system/shoka.service
+    file_info:
+      mode: 0644
+  # State dir owned by the service account (the user is created in postinst).
+  - dst: /var/lib/shoka
+    type: dir
+    file_info:
+      mode: 0750
+      owner: shoka
+      group: shoka
+
+scripts:
+  postinstall: packaging/postinst.sh
+  preremove: packaging/prerm.sh
+  postremove: packaging/postrm.sh

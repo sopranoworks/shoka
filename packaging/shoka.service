@@ -1,0 +1,52 @@
+# Shoka — systemd service unit (DEB-PACKAGE VARIANT)
+#
+# Shipped by the shoka .deb to /lib/systemd/system/shoka.service. It is the
+# package-managed sibling of the manual-install template docs/operations/shoka.service
+# (which keeps /usr/local/bin/shoka). The ONLY difference is the ExecStart path:
+# the deb installs the binary to /usr/bin/shoka per Debian policy. Everything else
+# matches the B-67 template.
+#
+# Shoka runs in the FOREGROUND and handles SIGTERM/SIGINT with a graceful shutdown;
+# systemd owns backgrounding, restart, and log capture. After install:
+#   sudo systemctl enable --now shoka
+#   journalctl -u shoka -f            # logs: Shoka writes to stderr -> journald
+
+[Unit]
+Description=Shoka Markdown MCP Server
+Documentation=https://github.com/shoka/mcp-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/shoka --config /etc/shoka/shoka.yaml
+User=shoka
+Group=shoka
+WorkingDirectory=/var/lib/shoka
+
+# Restart on a crash, not on a clean exit.
+Restart=on-failure
+RestartSec=5
+
+# CRITICAL — graceful-shutdown window. systemd stops the service by sending
+# SIGTERM (the KillSignal default), which is exactly the signal Shoka handles.
+# On stop Shoka drains IN ORDER:
+#   HTTP in-flight requests (up to 5s)
+#     -> leftover-relocation wait (B-42)
+#     -> WAL worker pool drain (UP TO 30s — internal/storage/fs_git.go:329)
+#     -> store/index close
+#     -> webhook delivery drain.
+# A TimeoutStopSec shorter than ~35s lets systemd SIGKILL mid-drain and risk a
+# dirty stop (a half-flushed WAL). 45s = 30s pool + 5s HTTP + margin.
+# DO NOT lower this below ~40s.
+TimeoutStopSec=45
+
+# --- Optional hardening: uncomment after confirming paths/permissions ---
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=true
+# PrivateTmp=true
+# ReadWritePaths=/var/lib/shoka
+
+[Install]
+WantedBy=multi-user.target

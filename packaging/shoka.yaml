@@ -1,0 +1,18 @@
+# Shoka configuration — shipped by the .deb as /etc/shoka/shoka.yaml.
+#
+# This is a conffile (dpkg type config|noreplace): your edits survive package
+# upgrades. It carries the minimal REQUIRED fields with FHS-absolute paths; see
+# the fully-commented reference at shoka.example.yaml (and docs/OPERATIONS.md) for
+# every optional knob (auth, OAuth, translation, drift/lost+found/index, WAL, …).
+
+server:
+  http:
+    listen: ":8080"        # web UI + WebSocket endpoints
+  mcp:
+    plain:
+      listen: ":8081"      # MCP (Streamable HTTP) endpoint for agents, at /mcp
+  log:
+    output: "stderr"       # stderr -> journald (journalctl -u shoka); set "file" to self-rotate
+
+storage:
+  base_dir: "/var/lib/shoka"   # project repositories live at <base_dir>/<namespace>/<projectName>
