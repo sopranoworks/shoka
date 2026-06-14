@@ -295,12 +295,46 @@ func startLiveServer(t *testing.T, build func() liveLaunch) func() {
 	return func() {}
 }
 
+// serverStartedListener reports whether the launched server's captured startup
+// log shows it began serving the named transport. runServer logs
+// `msg="starting server" name=<name> addr=…` exactly once per listener it opens
+// (MCP-plain / MCP-oauth / Web), and never for a transport whose listen address
+// is absent from the config.
+//
+// This is the RACE-FREE replacement for asserting a NEGATIVE via portBound on a
+// port the test does not own. A "must NOT bind" check that picks a free port,
+// releases it, and probes that nothing is listening is unsound under the
+// whole-module `go test -race -count=30 ./...` gate: between freePort releasing
+// the port and the probe, another package's harness can grab and hold that exact
+// ephemeral port, flipping the probe true. (c6d0e97 hardened only the must-BIND
+// direction — relaunching when OUR server loses a chosen port — and deliberately
+// left waitMCPPort as the bare must/must-not probe; the must-not direction is the
+// residual race this closes.) The server's own log is authoritative about which
+// listeners it opened and owns no contended port, so the signal is deterministic.
+//
+// Ordering is safe: each listener's line is logged in runServer's goroutine
+// immediately before its ListenAndServe, and slog writes straight to the log
+// file (no userspace buffering), so by the time startLiveServer has returned
+// (every configured port accepts) every opened listener's line is on disk, and
+// an un-opened listener's line is permanently absent.
+func serverStartedListener(t *testing.T, logPath, name string) bool {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("serverStartedListener: read log %s: %v", logPath, err)
+	}
+	return strings.Contains(string(data), `msg="starting server" name=`+name+" ")
+}
+
 // waitMCPPort polls a loopback TCP port until it accepts a connection or the
 // timeout elapses. It is a bare port-presence probe used by the two-transport tests
-// to assert that a configured port DOES bind and an unconfigured one does NOT
-// (portBound). It is deliberately NOT the server-readiness path — that is
-// awaitReady, which also watches the child process so a crashed start is detected
-// immediately instead of waited out.
+// to assert that a configured port DOES bind (portBound) — a POSITIVE check on a
+// port THIS test owns (the server holds it for the test's lifetime), so it is
+// race-free. The NEGATIVE "must not bind" direction is NOT done this way — see
+// serverStartedListener — because a port the test does not own can be transiently
+// bound by another package under the whole-module gate. It is deliberately NOT the
+// server-readiness path — that is awaitReady, which also watches the child process
+// so a crashed start is detected immediately instead of waited out.
 func waitMCPPort(mcpPort int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	addr := fmt.Sprintf("127.0.0.1:%d", mcpPort)

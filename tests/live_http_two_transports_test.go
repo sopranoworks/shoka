@@ -122,7 +122,17 @@ func getStatus(t *testing.T, port int, path, bearer string) int {
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// A dedicated client with keep-alives disabled, NOT the shared
+	// http.DefaultClient. The default client pools idle keep-alive connections
+	// keyed by host:port; across this suite's many short-lived servers on
+	// ephemeral ports — which recycle under the whole-module gate — a pooled
+	// connection to a now-stopped server can be reused for a fresh server that
+	// happens to land on the same recycled port, surfacing as a spurious
+	// "connection reset by peer". A fresh, non-pooling client dials anew every
+	// call, so no stale connection can be reused.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	return resp.StatusCode
@@ -132,19 +142,24 @@ func getStatus(t *testing.T, port int, path, bearer string) int {
 // plain port binds; no OAuth discovery is served on it.
 func TestLiveMCP_PlainOnly_Presence(t *testing.T) {
 	baseDir := t.TempDir()
-	var httpPort, plainPort, oauthPort int
+	var httpPort, plainPort int
+	var logPath string
 	cleanup := startLiveServer(t, func() liveLaunch {
 		httpPort = freePort(t)
 		plainPort = freePort(t)
-		oauthPort = freePort(t) // never configured — must NOT bind
 		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, plainPort, false, 0, nil)
-		logPath := filepath.Join(t.TempDir(), "server.log")
+		logPath = filepath.Join(t.TempDir(), "server.log")
 		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, plainPort}}
 	})
 	defer cleanup()
 
 	assert.True(t, portBound(plainPort, 2*time.Second), "plain port must bind")
-	assert.False(t, portBound(oauthPort, 500*time.Millisecond), "unconfigured oauth port must NOT bind")
+	// The OAuth transport is unconfigured: assert the server never STARTED an
+	// oauth listener (its authoritative startup log), not that some unowned
+	// ephemeral port stays free — the latter is the residual race (see
+	// serverStartedListener). The plain listener IS started, proving the signal.
+	assert.True(t, serverStartedListener(t, logPath, "MCP-plain"), "plain listener must be started")
+	assert.False(t, serverStartedListener(t, logPath, "MCP-oauth"), "unconfigured oauth listener must NOT be started")
 
 	// The plain port serves no OAuth discovery document.
 	assert.NotEqual(t, http.StatusOK, getStatus(t, plainPort, serverurl.ProtectedResourceMetadataPath(), ""),
@@ -158,19 +173,23 @@ func TestLiveMCP_PlainOnly_Presence(t *testing.T) {
 // OAuth port binds; discovery + AS endpoints are reachable on it unauthenticated.
 func TestLiveMCP_OAuthOnly_Presence(t *testing.T) {
 	baseDir := t.TempDir()
-	var httpPort, plainPort, oauthPort int
+	var httpPort, oauthPort int
+	var logPath string
 	cleanup := startLiveServer(t, func() liveLaunch {
 		httpPort = freePort(t)
-		plainPort = freePort(t) // never configured — must NOT bind
 		oauthPort = freePort(t)
 		cfgPath := writeTwoTransportConfig(t, baseDir, httpPort, 0, false, oauthPort, nil)
-		logPath := filepath.Join(t.TempDir(), "server.log")
+		logPath = filepath.Join(t.TempDir(), "server.log")
 		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, oauthPort}}
 	})
 	defer cleanup()
 
 	assert.True(t, portBound(oauthPort, 2*time.Second), "oauth port must bind")
-	assert.False(t, portBound(plainPort, 500*time.Millisecond), "unconfigured plain port must NOT bind")
+	// The plain transport is unconfigured: assert via the server's startup log
+	// that no plain listener was started (race-free), not that an unowned port
+	// stays free (see serverStartedListener). The oauth listener IS started.
+	assert.True(t, serverStartedListener(t, logPath, "MCP-oauth"), "oauth listener must be started")
+	assert.False(t, serverStartedListener(t, logPath, "MCP-plain"), "unconfigured plain listener must NOT be started")
 
 	// Discovery (RFC 9728) and AS metadata (RFC 8414) are reachable without a token.
 	assert.Equal(t, http.StatusOK, getStatus(t, oauthPort, serverurl.ProtectedResourceMetadataPath(), ""),
