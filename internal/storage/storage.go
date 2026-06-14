@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -147,6 +148,17 @@ type StorageService interface {
 	// (timeout/too_large/binary) are surfaced via FileDiff.Suppressed, never
 	// silently truncated. A bad/unknown hash returns a typed error.
 	DiffVersions(ctx context.Context, namespace, projectName, path, fromHash, toHash string) (FileDiff, error)
+
+	// SnapshotProject writes a gzip-compressed tar archive of the project's
+	// IMMUTABLE HEAD tree to w. It opens an independent PlainOpen handle and reads
+	// only immutable tree/blob objects, holding NO lock across the archive — the
+	// same lock-free model as GetHistory / ReadFileAtVersion / DiffVersions; the
+	// only wait is a bounded best-effort WaitForWAL beforehand so HEAD is current.
+	// The archive is the committed tree, so uncommitted working-tree noise
+	// (.DS_Store, .claude/, the catalog db) is excluded by construction. An empty
+	// or commit-less project yields a valid empty archive. The write is honoured
+	// up to ctx cancellation.
+	SnapshotProject(ctx context.Context, namespace, projectName string, w io.Writer) error
 
 	// New methods for Phase 3 (optimistic concurrency)
 
