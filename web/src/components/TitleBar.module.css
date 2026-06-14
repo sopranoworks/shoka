@@ -80,8 +80,12 @@
   align-items: center;
   min-width: 0;
 }
-.crumbDim {
-  color: var(--c-text-faint);
+.crumbCurrent {
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
 }
 .sep {
   color: var(--c-text-faint);
@@ -96,9 +100,6 @@
 }
 .crumbLink:hover {
   color: var(--c-accent);
-}
-.crumbItem:last-child .crumbLink {
-  color: var(--c-text);
 }
 
 .commandCentre {
@@ -152,7 +153,8 @@
   .right {
     display: none;
   }
-  .crumbLink {
+  .crumbLink,
+  .crumbCurrent {
     max-width: 90px;
   }
 }

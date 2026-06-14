@@ -8,13 +8,30 @@ type Crumb =
   | { label: string; kind: 'project'; ns: string; proj: string }
   | { label: string; kind: 'blob'; ns: string; proj: string; path: string }
 
-// Derive breadcrumb segments (namespace / project / path) from the current URL.
+// Derive breadcrumb segments (namespace / project / path) from the current
+// route, purely from the URL — pathname for the project/file routes and the
+// ?ns= search param for the list route — so the trail can never disagree with
+// what the page is showing. The header reads as one position trail continuing
+// the brand: `Shoka › <namespace> / <project> / <file>`. `Shoka` itself is the
+// all-projects home, so there is no standalone label segment; the list root "/"
+// yields no crumbs at all.
 function useCrumbs(): Crumb[] {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const search = useRouterState({
+    select: (s) => s.location.search as { ns?: string },
+  })
   const crumbs: Crumb[] = []
 
   const m = pathname.match(/^\/p\/([^/]+)\/([^/]+)(?:\/(?:blob|edit)\/(.*))?$/)
-  if (!m) return crumbs
+  if (!m) {
+    // List route ("/"). Reflect the ?ns= namespace filter as the current
+    // position so the trail tracks the filter (`Shoka › <ns>`); bare "/" with
+    // no filter yields no segment, leaving the brand standing alone.
+    if (typeof search.ns === 'string' && search.ns) {
+      crumbs.push({ label: search.ns, kind: 'ns', ns: search.ns })
+    }
+    return crumbs
+  }
 
   const ns = decodeURIComponent(m[1])
   const proj = decodeURIComponent(m[2])
@@ -76,6 +93,10 @@ export function TitleBar({
   onToggleSidebar: () => void
 }) {
   const crumbs = useCrumbs()
+  // The brand's trailing chevron is the join between `Shoka` (home) and the
+  // trail; it is shown ONLY when a breadcrumb segment follows, so the
+  // all-projects home reads as a bare `Shoka` with no dangling `›`.
+  const hasCrumbs = crumbs.length > 0
   const { openPalette } = usePalette()
 
   return (
@@ -104,26 +125,35 @@ export function TitleBar({
           to="/"
           activeOptions={{ exact: true }}
           className={styles.brand}
-          title="Back to repositories"
-          aria-label="Back to repositories"
+          title="All projects"
+          aria-label="All projects"
         >
           <span className={styles.brandWord}>Shoka</span>
-          <span className={styles.brandChevron} aria-hidden="true">
-            ›
-          </span>
+          {hasCrumbs && (
+            <span className={styles.brandChevron} aria-hidden="true">
+              ›
+            </span>
+          )}
         </Link>
 
         <nav className={styles.crumbs} aria-label="Breadcrumb">
-          {crumbs.length === 0 ? (
-            <span className={styles.crumbDim}>repositories</span>
-          ) : (
-            crumbs.map((c, i) => (
+          {crumbs.map((c, i) => {
+            // The last segment is the current position: a non-link span marked
+            // aria-current="page"; every ancestor is a link.
+            const isLast = i === crumbs.length - 1
+            return (
               <span key={i} className={styles.crumbItem}>
                 {i > 0 && <span className={styles.sep}>/</span>}
-                <CrumbLink crumb={c} />
+                {isLast ? (
+                  <span className={styles.crumbCurrent} aria-current="page">
+                    {c.label}
+                  </span>
+                ) : (
+                  <CrumbLink crumb={c} />
+                )}
               </span>
-            ))
-          )}
+            )
+          })}
         </nav>
       </div>
 

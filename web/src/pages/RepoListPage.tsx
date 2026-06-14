@@ -16,7 +16,7 @@ export function RepoListPage() {
   return (
     <div className={styles.page}>
       <header className={styles.head}>
-        <h1 className={styles.title}>Repositories</h1>
+        <h1 className={styles.title}>Projects</h1>
         <p className={styles.sub}>
           {isPending
             ? 'Loading…'

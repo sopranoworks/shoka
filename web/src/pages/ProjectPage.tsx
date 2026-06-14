@@ -20,7 +20,7 @@ export function ProjectPage() {
           </code>{' '}
           could not be loaded.
         </p>
-        <Link to="/">← Back to repositories</Link>
+        <Link to="/">← Back to projects</Link>
       </div>
     )
   }

@@ -41,3 +41,49 @@ func TestDistBundleHasNoStrayKanji(t *testing.T) {
 		t.Fatal("no embedded dist files were checked — is server/dist built and embedded?")
 	}
 }
+
+// TestDistBundleHasNoRepositoryWording guards B-31's terminology fix: the Web UI
+// used GitHub-style "repository" wording (the list heading "Repositories", the
+// brand label "Back to repositories", the sidebar "Choose a repository") even
+// though Shoka's terms are project + namespace. This walks the ACTUAL embedded
+// server/dist tree and fails if any of those specific removed phrases reappear
+// in a shipped asset — catching a stale (un-rebuilt) bundle at the artifact
+// level, independent of the source-level Vitest tests. The needles are the exact
+// removed user-facing strings (not the bare word "repository"), so legitimate
+// "project"/"namespace" copy never false-positives. RED before the fix (the
+// phrases were minified into dist/assets/index-*.js); GREEN after the rebuilt
+// bundle drops them.
+func TestDistBundleHasNoRepositoryWording(t *testing.T) {
+	needles := [][]byte{
+		[]byte("Repositories"),         // the list heading
+		[]byte("Choose a repository"),  // the sidebar empty-state prompt
+		[]byte("Back to repositories"), // the brand label + project-page back link
+	}
+
+	checked := 0
+	err := fs.WalkDir(DistFS, "dist", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, readErr := fs.ReadFile(DistFS, path)
+		if readErr != nil {
+			return readErr
+		}
+		checked++
+		for _, needle := range needles {
+			if bytes.Contains(data, needle) {
+				t.Errorf("embedded bundle file %q contains the removed repository wording %q; replace it with Shoka's project/namespace terms in web/src and rebuild server/dist", path, needle)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk embedded dist: %v", err)
+	}
+	if checked == 0 {
+		t.Fatal("no embedded dist files were checked — is server/dist built and embedded?")
+	}
+}

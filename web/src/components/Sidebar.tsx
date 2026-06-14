@@ -42,7 +42,7 @@ function ExplorerView() {
           No project open.
           <br />
           <Link to="/" className={styles.emptyLink}>
-            Choose a repository →
+            Choose a project →
           </Link>
         </div>
       </div>
@@ -105,7 +105,7 @@ function SearchView({ projectRef }: { projectRef: { ns: string; proj: string } |
           Open a project to search its files.
           <br />
           <Link to="/" className={styles.emptyLink}>
-            Choose a repository →
+            Choose a project →
           </Link>
         </div>
       </div>

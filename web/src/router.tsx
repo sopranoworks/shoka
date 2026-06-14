@@ -54,7 +54,7 @@ const rootRoute = createRootRoute({
   ),
 })
 
-// "/" repository list, with a typed search param ?ns= for the namespace filter.
+// "/" project list, with a typed search param ?ns= for the namespace filter.
 interface IndexSearch {
   ns?: string
 }
