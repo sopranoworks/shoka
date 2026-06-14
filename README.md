@@ -34,6 +34,42 @@ Beyond basic file CRUD, Shoka provides — see the linked docs for the detail:
   committed to Git asynchronously by a background worker pool.
   ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).)
 
+## Install
+
+Three ways to install Shoka, in order of preference for a server:
+
+- **Debian/Ubuntu `.deb` — recommended for Linux servers.** Download the package
+  for your architecture (`amd64` or `arm64`) from the
+  [GitHub Releases](https://github.com/sopranoworks/shoka/releases) page and install it:
+
+  ```sh
+  sudo apt install ./shoka_<version>_<arch>.deb
+  ```
+
+  This installs the `shoka` server and `shoka-cli` to `/usr/bin`, an
+  `/etc/shoka/shoka.yaml` config, a systemd unit, and a `/var/lib/shoka` data
+  directory owned by a dedicated `shoka` user (it does **not** auto-start). Then
+  edit the config and `sudo systemctl enable --now shoka`. Full walkthrough:
+  [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Installation*).
+
+- **`go install` — any platform with a Go toolchain.** Install both binaries
+  directly from the repository:
+
+  ```sh
+  go install github.com/sopranoworks/shoka/cmd/shoka@latest
+  go install github.com/sopranoworks/shoka/cmd/shoka-cli@latest
+  ```
+
+  They land in `~/go/bin` (`$(go env GOBIN)` — put it on your `PATH`). `@latest`
+  takes the newest tagged release; pin an exact one with `@vX.Y.Z`. See
+  [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Installation*).
+
+- **Homebrew (macOS) — planned.** A source formula for `brew install` /
+  `brew services` is planned; none is published yet. On macOS today, use
+  `go install` or build from source (*Quick start* below).
+
+To build and run from source for development, see *Quick start* below.
+
 ## Quick start
 
 Shoka is a Go program. Build it and run it against a config file:

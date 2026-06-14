@@ -4,6 +4,100 @@ How to run, configure, and maintain Shoka. For the design see
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md); for the wire interface see
 [`docs/contracts/mcp-v1.md`](contracts/mcp-v1.md).
 
+## Installation
+
+Shoka ships in three channels. For a Linux server the `.deb` is the recommended
+path; `go install` works anywhere a Go toolchain does; Homebrew is a planned
+convenience for macOS. Building from source is covered under [*Running*](#running)
+below and in the README *Quick start*.
+
+### Debian / Ubuntu package (`.deb`) — recommended for Linux servers
+
+Each tagged release publishes a `.deb` per architecture (`amd64`, `arm64`) on the
+[GitHub Releases](https://github.com/sopranoworks/shoka/releases) page. Download the
+one for your architecture and install it:
+
+```sh
+sudo apt install ./shoka_<version>_<arch>.deb
+# or: sudo dpkg -i ./shoka_<version>_<arch>.deb && sudo apt-get -f install
+```
+
+`<version>`/`<arch>` are placeholders — substitute the actual release, e.g.
+`shoka_1.2.3_amd64.deb`.
+
+The package installs:
+
+| Path | What |
+|------|------|
+| `/usr/bin/shoka` | the server binary |
+| `/usr/bin/shoka-cli` | the maintenance CLI |
+| `/etc/shoka/shoka.yaml` | config **conffile** — your edits survive package upgrades |
+| `/lib/systemd/system/shoka.service` | the systemd unit (`ExecStart=/usr/bin/shoka`, `TimeoutStopSec=45`) |
+| `/var/lib/shoka` | data dir (project repos), owned `shoka:shoka`, mode `0750` |
+
+Installation creates a dedicated `shoka` system user/group (owning
+`/var/lib/shoka`) and does **not** start the service. Edit the config, then enable
+and start it:
+
+```sh
+sudoedit /etc/shoka/shoka.yaml       # set listen ports, base_dir, etc.
+sudo systemctl enable --now shoka    # start now + on boot
+systemctl status shoka
+journalctl -u shoka -f               # logs: Shoka -> stderr -> journald
+```
+
+The shipped config defaults to the web UI on `:8080`, the plain MCP transport on
+`:8081`, logs to journald (`output: stderr`), and `base_dir: /var/lib/shoka`. Tune
+it like any other `shoka.yaml` — see the
+[*Configuration reference*](#configuration-reference) — and validate edits before
+restart with `shoka --config-check --config /etc/shoka/shoka.yaml`.
+
+**Removing.** `sudo apt remove shoka` stops and disables the service but **keeps**
+`/var/lib/shoka` (your repositories) and the `shoka` account. `sudo apt purge shoka`
+additionally deletes `/var/lib/shoka` and removes the account — irreversible, so
+back up `base_dir` first if you mean to keep the repos.
+
+> **Package path vs manual path.** The `.deb` places the binary at `/usr/bin/shoka`
+> (Debian policy for package-managed binaries) and its unit's `ExecStart` points
+> there. The manual-install templates under
+> [*Running as a service*](#running-as-a-service-systemd--launchd) instead use
+> `/usr/local/bin/shoka`. Use one or the other — don't pair a package-installed
+> binary with a hand-placed unit (or vice versa) whose `ExecStart` names the other
+> path.
+
+### `go install` — any platform with a Go toolchain
+
+Install the `shoka` server and the `shoka-cli` maintenance CLI directly from the
+repository:
+
+```sh
+go install github.com/sopranoworks/shoka/cmd/shoka@latest
+go install github.com/sopranoworks/shoka/cmd/shoka-cli@latest
+```
+
+Both land in `~/go/bin` (more precisely `$(go env GOBIN)`, default `~/go/bin`;
+ensure it is on your `PATH`). The module path is the repository's own
+(`github.com/sopranoworks/shoka`, matching `go.mod`), so `go` fetches and builds it
+straight from the origin. `@latest` resolves to the newest tagged release; pin an
+exact release with `@vX.Y.Z` for reproducibility. (`@latest` needs the repository
+reachable at its origin and a published tag; from a local-only checkout with no
+remote yet, build it instead with `go build ./cmd/shoka` from the clone.)
+
+A `go install`ed Shoka is **user-scoped**: there is no system service, config, or
+data dir unless you create them. Run it with an explicit config —
+`shoka --config /path/to/shoka.yaml` — and point `storage.base_dir` wherever you
+want the repos. To run it as a managed service, either use the `.deb` (above) or
+follow the manual [*Running as a service*](#running-as-a-service-systemd--launchd)
+templates (which expect the binary at `/usr/local/bin/shoka`).
+
+### Homebrew (macOS) — planned
+
+A Homebrew source formula (`brew install shoka` plus a `brew services` block for
+launchd) is **planned** as a convenience for macOS, which is a weak host for a
+long-running server. **No formula is published yet.** On macOS today, install with
+`go install` (above) or build from source, and manage the process with the launchd
+template in [*Running as a service*](#running-as-a-service-systemd--launchd).
+
 ## Running
 
 ```sh
