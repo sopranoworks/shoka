@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/sopranoworks/shoka/internal/notify"
 )
 
 // TestLostFoundWorker_EndToEnd exercises the full worker path through the real

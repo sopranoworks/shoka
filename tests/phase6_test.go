@@ -9,9 +9,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/storage"
-	"github.com/shoka/mcp-server/internal/tools"
-	"github.com/shoka/mcp-server/internal/webhooks"
+	"github.com/sopranoworks/shoka/internal/storage"
+	"github.com/sopranoworks/shoka/internal/tools"
+	"github.com/sopranoworks/shoka/internal/webhooks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

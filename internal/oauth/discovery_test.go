@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/auth"
+	"github.com/sopranoworks/shoka/internal/auth"
 )
 
 func getJSON(t *testing.T, h http.Handler, target string) (int, string, map[string]any) {

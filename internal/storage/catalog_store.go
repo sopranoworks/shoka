@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/storage/catalog"
+	"github.com/sopranoworks/shoka/internal/storage/catalog"
 )
 
 // catalogPath returns the on-disk path of a project's catalog DB:

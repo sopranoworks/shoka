@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/shoka/mcp-server/internal/reqtrace"
-	"github.com/shoka/mcp-server/internal/tokenfp"
+	"github.com/sopranoworks/shoka/internal/reqtrace"
+	"github.com/sopranoworks/shoka/internal/tokenfp"
 )
 
 // mcpSessionIDHeader is the Streamable HTTP session identifier header (MCP spec).

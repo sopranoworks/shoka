@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/sopranoworks/shoka/internal/storage"
 )
 
 func newPartialEditStorage(t *testing.T) *storage.FSGitStorage {

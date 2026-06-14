@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/shoka/mcp-server/internal/storage"
-	"github.com/shoka/mcp-server/internal/utils"
+	"github.com/sopranoworks/shoka/internal/storage"
+	"github.com/sopranoworks/shoka/internal/utils"
 )
 
 // Store is the subset of storage the admin API needs.

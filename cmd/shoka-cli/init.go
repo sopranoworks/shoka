@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shoka/mcp-server/internal/clientconfig"
+	"github.com/sopranoworks/shoka/internal/clientconfig"
 )
 
 // defaultInitSkills is the skill set `init` installs by default: the WIRED PAIR.

@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/shoka/mcp-server/internal/clientconfig"
+	"github.com/sopranoworks/shoka/internal/clientconfig"
 )
 
 // cmdAuth stores the display-once access token (minted by the server's admin-gated

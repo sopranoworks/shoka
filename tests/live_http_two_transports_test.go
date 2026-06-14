@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/serverurl"
-	"github.com/shoka/mcp-server/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/internal/serverurl"
+	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

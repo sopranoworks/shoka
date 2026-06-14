@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/shoka/mcp-server/internal/utils"
+	"github.com/sopranoworks/shoka/internal/utils"
 )
 
 // Manager handles draft persistence via WebSockets.

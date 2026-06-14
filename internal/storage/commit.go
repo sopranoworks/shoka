@@ -13,9 +13,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/storage/wal"
-	"github.com/shoka/mcp-server/internal/storage/walworker"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/storage/wal"
+	"github.com/sopranoworks/shoka/internal/storage/walworker"
 )
 
 // emptyTreeHash is git's canonical empty-tree object hash.

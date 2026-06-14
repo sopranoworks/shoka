@@ -1,4 +1,4 @@
-module github.com/shoka/mcp-server
+module github.com/sopranoworks/shoka
 
 go 1.26.2
 

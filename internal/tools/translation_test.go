@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/sopranoworks/shoka/internal/storage"
 )
 
 type mockTranslationService struct{}

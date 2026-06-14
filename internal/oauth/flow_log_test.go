@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/storage/oauthstore"
-	"github.com/shoka/mcp-server/internal/tokenfp"
+	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/internal/tokenfp"
 )
 
 // B-52: the WHOLE OAuth flow must be legible — /authorize (request, consent, code

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/tokenfp"
+	"github.com/sopranoworks/shoka/internal/tokenfp"
 )
 
 // B-54 discriminator: the one-way token fingerprint logged at the auth stage lets the

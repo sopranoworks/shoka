@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/sopranoworks/shoka/internal/notify"
 )
 
 // This file implements B-45b: scoped MCP change notifications. An MCP client

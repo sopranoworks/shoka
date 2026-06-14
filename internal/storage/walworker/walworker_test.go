@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/storage/wal"
+	"github.com/sopranoworks/shoka/internal/storage/wal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

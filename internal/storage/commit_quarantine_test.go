@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/shoka/mcp-server/internal/notify"
-	"github.com/shoka/mcp-server/internal/storage/wal"
-	"github.com/shoka/mcp-server/internal/storage/walworker"
+	"github.com/sopranoworks/shoka/internal/notify"
+	"github.com/sopranoworks/shoka/internal/storage/wal"
+	"github.com/sopranoworks/shoka/internal/storage/walworker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

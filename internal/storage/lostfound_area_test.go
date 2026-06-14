@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/sopranoworks/shoka/internal/notify"
 )
 
 var fixedTS = time.Date(2026, 6, 2, 11, 55, 50, 0, time.UTC)

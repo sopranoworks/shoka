@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/storage"
-	"github.com/shoka/mcp-server/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/storage"
+	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
 )
 
 // The OAUTH_LIST/OAUTH_REVOKE requests (the 2026-06-03 MCP OAuth (c) directive)

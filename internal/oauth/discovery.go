@@ -21,8 +21,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/shoka/mcp-server/internal/reqtrace"
-	"github.com/shoka/mcp-server/internal/serverurl"
+	"github.com/sopranoworks/shoka/internal/reqtrace"
+	"github.com/sopranoworks/shoka/internal/serverurl"
 )
 
 // RegistrationMode selects which client-registration posture the AS metadata

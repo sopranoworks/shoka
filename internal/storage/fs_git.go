@@ -17,14 +17,14 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/notify"
-	"github.com/shoka/mcp-server/internal/storage/catalog"
-	"github.com/shoka/mcp-server/internal/storage/filelock"
-	"github.com/shoka/mcp-server/internal/storage/index"
-	"github.com/shoka/mcp-server/internal/storage/wal"
-	"github.com/shoka/mcp-server/internal/storage/walworker"
-	"github.com/shoka/mcp-server/internal/utils"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/notify"
+	"github.com/sopranoworks/shoka/internal/storage/catalog"
+	"github.com/sopranoworks/shoka/internal/storage/filelock"
+	"github.com/sopranoworks/shoka/internal/storage/index"
+	"github.com/sopranoworks/shoka/internal/storage/wal"
+	"github.com/sopranoworks/shoka/internal/storage/walworker"
+	"github.com/sopranoworks/shoka/internal/utils"
 )
 
 // FSGitStorage implements StorageService with the file system as the ground

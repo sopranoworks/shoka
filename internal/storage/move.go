@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/notify"
-	"github.com/shoka/mcp-server/internal/storage/wal"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/notify"
+	"github.com/sopranoworks/shoka/internal/storage/wal"
 )
 
 // Move is the redesign's move entry point (used by the §8 tool layer and /ws/ui).

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/notify"
-	"github.com/shoka/mcp-server/internal/storage/catalog"
+	"github.com/sopranoworks/shoka/internal/notify"
+	"github.com/sopranoworks/shoka/internal/storage/catalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

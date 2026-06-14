@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/sopranoworks/shoka/internal/storage"
 )
 
 // LoggedTool wraps an MCP tool handler with structured logging and panic

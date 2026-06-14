@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shoka/mcp-server/internal/config"
-	"github.com/shoka/mcp-server/internal/storage/wal"
+	"github.com/sopranoworks/shoka/internal/config"
+	"github.com/sopranoworks/shoka/internal/storage/wal"
 )
 
 // runCLI dispatches the `shoka project` and `shoka wal` subcommand groups.

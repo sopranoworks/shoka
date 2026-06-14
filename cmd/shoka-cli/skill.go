@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/shoka/mcp-server/internal/skillcache"
+	"github.com/sopranoworks/shoka/internal/skillcache"
 )
 
 // cmdSkill dispatches the `skill` subcommand group — the apt-model skill

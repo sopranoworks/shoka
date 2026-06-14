@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/storage/index"
+	"github.com/sopranoworks/shoka/internal/storage/index"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

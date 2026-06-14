@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/shoka/mcp-server/internal/clientconfig"
-	"github.com/shoka/mcp-server/internal/mcpclient"
+	"github.com/sopranoworks/shoka/internal/clientconfig"
+	"github.com/sopranoworks/shoka/internal/mcpclient"
 )
 
 // cmdProjects connects with the stored token and calls the read-only list_projects

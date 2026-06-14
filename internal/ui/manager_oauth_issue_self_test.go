@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/storage"
 )
 
 // OAUTH_ISSUE_SELF (B-46b §2.2) is the admin-gated "token to self" mint: the only

@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/shoka/mcp-server/internal/auth"
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/notify"
-	"github.com/shoka/mcp-server/internal/storage"
-	"github.com/shoka/mcp-server/internal/utils"
+	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/notify"
+	"github.com/sopranoworks/shoka/internal/storage"
+	"github.com/sopranoworks/shoka/internal/utils"
 )
 
 // withWriteIdentity stamps the per-request commit identity on ctx for a mutating

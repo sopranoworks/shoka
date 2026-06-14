@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/sopranoworks/shoka/internal/notify"
 )
 
 // makeLeftover creates a repo-less <ns>/<name>/ directory (a nested file inside, no

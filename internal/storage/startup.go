@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/shoka/mcp-server/internal/storage/catalog"
+	"github.com/sopranoworks/shoka/internal/storage/catalog"
 )
 
 // projectRef identifies a project on disk.

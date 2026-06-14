@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/markdown"
-	"github.com/shoka/mcp-server/internal/tools"
+	"github.com/sopranoworks/shoka/internal/markdown"
+	"github.com/sopranoworks/shoka/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/auth"
-	"github.com/shoka/mcp-server/internal/config"
-	"github.com/shoka/mcp-server/internal/httplog"
-	"github.com/shoka/mcp-server/internal/oauth"
-	"github.com/shoka/mcp-server/internal/reqtrace"
+	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/config"
+	"github.com/sopranoworks/shoka/internal/httplog"
+	"github.com/sopranoworks/shoka/internal/oauth"
+	"github.com/sopranoworks/shoka/internal/reqtrace"
 )
 
 // B-57 — the LIVE-PATH proof the B-56 unit test could not give.

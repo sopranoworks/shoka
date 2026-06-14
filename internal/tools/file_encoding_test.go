@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/sopranoworks/shoka/internal/storage"
 )
 
 func newWriteStorage(t *testing.T) *storage.FSGitStorage {

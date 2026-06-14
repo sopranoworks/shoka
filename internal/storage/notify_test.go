@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

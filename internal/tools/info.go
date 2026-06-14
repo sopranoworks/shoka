@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/shoka/mcp-server/internal/config"
+	"github.com/sopranoworks/shoka/internal/config"
 )
 
 // WALInfoProvider exposes the write-ahead log status surfaced by get_server_info

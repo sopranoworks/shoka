@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/shoka/mcp-server/internal/drafts"
+	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

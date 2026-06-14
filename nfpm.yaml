@@ -21,7 +21,7 @@ description: |
   over MCP (Streamable HTTP), with filesystem namespace/project isolation, atomic
   git-versioned writes, and a web UI. Ships the server (shoka) and the maintenance
   CLI (shoka-cli).
-homepage: https://github.com/shoka/mcp-server
+homepage: https://github.com/sopranoworks/shoka
 
 contents:
   - src: dist/shoka

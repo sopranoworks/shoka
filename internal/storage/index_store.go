@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shoka/mcp-server/internal/storage/index"
+	"github.com/sopranoworks/shoka/internal/storage/index"
 )
 
 // The storage-side accessors for the per-project derivative index (the

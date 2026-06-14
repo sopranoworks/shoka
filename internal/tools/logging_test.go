@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/shoka/mcp-server/internal/storage"
+	"github.com/sopranoworks/shoka/internal/storage"
 )
 
 func bufLogger(t *testing.T) (*slog.Logger, *bytes.Buffer) {

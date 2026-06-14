@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/notify"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/notify"
 )
 
 // newWorkerStorage builds storage with a notification center wired, plus an

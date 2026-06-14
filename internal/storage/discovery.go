@@ -13,7 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/utils/merkletrie"
-	"github.com/shoka/mcp-server/internal/storage/index"
+	"github.com/sopranoworks/shoka/internal/storage/index"
 )
 
 // FileChange describes a file modified since a point in time/history.

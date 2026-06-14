@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/auth"
-	"github.com/shoka/mcp-server/internal/httplog"
-	"github.com/shoka/mcp-server/internal/oauth"
-	"github.com/shoka/mcp-server/internal/reqtrace"
+	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/httplog"
+	"github.com/sopranoworks/shoka/internal/oauth"
+	"github.com/sopranoworks/shoka/internal/reqtrace"
 )
 
 // B-53 §2.6 — prove no path is exempt: a single correlated entry-to-exit trace

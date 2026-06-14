@@ -10,7 +10,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/shoka/mcp-server/internal/storage/index"
+	"github.com/sopranoworks/shoka/internal/storage/index"
 )
 
 // The index repair worker (the 2026-06-04 I1 directive): the fourth periodic

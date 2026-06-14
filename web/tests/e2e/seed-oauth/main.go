@@ -20,7 +20,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
 )
 
 func main() {

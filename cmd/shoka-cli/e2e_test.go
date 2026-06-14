@@ -13,15 +13,15 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/shoka/mcp-server/internal/auth"
-	"github.com/shoka/mcp-server/internal/clientconfig"
-	"github.com/shoka/mcp-server/internal/drafts"
-	"github.com/shoka/mcp-server/internal/identity"
-	"github.com/shoka/mcp-server/internal/mcpclient"
-	"github.com/shoka/mcp-server/internal/storage"
-	"github.com/shoka/mcp-server/internal/storage/oauthstore"
-	"github.com/shoka/mcp-server/internal/tools"
-	"github.com/shoka/mcp-server/internal/ui"
+	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/clientconfig"
+	"github.com/sopranoworks/shoka/internal/drafts"
+	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/mcpclient"
+	"github.com/sopranoworks/shoka/internal/storage"
+	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/internal/tools"
+	"github.com/sopranoworks/shoka/internal/ui"
 )
 
 // TestEndToEndCredentialPath proves the B-46b foundation end to end, in the B-45b

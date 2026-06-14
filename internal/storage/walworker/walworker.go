@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shoka/mcp-server/internal/storage/wal"
+	"github.com/sopranoworks/shoka/internal/storage/wal"
 )
 
 // ErrCommitPermanent marks a commit failure the entry can NEVER recover from, so

@@ -13,7 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/shoka/mcp-server/internal/identity"
+	"github.com/sopranoworks/shoka/internal/identity"
 )
 
 // Recovery business-intent operations.

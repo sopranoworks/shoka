@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shoka/mcp-server/internal/clientconfig"
+	"github.com/sopranoworks/shoka/internal/clientconfig"
 )
 
 // initTestEnv isolates the config dir, the cache dir, and the working dir so init's

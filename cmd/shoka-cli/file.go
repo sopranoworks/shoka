@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/shoka/mcp-server/internal/clientconfig"
-	"github.com/shoka/mcp-server/internal/mcpclient"
+	"github.com/sopranoworks/shoka/internal/clientconfig"
+	"github.com/sopranoworks/shoka/internal/mcpclient"
 )
 
 // cmdFile dispatches the `file` subcommand group. Today it has one member, `add`.
