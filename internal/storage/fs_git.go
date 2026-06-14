@@ -646,7 +646,11 @@ func (s *FSGitStorage) ListProjects(namespace string) ([]string, error) {
 	}
 	var projects []string
 	for _, entry := range entries {
-		if entry.IsDir() {
+		// Share the single project-eligibility predicate with discoverProjects (B-31)
+		// so the listing the UI/MCP uses can never diverge from discovery: a
+		// dot-prefixed Shoka-internal dir (.shoka-lostfound, .shoka, .drafts, .git) or
+		// a repo-less leftover is not a project and must not be listed.
+		if classifyProjectEntry(namespacePath, entry) == entryProject {
 			projects = append(projects, entry.Name())
 		}
 	}

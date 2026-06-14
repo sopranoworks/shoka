@@ -13,6 +13,7 @@ package tests
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -101,6 +102,86 @@ func TestLiveWebUI_WSUpgradeAndGetProjects(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("seeded project acme/widgets not in GET_PROJECTS response %+v; server log: %s",
+			projects, logPath)
+	}
+}
+
+// TestLiveWebUI_WSGetProjects_ExcludesLostFound is the B-31 phantom-project guard:
+// the per-project .shoka-lostfound quarantine area is NOT a project and must never
+// appear in the Web UI's project list. Before the shared-predicate fix the UI's
+// enumeration path (ListProjects/ListAllProjects) returned every directory verbatim,
+// so a populated .shoka-lostfound surfaced as a phantom "Healthy" project that then
+// failed to open ("invalid project name"). This drives the FULL server over the real
+// /ws/ui GET_PROJECTS path, so any future enumeration consumer that bypasses the
+// shared predicate fails here.
+func TestLiveWebUI_WSGetProjects_ExcludesLostFound(t *testing.T) {
+	baseDir := t.TempDir()
+
+	// Seed one real (git-backed) project so startup catalogs it.
+	seed, err := storage.NewFSGitStorage(baseDir)
+	if err != nil {
+		t.Fatalf("seed storage: %v", err)
+	}
+	if err := seed.CreateProject("acme", "widgets"); err != nil {
+		t.Fatalf("seed CreateProject: %v", err)
+	}
+	seed.WaitForWAL(10 * time.Second)
+	if err := seed.Close(); err != nil {
+		t.Fatalf("seed Close: %v", err)
+	}
+
+	// Populate the per-project lost+found area exactly as the worker lays it out:
+	// <base>/<ns>/.shoka-lostfound/<project>/<ts>/<rel-path>. It is a dot-prefixed
+	// Shoka-internal dir, never a project.
+	lf := filepath.Join(baseDir, "acme", ".shoka-lostfound", "widgets", "20260614T120000Z")
+	if err := os.MkdirAll(lf, 0o755); err != nil {
+		t.Fatalf("seed lost+found dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lf, "mystery.md"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed lost+found file: %v", err)
+	}
+
+	var httpPort int
+	var logPath string
+	cleanup := startLiveServer(t, func() liveLaunch {
+		httpPort = freePort(t)
+		mcpPort := freePort(t)
+		cfgPath := writeLiveConfig(t, baseDir, httpPort, mcpPort, "info", false, "")
+		logPath = filepath.Join(t.TempDir(), "server.log")
+		return liveLaunch{cfgPath: cfgPath, logPath: logPath, readyPorts: []int{httpPort, mcpPort}}
+	})
+	defer cleanup()
+	t.Logf("server log: %s", logPath)
+
+	wsURL := fmt.Sprintf("ws://127.0.0.1:%d/ws/ui", httpPort)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("/ws/ui upgrade failed: %v (http status=%d); server log: %s", err, status, logPath)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"GET_PROJECTS","payload":{}}`)); err != nil {
+		t.Fatalf("write GET_PROJECTS: %v", err)
+	}
+
+	projects := readProjects(t, conn)
+
+	foundReal := false
+	for _, p := range projects {
+		if p.Name == ".shoka-lostfound" {
+			t.Fatalf("GET_PROJECTS listed the .shoka-lostfound quarantine area as a phantom "+
+				"project: %+v; server log: %s", projects, logPath)
+		}
+		if p.Namespace == "acme" && p.Name == "widgets" {
+			foundReal = true
+		}
+	}
+	if !foundReal {
+		t.Fatalf("seeded project acme/widgets missing from GET_PROJECTS %+v; server log: %s",
 			projects, logPath)
 	}
 }

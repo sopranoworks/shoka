@@ -65,28 +65,29 @@ func (s *FSGitStorage) discoverProjects() ([]projectRef, []leftover) {
 		if !ns.IsDir() || strings.HasPrefix(ns.Name(), ".") {
 			continue
 		}
-		projEntries, err := os.ReadDir(filepath.Join(s.baseDir, ns.Name()))
+		nsPath := filepath.Join(s.baseDir, ns.Name())
+		projEntries, err := os.ReadDir(nsPath)
 		if err != nil {
 			continue
 		}
 		for _, pr := range projEntries {
-			if !pr.IsDir() || strings.HasPrefix(pr.Name(), ".") {
-				continue // skips "<project>.db" files and Shoka-internal dot dirs
-			}
-			projectPath := filepath.Join(s.baseDir, ns.Name(), pr.Name())
-			if !hasGitRepo(projectPath) {
+			// classifyProjectEntry is the shared predicate ListProjects also routes
+			// through (B-31): entrySkip = a "<project>.db" file or a Shoka-internal dot
+			// dir; entryLeftover = a repo-less remnant; entryProject = a real project.
+			switch classifyProjectEntry(nsPath, pr) {
+			case entryLeftover:
 				// Repo-less: not a project. Surface it (do not register it) so the
 				// post-startup step relocates it to lost+found. Include the sibling
 				// "<project>.db" when it is present so the two move together.
-				lf := leftover{namespace: ns.Name(), name: pr.Name(), treePath: projectPath}
+				lf := leftover{namespace: ns.Name(), name: pr.Name(), treePath: filepath.Join(nsPath, pr.Name())}
 				dbPath := s.catalogPath(ns.Name(), pr.Name())
 				if _, statErr := os.Stat(dbPath); statErr == nil {
 					lf.dbPath = dbPath
 				}
 				leftovers = append(leftovers, lf)
-				continue
+			case entryProject:
+				out = append(out, projectRef{namespace: ns.Name(), name: pr.Name()})
 			}
-			out = append(out, projectRef{namespace: ns.Name(), name: pr.Name()})
 		}
 	}
 	return out, leftovers
