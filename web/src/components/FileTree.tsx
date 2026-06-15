@@ -15,6 +15,8 @@ import {
   validateMoveInput,
 } from '../lib/moveController'
 import { useToast } from '../lib/toast'
+import { useTrashController } from '../lib/trashController'
+import { setDragSource, clearDragSource } from '../lib/dragSource'
 import type { FileNode, TreeNode } from '../lib/types'
 import styles from './FileTree.module.css'
 
@@ -56,9 +58,19 @@ export function FileTree({
 }) {
   const navigate = useNavigate()
   const { requestMove, executeMove } = useMoveController()
+  const { enqueuePath, items: trashItems } = useTrashController()
   const { add: addToast } = useToast()
   const data = useMemo(() => toTreeNodes(nodes), [nodes])
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
+
+  // Paths reserved in the trash (this project): their rows render pending
+  // (dimmed/struck) so a queued file reads as "on its way out" during the grace.
+  const reserved = useMemo(() => {
+    const s = new Set<string>()
+    for (const it of trashItems)
+      if (it.namespace === namespace && it.project === project) s.add(it.path)
+    return s
+  }, [trashItems, namespace, project])
 
   // Right-click context menu state: anchor position + the file it targets.
   const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(
@@ -180,6 +192,9 @@ export function FileTree({
           <Row
             {...props}
             activePath={activePath}
+            namespace={namespace}
+            project={project}
+            isReserved={props.node.data.isFile && reserved.has(props.node.data.path)}
             onContext={(e, node) => {
               if (!node.isFile) return
               e.preventDefault()
@@ -206,6 +221,9 @@ export function FileTree({
             })
           }
           onCopyLink={() => copyDeepLink(menu.node.path)}
+          onDelete={() =>
+            void enqueuePath({ namespace, project, path: menu.node.path })
+          }
         />
       )}
     </div>
@@ -219,6 +237,7 @@ function RowContextMenu({
   onRename,
   onMove,
   onCopyLink,
+  onDelete,
 }: {
   x: number
   y: number
@@ -226,6 +245,7 @@ function RowContextMenu({
   onRename: () => void
   onMove: () => void
   onCopyLink: () => void
+  onDelete: () => void
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -262,6 +282,18 @@ function RowContextMenu({
         {item('Rename…', onRename)}
         {item('Move…', onMove)}
         {item('Copy deep link', onCopyLink)}
+        {/* Delete… enqueues the file into the trash (deferred-execution grace);
+            it does NOT delete on click — Cancel in the trash pane reverses it
+            with no write, no conflict. */}
+        <button
+          className={`${styles.ctxItem} ${styles.ctxItemDanger}`}
+          onClick={() => {
+            onClose()
+            onDelete()
+          }}
+        >
+          Delete…
+        </button>
       </div>
     </>
   )
@@ -272,9 +304,15 @@ function Row({
   style,
   dragHandle,
   activePath,
+  namespace,
+  project,
+  isReserved,
   onContext,
 }: NodeRendererProps<TreeNode> & {
   activePath: string | null
+  namespace: string
+  project: string
+  isReserved: boolean
   onContext: (e: React.MouseEvent, node: TreeNode) => void
 }) {
   const isActive = node.data.isFile && node.data.path === activePath
@@ -284,6 +322,15 @@ function Row({
       style={style}
       className={styles.row}
       data-active={isActive}
+      data-reserved={isReserved}
+      // Record the dragged file so the activity-rail trash box (a drop target
+      // OUTSIDE this Tree) can learn which file was dropped — react-arborist's own
+      // drag still drives in-tree moves; this is additive (lib/dragSource).
+      onDragStart={() => {
+        if (node.data.isFile)
+          setDragSource({ namespace, project, path: node.data.path })
+      }}
+      onDragEnd={() => clearDragSource()}
       onClick={(e) => {
         e.stopPropagation()
         if (node.data.isFile) {

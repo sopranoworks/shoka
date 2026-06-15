@@ -1,0 +1,133 @@
+/* The collapsible trash pane, docked at the bottom-left above the activity-rail
+   trash box. Floating (not a PanelGroup panel) so it overlays without reshaping
+   the editor layout; it appears only while open. */
+.pane {
+  position: fixed;
+  left: calc(var(--rail-w) + var(--sp-2));
+  bottom: var(--sp-2);
+  z-index: 40;
+  width: 320px;
+  max-width: calc(100vw - var(--rail-w) - var(--sp-4));
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-bg-elev);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+}
+.title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--c-text-faint);
+}
+.close {
+  border: none;
+  background: transparent;
+  color: var(--c-text-faint);
+  font-size: 1.1rem;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.close:hover {
+  color: var(--c-text);
+  background: var(--c-hover);
+}
+
+.empty {
+  padding: var(--sp-3);
+  color: var(--c-text-faint);
+  font-size: 0.85rem;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  background: var(--c-bg);
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.path {
+  font-size: 0.85rem;
+  color: var(--c-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.countdown {
+  font-size: 0.75rem;
+  color: var(--c-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* LARGE, prominent, mis-click-safe Cancel: it fills the row, so the easy target
+   is "keep my file", never "destroy it". */
+.cancel {
+  flex: 1;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--c-bg);
+  background: var(--c-accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.cancel:hover {
+  filter: brightness(1.08);
+}
+
+/* Immediate execute: small, muted, separated — never adjacent-equal to Cancel. */
+.deleteNow {
+  flex: none;
+  padding: 4px var(--sp-2);
+  font-size: 0.72rem;
+  color: var(--c-text-faint);
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.deleteNow:hover {
+  color: var(--c-danger, #e5534b);
+  border-color: var(--c-danger, #e5534b);
+}

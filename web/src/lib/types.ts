@@ -54,6 +54,14 @@ export interface MoveAck {
   links_rewritten: number
 }
 
+// The DELETE_ACK response payload (mirrors Go's ui.DeleteAckPayload): the path
+// that was deleted, so the client drops it from its caches/tree and clears the
+// trash item. A stale if_match comes back as a CONFLICT frame instead (the file
+// changed during the client-side grace), never a DELETE_ACK.
+export interface DeleteAck {
+  path: string
+}
+
 // One SEARCH_RESULT match (mirrors Go's storage.SearchMatch). The snippet is a
 // short context window around the match, not a line; the backend does not carry
 // a line number, so the result UI shows path + snippet and navigates to the

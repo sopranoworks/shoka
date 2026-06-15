@@ -1,5 +1,5 @@
 import { wsClient } from './wsClient'
-import type { FileContent, SaveAck, ConflictPayload, MoveAck } from './types'
+import type { FileContent, SaveAck, ConflictPayload, MoveAck, DeleteAck } from './types'
 
 // Imperative /ws/ui file operations for the editor. Unlike the read queries
 // (lib/queries), these are user-initiated mutations, so they live outside
@@ -95,6 +95,49 @@ export async function moveFile(args: MoveArgs): Promise<MoveResult> {
     targetPath: p.target_path,
     newEtag: p.new_etag,
   }
+}
+
+// The single imperative delete op the trash queue funnels through (B-31). A
+// delete is DEFERRED behind a client-side grace timer: the trash queue calls this
+// ONLY when the timer elapses, carrying the if_match etag captured at enqueue, so
+// a cancelled reservation never reaches the wire (nothing to undo) and a file
+// edited mid-grace comes back as a CONFLICT (not a silent destroy). It wires the
+// existing /ws/ui DELETE_FILE over storage.Delete — a git-tracked hard-remove,
+// recoverable via History.
+export type DeleteResult =
+  | { ok: true; path: string }
+  | { ok: false; path: string; currentEtag: string; message: string }
+
+export interface DeleteArgs {
+  namespace: string
+  project: string
+  path: string
+  // The optimistic-concurrency etag captured when the file was enqueued into the
+  // trash. A stale etag (the file changed during the grace) → CONFLICT. Omitted
+  // only when no etag was captured (unchecked delete).
+  ifMatch?: string | null
+}
+
+export async function deleteFile(args: DeleteArgs): Promise<DeleteResult> {
+  const payload: Record<string, unknown> = {
+    namespace: args.namespace,
+    projectName: args.project,
+    path: args.path,
+  }
+  if (args.ifMatch != null) payload.if_match = args.ifMatch
+
+  const frame = await wsClient().requestFrame('DELETE_FILE', payload)
+  if (frame.type === 'CONFLICT') {
+    const p = frame.payload as ConflictPayload
+    return {
+      ok: false,
+      path: p.path,
+      currentEtag: p.current_etag,
+      message: p.message,
+    }
+  }
+  const p = frame.payload as DeleteAck
+  return { ok: true, path: p.path }
 }
 
 // A fresh read straight off /ws/ui (not the query cache), for "Discard mine,

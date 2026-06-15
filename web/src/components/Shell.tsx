@@ -9,6 +9,7 @@ import { Banner } from './Banner'
 import { Toaster } from './Toaster'
 import { NotifyBridge } from './NotifyBridge'
 import { MoveProvider } from '../lib/moveController'
+import { TrashProvider, useTrashController } from '../lib/trashController'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import {
   useRailSelect,
@@ -39,11 +40,12 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <MoveProvider>
+    <TrashProvider>
     <div className={styles.shell} data-narrow={isNarrow}>
       <TitleBar onToggleSidebar={() => setSidebarOpen((v) => !v)} />
 
       <div className={styles.body}>
-        <ActivityRail
+        <ShellRail
           active={rail}
           onSelect={onRailSelect}
           disabled={disabledItems}
@@ -87,6 +89,34 @@ export function Shell({ children }: { children: ReactNode }) {
       <Toaster />
       <NotifyBridge />
     </div>
+    </TrashProvider>
     </MoveProvider>
+  )
+}
+
+// The activity rail wired to the trash controller: the trash box shows the queued
+// count, opens/collapses the trash pane, and is the drag-to-trash drop target. It
+// lives below TrashProvider (a child of Shell's returned tree) so it can consume
+// the context Shell mounts.
+function ShellRail({
+  active,
+  onSelect,
+  disabled,
+}: {
+  active: RailView
+  onSelect: (v: RailView) => void
+  disabled: RailView[]
+}) {
+  const { items, paneOpen, togglePane, enqueueFromDrag } = useTrashController()
+  return (
+    <ActivityRail
+      active={active}
+      onSelect={onSelect}
+      disabled={disabled}
+      trashCount={items.length}
+      trashActive={paneOpen}
+      onTrashClick={togglePane}
+      onTrashDrop={enqueueFromDrag}
+    />
   )
 }

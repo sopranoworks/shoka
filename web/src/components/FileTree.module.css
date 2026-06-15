@@ -34,6 +34,15 @@
   color: var(--c-text);
 }
 
+/* A file reserved in the trash (mid-grace) reads as "on its way out": dimmed and
+   struck through until the countdown elapses or Cancel reverses it. */
+.row[data-reserved='true'] {
+  opacity: 0.5;
+}
+.row[data-reserved='true'] .name {
+  text-decoration: line-through;
+}
+
 .chevron {
   flex: none;
   width: 12px;
@@ -102,4 +111,13 @@
 }
 .ctxItem:hover {
   background: var(--c-hover);
+}
+/* Delete… — the one destructive menu item. Tinted so it reads as distinct from
+   the benign actions above it (the deferred grace, not this menu, is the safety). */
+.ctxItemDanger {
+  color: var(--c-danger, #e5534b);
+}
+.ctxItemDanger:hover {
+  background: var(--c-danger, #e5534b);
+  color: var(--c-bg);
 }

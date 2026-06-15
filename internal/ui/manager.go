@@ -56,6 +56,17 @@ const (
 	// current etag.
 	MsgMoveFile MessageType = "MOVE_FILE"
 	MsgMoveAck  MessageType = "MOVE_ACK"
+	// MsgDeleteFile removes a file; MsgDeleteAck carries the deleted path back. It
+	// is the server half of the B-31 trash-can model: the front-end defers the
+	// delete behind a client-side grace timer and sends DELETE_FILE only when the
+	// timer elapses (a cancelled reservation never reaches the wire — so there is
+	// nothing to undo here). Like SAVE_FILE/MOVE_FILE it carries an optional
+	// if_match (captured at enqueue): a stale etag yields the SAME CONFLICT frame
+	// SAVE_FILE/MOVE_FILE use, so a file edited mid-grace is not silently destroyed.
+	// It wires the EXISTING storage.Delete (git-tracked hard-remove, recoverable via
+	// History) — no storage or MCP-tool change.
+	MsgDeleteFile MessageType = "DELETE_FILE"
+	MsgDeleteAck  MessageType = "DELETE_ACK"
 	// MsgOAuthList enumerates the live OAuth/MCP connections (token series) the
 	// built-in authorization server holds, and MsgOAuthList carries the summaries
 	// back; MsgOAuthRevoke revokes one connection by series id and acks. This is
@@ -171,6 +182,24 @@ type MoveAckPayload struct {
 	TargetPath     string `json:"target_path"`
 	NewETag        string `json:"new_etag"`
 	LinksRewritten int    `json:"links_rewritten"`
+}
+
+// DeleteFilePayload is the DELETE_FILE request body. IfMatch is optional and
+// carries the same optimistic-concurrency semantic as SAVE_FILE: the delete
+// proceeds only if the file's current etag equals it, otherwise a CONFLICT frame
+// is returned (the file changed during the client-side grace). Omitted only by a
+// caller that did not capture an etag; an empty IfMatch takes the unchecked path.
+type DeleteFilePayload struct {
+	Namespace   string `json:"namespace"`
+	ProjectName string `json:"projectName"`
+	Path        string `json:"path"`
+	IfMatch     string `json:"if_match,omitempty"`
+}
+
+// DeleteAckPayload is the DELETE_ACK frame's body: the path that was deleted, so
+// the client can drop it from its caches/tree and clear the trash item.
+type DeleteAckPayload struct {
+	Path string `json:"path"`
 }
 
 // OAuthConnectionInfo is one live OAuth/MCP connection in the OAUTH_LIST
@@ -508,6 +537,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleGetDiff(client, wsMsg.Payload)
 		case MsgMoveFile:
 			m.handleMoveFile(client, wsMsg.Payload)
+		case MsgDeleteFile:
+			m.handleDeleteFile(client, wsMsg.Payload)
 		case MsgOAuthList:
 			m.handleOAuthList(client)
 		case MsgOAuthRevoke:
@@ -731,6 +762,47 @@ func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
 		NewETag:        newEtag,
 		LinksRewritten: links,
 	})
+}
+
+// handleDeleteFile removes a file via the existing storage.Delete, mirroring
+// handleMoveFile: like SAVE_FILE/MOVE_FILE it is the operator acting as themselves
+// (identity.WithUser → operator is the commit Author) and carries the connection's
+// sender id so the resulting file.delete NOTIFY is not echoed back to this
+// connection. A stale if_match returns the SAME CONFLICT frame SAVE_FILE/MOVE_FILE
+// use (the file changed during the client-side grace), so a mid-grace edit is
+// surfaced rather than silently destroyed; success returns DELETE_ACK with the
+// deleted path. No storage or tool change — the delete is git-tracked and
+// recoverable via History.
+func (m *Manager) handleDeleteFile(client *wsClient, payload json.RawMessage) {
+	var p DeleteFilePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for DELETE_FILE")
+		return
+	}
+
+	ctx := identity.WithUser(context.Background(), identity.User{})
+	ctx = notify.WithSender(ctx, client.id)
+
+	var ifMatch *string
+	if p.IfMatch != "" {
+		ifMatch = &p.IfMatch
+	}
+
+	if err := m.storage.Delete(ctx, "", p.Namespace, p.ProjectName, p.Path, ifMatch); err != nil {
+		var conflict *storage.VersionConflictError
+		if errors.As(err, &conflict) {
+			client.sendResponse(MsgConflict, ConflictPayload{
+				Path:        p.Path,
+				CurrentETag: conflict.Current,
+				Message:     "Delete rejected: the file was modified after it was queued",
+			})
+			return
+		}
+		client.sendError(fmt.Sprintf("Failed to delete file: %v", err))
+		return
+	}
+
+	client.sendResponse(MsgDeleteAck, DeleteAckPayload{Path: p.Path})
 }
 
 // adminGate enforces the §2.1a administrator-only authorization on the OAuth

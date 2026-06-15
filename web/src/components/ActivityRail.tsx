@@ -50,6 +50,10 @@ export function ActivityRail({
   active,
   onSelect,
   disabled = [],
+  trashCount = 0,
+  trashActive = false,
+  onTrashClick,
+  onTrashDrop,
 }: {
   active: RailView
   onSelect: (v: RailView) => void
@@ -58,28 +62,82 @@ export function ActivityRail({
   // item is genuinely inert: not clickable, no hover-active, dimmed, and
   // aria-disabled — never an active-looking button that does nothing.
   disabled?: RailView[]
+  // The trash box at the bottom of the rail: it opens/collapses the trash pane
+  // AND doubles as the drag-to-trash drop target (B-31). It is deliberately
+  // SEPARATE from the Explorer/Search/History nav items (a distinct surface, its
+  // own region), so the "exactly three activity items" invariant still holds.
+  trashCount?: number
+  trashActive?: boolean
+  onTrashClick?: () => void
+  onTrashDrop?: () => void
 }) {
   return (
-    <nav className={styles.rail} aria-label="Activity bar">
-      {items.map((it) => {
-        const isDisabled = disabled.includes(it.id)
-        return (
-          <button
-            key={it.id}
-            className={styles.item}
-            data-active={!isDisabled && active === it.id}
-            data-disabled={isDisabled}
-            disabled={isDisabled}
-            aria-disabled={isDisabled}
-            title={isDisabled ? `${it.label} — not available here` : it.label}
-            aria-label={it.label}
-            aria-pressed={!isDisabled && active === it.id}
-            onClick={() => onSelect(it.id)}
-          >
-            {it.icon}
-          </button>
-        )
-      })}
-    </nav>
+    <div className={styles.rail}>
+      <nav className={styles.nav} aria-label="Activity bar">
+        {items.map((it) => {
+          const isDisabled = disabled.includes(it.id)
+          return (
+            <button
+              key={it.id}
+              className={styles.item}
+              data-active={!isDisabled && active === it.id}
+              data-disabled={isDisabled}
+              disabled={isDisabled}
+              aria-disabled={isDisabled}
+              title={isDisabled ? `${it.label} — not available here` : it.label}
+              aria-label={it.label}
+              aria-pressed={!isDisabled && active === it.id}
+              onClick={() => onSelect(it.id)}
+            >
+              {it.icon}
+            </button>
+          )
+        })}
+      </nav>
+
+      <div className={styles.bottom}>
+        <button
+          type="button"
+          className={styles.trash}
+          data-active={trashActive}
+          aria-label="Trash"
+          aria-pressed={trashActive}
+          title="Trash — files pending deletion (drop a file here to delete)"
+          onClick={() => onTrashClick?.()}
+          // Drop target for a dragged tree row (drag-to-trash). preventDefault on
+          // dragover marks the box as a valid drop zone; the drop reads the file
+          // recorded at drag-start (lib/dragSource) and reserves it.
+          onDragOver={(e) => {
+            e.preventDefault()
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            onTrashDrop?.()
+          }}
+        >
+          <TrashIcon />
+          {trashCount > 0 && (
+            <span className={styles.badge} aria-label={`${trashCount} queued`}>
+              {trashCount}
+            </span>
+          )}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M5 7h14M10 7V5h4v2M6 7l1 12h10l1-12"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   )
 }

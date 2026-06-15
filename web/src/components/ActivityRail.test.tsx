@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { ActivityRail } from './ActivityRail'
 
@@ -49,5 +49,61 @@ describe('ActivityRail', () => {
     expect(history).toBeDisabled()
     expect(explorer).toBeEnabled()
     expect(explorer).toHaveAttribute('aria-disabled', 'false')
+  })
+})
+
+// B-31 trash-can: a trash box at the bottom of the rail opens/collapses the trash
+// pane and doubles as the drag-to-trash drop target. It is a SEPARATE surface
+// from the three activity items (so the "exactly three" invariant above holds).
+describe('ActivityRail trash box (B-31)', () => {
+  it('renders a Trash box that is NOT one of the three activity items', () => {
+    render(<ActivityRail active="explorer" onSelect={() => {}} />)
+    const nav = screen.getByRole('navigation', { name: 'Activity bar' })
+    // The nav still holds exactly three items; trash lives outside it.
+    expect(nav.querySelectorAll('button')).toHaveLength(3)
+    expect(nav.querySelector('[aria-label="Trash"]')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Trash' })).toBeInTheDocument()
+  })
+
+  it('shows the queued-count badge only when items are pending', () => {
+    const { rerender } = render(
+      <ActivityRail active="explorer" onSelect={() => {}} trashCount={0} />,
+    )
+    expect(screen.queryByLabelText(/queued/)).toBeNull()
+    rerender(
+      <ActivityRail active="explorer" onSelect={() => {}} trashCount={3} />,
+    )
+    expect(screen.getByLabelText('3 queued')).toHaveTextContent('3')
+  })
+
+  it('opens/collapses the trash pane on click and reflects the open state', () => {
+    const onTrashClick = vi.fn()
+    render(
+      <ActivityRail
+        active="explorer"
+        onSelect={() => {}}
+        onTrashClick={onTrashClick}
+        trashActive
+      />,
+    )
+    const trash = screen.getByRole('button', { name: 'Trash' })
+    expect(trash).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(trash)
+    expect(onTrashClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('is the drag-to-trash drop target (fires onTrashDrop on drop)', () => {
+    const onTrashDrop = vi.fn()
+    render(
+      <ActivityRail
+        active="explorer"
+        onSelect={() => {}}
+        onTrashDrop={onTrashDrop}
+      />,
+    )
+    const trash = screen.getByRole('button', { name: 'Trash' })
+    fireEvent.dragOver(trash) // marks a valid drop zone (preventDefault)
+    fireEvent.drop(trash)
+    expect(onTrashDrop).toHaveBeenCalledTimes(1)
   })
 })
