@@ -42,6 +42,32 @@ type nsProj struct {
 	proj string
 }
 
+// ParseScope parses a scope string into a Scope: "all" (or "") → whole store;
+// "namespace:<ns>" → one namespace; "project:<ns>/<proj>" → one project. It is
+// the single parser shared by config validation, the scheduler, and the admin
+// endpoint, so the string syntax has one source of truth.
+func ParseScope(s string) (Scope, error) {
+	switch {
+	case s == "" || s == "all":
+		return Scope{}, nil
+	case strings.HasPrefix(s, "namespace:"):
+		ns := strings.TrimPrefix(s, "namespace:")
+		if ns == "" {
+			return Scope{}, fmt.Errorf("scope %q: namespace must not be empty", s)
+		}
+		return Scope{Namespace: ns}, nil
+	case strings.HasPrefix(s, "project:"):
+		rest := strings.TrimPrefix(s, "project:")
+		ns, proj, ok := strings.Cut(rest, "/")
+		if !ok || ns == "" || proj == "" {
+			return Scope{}, fmt.Errorf("scope %q: project must be <namespace>/<project>", s)
+		}
+		return Scope{Namespace: ns, Project: proj}, nil
+	default:
+		return Scope{}, fmt.Errorf("invalid scope %q (want all | namespace:<ns> | project:<ns>/<proj>)", s)
+	}
+}
+
 // resolveScope expands a Scope to the concrete project list via the
 // classifier-backed listings (ListProjects/ListAllProjects), so non-projects
 // (.shoka-lostfound, dotdirs, repo-less leftovers) are never included.

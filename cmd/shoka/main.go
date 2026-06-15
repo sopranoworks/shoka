@@ -46,11 +46,11 @@ import (
 )
 
 func main() {
-	// Subcommand dispatch: `shoka project ...` / `shoka wal ...` run the CLI;
-	// anything else (flags or nothing) runs the server.
+	// Subcommand dispatch: `shoka project ...` / `shoka wal ...` / `shoka snapshot ...`
+	// run the CLI; anything else (flags or nothing) runs the server.
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
-		case "project", "wal":
+		case "project", "wal", "snapshot":
 			if err := runCLI(os.Args[1:]); err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
 				os.Exit(1)
@@ -178,6 +178,25 @@ func main() {
 	if cfg.Storage.Index.IsEnabled() {
 		s.StartIndexSweep(ctx, cfg.Storage.Index.Interval.Std())
 	}
+
+	// Backup snapshot scheduler (B-70 phase 3): a periodic SnapshotScope→PruneSnapshots
+	// cycle to the configured output dir. OFF by default; the scope string was
+	// validated in config.Validate. StartSnapshotSweep is a no-op when disabled and
+	// is tick-only (no immediate snapshot at boot). The same config also backs the
+	// on-demand /api/snapshot admin endpoint below.
+	backupScope, err := storage.ParseScope(cfg.Storage.Backup.Scope)
+	if err != nil {
+		log.Fatalf("invalid storage.backup.scope: %v", err)
+	}
+	backupSweepCfg := storage.SnapshotSweepConfig{
+		Enabled:         cfg.Storage.Backup.IsEnabled(),
+		Interval:        cfg.Storage.Backup.Interval.Std(),
+		OutputDir:       cfg.Storage.Backup.OutputDir,
+		Scope:           backupScope,
+		RetentionCount:  cfg.Storage.Backup.EffectiveRetentionCount(),
+		RetentionMaxAge: time.Duration(cfg.Storage.Backup.RetentionDays) * 24 * time.Hour,
+	}
+	s.StartSnapshotSweep(ctx, backupSweepCfg)
 
 	notifier := webhooks.New(toWebhookConfigs(cfg.Webhooks))
 	notifier.SetLogger(logger)
@@ -378,7 +397,7 @@ func main() {
 
 	mcpServer := setupMCPServer(ctx, cfg, s, ts, logger, notifyCenter)
 
-	webHandler, err := setupWebHandler(s, dm, uim, webAuth)
+	webHandler, err := setupWebHandler(s, dm, uim, webAuth, backupSweepCfg)
 	if err != nil {
 		log.Fatalf("failed to setup web handler: %v", err)
 	}
@@ -762,7 +781,7 @@ func describeStartupPostures(cfg *config.Config) []startupPosture {
 	return out
 }
 
-func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator) (http.Handler, error) {
+func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator, backupSweepCfg storage.SnapshotSweepConfig) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// WebSocket endpoints accept the ?token= query fallback (browsers cannot set
 	// an Authorization header on a WS handshake). The MCP/SSE endpoint uses the
@@ -775,7 +794,7 @@ func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manage
 
 	// Admin API (project state/rescan/recover) — shared by the `shoka project`
 	// CLI and the Web UI recovery dialog. Header-bearer auth (no ?token=).
-	mux.Handle("/api/", authenticator.Middleware(reqtrace.Route("web-api", adminapi.New(s))))
+	mux.Handle("/api/", authenticator.Middleware(reqtrace.Route("web-api", adminapi.New(s, backupSweepCfg))))
 
 	// Serve static files from embedded FS
 	distFS, err := fs.Sub(server.DistFS, "dist")

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -241,6 +242,61 @@ func (i IndexConfig) IsEnabled() bool {
 	return i.Enabled == nil || *i.Enabled
 }
 
+// BackupConfig controls the periodic snapshot backup scheduler (B-70). Unlike
+// lost_found/index it is OFF by default: a backup writes archive files to an
+// operator-chosen output_dir, so it runs only when explicitly enabled with a
+// destination. Interval is the snapshot cadence (default 24h; <=0 disables the
+// scheduler even if enabled). Scope selects which projects: "all" |
+// "namespace:<ns>" | "project:<ns>/<proj>". RetentionCount keeps the N newest
+// snapshots per project (pointer so an absent value defaults to 7 while an
+// explicit 0 means "no count-based pruning"); RetentionDays prunes snapshots
+// older than N days (0 = off).
+type BackupConfig struct {
+	Enabled        *bool    `yaml:"enabled"`
+	Interval       Duration `yaml:"interval"`
+	OutputDir      string   `yaml:"output_dir"`
+	Scope          string   `yaml:"scope"`
+	RetentionCount *int     `yaml:"retention_count"`
+	RetentionDays  int      `yaml:"retention_days"`
+}
+
+// IsEnabled reports the effective enabled value (default FALSE — backups opt-in).
+func (b BackupConfig) IsEnabled() bool {
+	return b.Enabled != nil && *b.Enabled
+}
+
+// EffectiveRetentionCount returns the retention count, defaulting an absent value
+// to 7; an explicit 0 stays 0 (count-based pruning off).
+func (b BackupConfig) EffectiveRetentionCount() int {
+	if b.RetentionCount == nil {
+		return 7
+	}
+	return *b.RetentionCount
+}
+
+// validateBackupScope checks a scope string is one of the accepted forms. It
+// mirrors storage.ParseScope's syntax without importing storage (config stays
+// dependency-light; storage.ParseScope is the authoritative runtime parser).
+func validateBackupScope(s string) error {
+	switch {
+	case s == "" || s == "all":
+		return nil
+	case strings.HasPrefix(s, "namespace:"):
+		if strings.TrimPrefix(s, "namespace:") == "" {
+			return fmt.Errorf("storage.backup.scope %q: namespace must not be empty", s)
+		}
+		return nil
+	case strings.HasPrefix(s, "project:"):
+		ns, proj, ok := strings.Cut(strings.TrimPrefix(s, "project:"), "/")
+		if !ok || ns == "" || proj == "" {
+			return fmt.Errorf("storage.backup.scope %q: project must be <namespace>/<project>", s)
+		}
+		return nil
+	default:
+		return fmt.Errorf("storage.backup.scope %q is invalid (want all | namespace:<ns> | project:<ns>/<proj>)", s)
+	}
+}
+
 // FileLockConfig configures the per-file lock manager (internal/storage/filelock).
 type FileLockConfig struct {
 	MaxLeaseDuration Duration `yaml:"max_lease_duration"` // default 5m
@@ -315,6 +371,7 @@ type Config struct {
 		DriftScan DriftScanConfig `yaml:"drift_scan"`
 		LostFound LostFoundConfig `yaml:"lost_found"`
 		Index     IndexConfig     `yaml:"index"`
+		Backup    BackupConfig    `yaml:"backup"`
 	} `yaml:"storage"`
 	Services struct {
 		GoogleCloud struct {
@@ -387,6 +444,19 @@ func (c *Config) applyDefaults() {
 	if c.Storage.Index.Interval == 0 {
 		c.Storage.Index.Interval = Duration(5 * time.Minute)
 	}
+	// Backup scheduler (B-70): default a 24h cadence and whole-store scope.
+	// Enabled defaults to FALSE (BackupConfig.IsEnabled); retention_count defaults
+	// to 7 unless explicitly set (EffectiveRetentionCount).
+	if c.Storage.Backup.Interval == 0 {
+		c.Storage.Backup.Interval = Duration(24 * time.Hour)
+	}
+	if c.Storage.Backup.Scope == "" {
+		c.Storage.Backup.Scope = "all"
+	}
+	if c.Storage.Backup.RetentionCount == nil {
+		seven := 7
+		c.Storage.Backup.RetentionCount = &seven
+	}
 }
 
 func (c *Config) Validate() error {
@@ -443,6 +513,17 @@ func (c *Config) Validate() error {
 	}
 	if c.WAL.MaxEntries < 0 {
 		return errors.New("wal.max_entries must be non-negative")
+	}
+	// Backup (B-70): the scope syntax is always validated; a destination is
+	// required only when the scheduler is enabled.
+	if err := validateBackupScope(c.Storage.Backup.Scope); err != nil {
+		return err
+	}
+	if c.Storage.Backup.IsEnabled() && c.Storage.Backup.OutputDir == "" {
+		return errors.New("storage.backup.output_dir is required when storage.backup.enabled is true")
+	}
+	if c.Storage.Backup.RetentionDays < 0 {
+		return errors.New("storage.backup.retention_days must be non-negative (0 = off)")
 	}
 	return nil
 }

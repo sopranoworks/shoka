@@ -295,6 +295,14 @@ authentication here. (Source: `internal/config/config.go:193-210`.)
 | `storage.drift_scan.interval` | duration | no | `0` | Periodic re-scan cadence; `0` disables periodic re-scan. |
 | `storage.lost_found.enabled` / `.interval` | bool / duration | no | `true` / `5m` | Lost+found worker: per healthy project, deletes untracked `shoka.disposable` files and moves the rest to a per-project lost+found area, restoring the tracked-only invariant. |
 | `storage.index.enabled` / `.interval` | bool / duration | no | `true` / `5m` | Derivative-index repair worker: reconciles each project's `index.db` with HEAD, rebuilding from working-tree bytes when stale/missing/corrupt. |
+| `storage.backup.enabled` | bool | no | `false` | Periodic snapshot backups (B-70). **Off by default**; archives are written to disk so it runs only when explicitly enabled. |
+| `storage.backup.interval` | duration | no | `24h` | Snapshot cadence; `0` disables the scheduler even when enabled. Snapshots run on the tick (not at boot). |
+| `storage.backup.output_dir` | string | when enabled | — | Destination root. Archives land at `<output_dir>/<namespace>/<project>/<ts>.tar.gz` (each a lock-free archive of the project's immutable HEAD tree). **Required when `enabled`.** |
+| `storage.backup.scope` | string | no | `all` | Which projects to snapshot: `all` \| `namespace:<ns>` \| `project:<ns>/<proj>`. |
+| `storage.backup.retention_count` | int | no | `7` | Keep the N newest snapshots per project; explicit `0` disables count-based pruning. |
+| `storage.backup.retention_days` | int | no | `0` | Also prune snapshots older than N days; `0` disables age-based pruning. |
+
+On-demand: `shoka snapshot [--scope …]` triggers a snapshot cycle on the **running** server via the admin API (it never opens a second storage instance on the live data dir).
 
 ### `services` — optional integrations
 

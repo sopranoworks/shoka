@@ -21,9 +21,32 @@ func runCLI(args []string) error {
 		return runProjectCmd(args[1:])
 	case "wal":
 		return runWALCmd(args[1:])
+	case "snapshot":
+		return runSnapshotCmd(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// runSnapshotCmd triggers a backup snapshot cycle on the RUNNING server via the
+// admin API (adminCall). It deliberately does NOT open a second FSGitStorage on
+// the live data dir — that would contend the WAL/filelocks (B-70 investigation).
+func runSnapshotCmd(args []string) error {
+	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
+	configPath := fs.String("config", "shoka.yaml", "config file (for the server URL and auth token)")
+	scope := fs.String("scope", "", "override scope: all | namespace:<ns> | project:<ns>/<proj> (default: server's configured scope)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	q := url.Values{}
+	if *scope != "" {
+		q.Set("scope", *scope)
+	}
+	return adminCall(cfg, http.MethodPost, "/api/snapshot", q)
 }
 
 // --- wal subcommands (read <base_dir>/.shoka/wal/ directly; no server needed) ---
