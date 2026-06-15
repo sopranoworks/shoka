@@ -301,6 +301,7 @@ authentication here. (Source: `internal/config/config.go:193-210`.)
 | `storage.backup.scope` | string | no | `all` | Which projects to snapshot: `all` \| `namespace:<ns>` \| `project:<ns>/<proj>`. |
 | `storage.backup.retention_count` | int | no | `7` | Keep the N newest snapshots per project; explicit `0` disables count-based pruning. |
 | `storage.backup.retention_days` | int | no | `0` | Also prune snapshots older than N days; `0` disables age-based pruning. |
+| `storage.oauth_cleaner.enabled` / `.interval` / `.grace` | bool / duration / duration | no | `true` / `1h` / `24h` | OAuth dead-series cleaner: deletes token series that are **fully dead** (both access and refresh tokens expired) once they are past their refresh-expiry plus `grace`. The OAuth store has no other GC, so dead series otherwise accumulate forever. Only runs when `server.mcp.oauth` is configured; tick-only (no boot sweep). Set `enabled:false` to keep dead series visible on the admin page. |
 
 On-demand: `shoka snapshot [--scope …]` triggers a snapshot cycle on the **running** server via the admin API (it never opens a second storage instance on the live data dir).
 
@@ -585,6 +586,20 @@ protocol detail — discovery, `/authorize`, `/token`, PKCE — see
 [`docs/contracts/mcp-v1.md`](contracts/mcp-v1.md) § 3.1. Standing up OAuth means
 configuring these fields; it does not point at a running, reachable service.
 (Source: `internal/config/config.go`, `internal/oauth/`.)
+
+**Authorization model (foundation; enforcement dormant).** Every issued token
+carries a **scope** that says what it may access. Tokens minted by the OAuth flow
+(and the operator's self-issued CLI token) are **all-access** (`scope: "*"`) — the
+settled model: a normal connected client may reach every namespace/project, just
+as today. All MCP `tools/call`s flow through a **single authorization choke point**
+(a server middleware) so authorization lives in one place rather than scattered
+across handlers; with an all-access token it allows everything, so **behaviour is
+unchanged**. The choke point already enforces a *non*-all-access scope
+(e.g. a token limited to one namespace), but **no such token can be minted yet** —
+scoped, pre-issued tokens and the UI to manage them are a later step. A token
+minted before the scope field existed is treated as all-access and ages out as it
+expires. (Source: `internal/auth/auth.go`, `internal/tools/authz.go`,
+`internal/storage/oauthstore/`.)
 
 ## Scraping `/metrics`
 

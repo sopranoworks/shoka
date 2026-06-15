@@ -184,6 +184,16 @@ storage:
     enabled: true      # set false to disable the worker (dev/debug)
     interval: 5m       # sweep cadence
 
+  # OAuth dead-series cleaner. The OAuth token store has no other garbage
+  # collection, so fully-dead token series (both the access AND refresh token
+  # expired) would otherwise accumulate forever. This periodic sweep deletes a
+  # series once it is past its refresh-expiry plus a grace window. Only runs when
+  # the OAuth transport (server.mcp.oauth) is configured. Defaults shown.
+  oauth_cleaner:
+    enabled: true      # set false to keep dead series (they show on the admin page)
+    interval: 1h       # how often to sweep
+    grace: 24h         # keep a dead series this long past refresh-expiry before deleting
+
 # Per-file write lock manager. Reads take no lock; each write holds a per-file
 # lock only across the check-and-write critical section. Defaults shown.
 filelock:

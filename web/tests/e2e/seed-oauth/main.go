@@ -39,6 +39,7 @@ func main() {
 		"https://connector.example.com/.well-known/oauth-client-metadata",
 		oauthstore.Principal{Name: "Op Erator", Email: "op@example.test"},
 		"https://shoka.example/mcp",
+		"*",
 		time.Now(),
 		time.Hour,
 		24*time.Hour,

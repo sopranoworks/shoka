@@ -573,7 +573,10 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 		s.tokenError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
-	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, s.now(), s.accessTTL, s.refreshTTL)
+	// DCR/CIMD tokens are all-access (Scope "*", the settled authz model — scoped
+	// access requires a future non-DCR pre-issued token). The tools/call authz gate
+	// reads this scope; "*" allows every namespace, today's behaviour.
+	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, "*", s.now(), s.accessTTL, s.refreshTTL)
 	if err != nil {
 		lg.Error("oauth token issuance failed",
 			"grant_type", "authorization_code", "client_id", rec.ClientID, "reason", "series-create-failed")

@@ -102,6 +102,13 @@ type SeriesRecord struct {
 	IssuedAt      time.Time `json:"issued_at"`
 	AccessExpiry  time.Time `json:"access_expiry"`
 	RefreshExpiry time.Time `json:"refresh_expiry"`
+	// Scope is the authorization grant the token carries (the 2026-06-15 authz
+	// foundation). "*" = all-access (every DCR token). A pre-issued non-DCR token
+	// would carry a namespace grant (e.g. "namespace:foo"). A record written before
+	// this field existed decodes Scope as "" (JSON omits the absent key), which the
+	// validation path and the authz gate both interpret as "*" — so old tokens stay
+	// all-access and age out as they expire; no migration is required.
+	Scope string `json:"scope,omitempty"`
 }
 
 // RegisteredClient is a Dynamic Client Registration record (RFC 7591, B-63): a
@@ -128,6 +135,9 @@ type SeriesInfo struct {
 	Resource     string
 	IssuedAt     time.Time
 	AccessExpiry time.Time
+	// Scope is the token's authorization grant ("*" = all-access). Carried on the
+	// enumerable view for the admin surface (the display is a later directive).
+	Scope string
 }
 
 // Store is the global OAuth state store handle. Safe for concurrent use; bbolt's
@@ -238,7 +248,7 @@ func (s *Store) TakeCode(code string, now time.Time) (CodeRecord, error) {
 // persists the series. It returns the new SeriesRecord (carrying the freshly
 // generated handles). Each call is an independent series — multiple concurrent
 // connections produce multiple independent series.
-func (s *Store) NewSeries(clientID string, p Principal, resource string, now time.Time, accessTTL, refreshTTL time.Duration) (SeriesRecord, error) {
+func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, now time.Time, accessTTL, refreshTTL time.Duration) (SeriesRecord, error) {
 	seriesID, err := NewHandle()
 	if err != nil {
 		return SeriesRecord{}, err
@@ -261,6 +271,7 @@ func (s *Store) NewSeries(clientID string, p Principal, resource string, now tim
 		IssuedAt:      now,
 		AccessExpiry:  now.Add(accessTTL),
 		RefreshExpiry: now.Add(refreshTTL),
+		Scope:         scope,
 	}
 	if err := s.putSeries(rec, "", ""); err != nil {
 		return SeriesRecord{}, err
@@ -386,6 +397,7 @@ func (s *Store) List() ([]SeriesInfo, error) {
 				Resource:     rec.Resource,
 				IssuedAt:     rec.IssuedAt,
 				AccessExpiry: rec.AccessExpiry,
+				Scope:        rec.Scope,
 			})
 			return nil
 		})
@@ -420,6 +432,52 @@ func (s *Store) Revoke(seriesID string) error {
 		s.revocations.Add(1)
 	}
 	return err
+}
+
+// DeleteDeadSeries removes every series that is FULLY dead — both its access and
+// its refresh token are unusable — past a grace period. A series is fully dead
+// once now is after its RefreshExpiry (the refresh token is the longer-lived of
+// the pair, so a passed refresh-expiry means neither token can be used again);
+// grace defers the deletion by that much past refresh-expiry so an operator can
+// still see a recently-disconnected connection on the admin surface before it is
+// swept. It returns the number of series deleted. An access-expired series whose
+// refresh is still live is NOT deleted (it remains a usable connection).
+//
+// It is the cleaner sweep's one cycle (StartCleaner drives it on a ticker); it is
+// exported so a cycle can be run directly in a test without synthetic timing.
+// Deletion reuses deleteSeries — the same path Revoke/Rotate use — so the access
+// and refresh handle buckets are cleaned alongside the series row. Keys to delete
+// are collected during the ForEach scan and removed after it, never mutating the
+// bucket mid-iteration.
+func (s *Store) DeleteDeadSeries(now time.Time, grace time.Duration) (int, error) {
+	var deleted int
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		var dead []SeriesRecord
+		err := tx.Bucket([]byte(seriesBucket)).ForEach(func(_, v []byte) error {
+			var rec SeriesRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("oauthstore: decode series: %w", err)
+			}
+			if now.After(rec.RefreshExpiry.Add(grace)) {
+				dead = append(dead, rec)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for _, rec := range dead {
+			if derr := deleteSeries(tx, rec); derr != nil {
+				return derr
+			}
+		}
+		deleted = len(dead)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }
 
 // --- registered clients (DCR, RFC 7591 — the 2026-06-12 B-63 directive) ------

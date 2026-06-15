@@ -242,6 +242,24 @@ func (i IndexConfig) IsEnabled() bool {
 	return i.Enabled == nil || *i.Enabled
 }
 
+// OAuthCleanerConfig controls the OAuth dead-series cleaner sweep (the 2026-06-15
+// authz/lifecycle foundation): a periodic sweep that deletes fully-dead token
+// series (both access and refresh expired) past a grace period, since the OAuth
+// store has no other GC and dead series otherwise accumulate forever. Enabled is a
+// pointer so an absent block defaults to TRUE (the operator's intent — no point
+// keeping dead tokens) while an explicit false is kept; Interval defaults to 1h and
+// Grace to 24h (applied in applyDefaults). Set enabled:false to disable.
+type OAuthCleanerConfig struct {
+	Enabled  *bool    `yaml:"enabled"`
+	Interval Duration `yaml:"interval"`
+	Grace    Duration `yaml:"grace"`
+}
+
+// IsEnabled reports the effective enabled value (default true).
+func (o OAuthCleanerConfig) IsEnabled() bool {
+	return o.Enabled == nil || *o.Enabled
+}
+
 // BackupConfig controls the periodic snapshot backup scheduler (B-70). Unlike
 // lost_found/index it is OFF by default: a backup writes archive files to an
 // operator-chosen output_dir, so it runs only when explicitly enabled with a
@@ -367,11 +385,12 @@ type Config struct {
 	} `yaml:"server"`
 	Identity IdentityConfig `yaml:"identity"`
 	Storage  struct {
-		BaseDir   string          `yaml:"base_dir"`
-		DriftScan DriftScanConfig `yaml:"drift_scan"`
-		LostFound LostFoundConfig `yaml:"lost_found"`
-		Index     IndexConfig     `yaml:"index"`
-		Backup    BackupConfig    `yaml:"backup"`
+		BaseDir      string             `yaml:"base_dir"`
+		DriftScan    DriftScanConfig    `yaml:"drift_scan"`
+		LostFound    LostFoundConfig    `yaml:"lost_found"`
+		Index        IndexConfig        `yaml:"index"`
+		Backup       BackupConfig       `yaml:"backup"`
+		OAuthCleaner OAuthCleanerConfig `yaml:"oauth_cleaner"`
 	} `yaml:"storage"`
 	Services struct {
 		GoogleCloud struct {
@@ -443,6 +462,16 @@ func (c *Config) applyDefaults() {
 	// lost+found. Enabled defaults to true via IndexConfig.IsEnabled.
 	if c.Storage.Index.Interval == 0 {
 		c.Storage.Index.Interval = Duration(5 * time.Minute)
+	}
+	// OAuth dead-series cleaner (2026-06-15 authz foundation): default a 1h tick and
+	// a 24h grace past refresh-expiry. Enabled defaults to TRUE via
+	// OAuthCleanerConfig.IsEnabled (the operator's intent — dead tokens are not worth
+	// keeping); the sweep only runs when the OAuth store exists (OAuth configured).
+	if c.Storage.OAuthCleaner.Interval == 0 {
+		c.Storage.OAuthCleaner.Interval = Duration(time.Hour)
+	}
+	if c.Storage.OAuthCleaner.Grace == 0 {
+		c.Storage.OAuthCleaner.Grace = Duration(24 * time.Hour)
 	}
 	// Backup scheduler (B-70): default a 24h cadence and whole-store scope.
 	// Enabled defaults to FALSE (BackupConfig.IsEnabled); retention_count defaults

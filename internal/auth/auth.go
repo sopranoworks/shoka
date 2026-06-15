@@ -32,6 +32,13 @@ type Principal struct {
 	Name     string
 	Email    string
 	ClientID string
+	// Scope is the authorization grant the token carries (the 2026-06-15 authz
+	// foundation). "*" — or empty, which is read AS "*" everywhere — means
+	// all-access: every DCR-issued token today. A future non-DCR pre-issued token
+	// carries a namespace grant (e.g. "namespace:foo"); the tools/call authz gate
+	// (internal/tools.AuthzMiddleware) enforces it. Empty is treated as "*" for
+	// backward compatibility with tokens minted before the field existed.
+	Scope string
 }
 
 // RejectReason is a discrete OAuth token-rejection category (B-53 §2.4), returned

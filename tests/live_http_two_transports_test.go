@@ -98,6 +98,7 @@ func seedOAuthToken(t *testing.T, baseDir string) string {
 		"test-client",
 		oauthstore.Principal{Name: "Test Operator", Email: "op@test.local"},
 		"http://127.0.0.1/mcp",
+		"*",
 		time.Now(),
 		time.Hour,
 		24*time.Hour,

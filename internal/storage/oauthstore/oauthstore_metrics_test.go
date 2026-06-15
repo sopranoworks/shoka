@@ -19,11 +19,11 @@ func TestOAuthMetrics_TokensIssuedCountsFirstIssueNotRotation(t *testing.T) {
 		t.Fatalf("expected 0 issued initially, got %d", got)
 	}
 
-	a, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", now, accessTTL, refreshTTL)
+	a, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries a: %v", err)
 	}
-	if _, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", now, accessTTL, refreshTTL); err != nil {
+	if _, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", now, accessTTL, refreshTTL); err != nil {
 		t.Fatalf("NewSeries b: %v", err)
 	}
 	if got := s.OAuthTokensIssued(); got != 2 {
@@ -46,7 +46,7 @@ func TestOAuthMetrics_RevocationsCountActualDeletionsOnly(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	p := Principal{Name: "Op", Email: "op@example.test"}
 
-	a, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", now, accessTTL, refreshTTL)
+	a, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestOAuthMetrics_ActiveConnectionsTracksLiveSet(t *testing.T) {
 	}
 	var first SeriesRecord
 	for i := 0; i < 3; i++ {
-		r, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", now, accessTTL, refreshTTL)
+		r, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", now, accessTTL, refreshTTL)
 		if err != nil {
 			t.Fatalf("NewSeries: %v", err)
 		}

@@ -95,6 +95,7 @@ func TestEndToEndCredentialPath(t *testing.T) {
 			"shoka-cli",
 			oauthstore.Principal{Name: "Osamu Takahashi", Email: "forte.nit@gmail.com"},
 			"https://example.invalid/mcp",
+			"*",
 			time.Now(), time.Hour, 24*time.Hour,
 		)
 		if nerr != nil {
@@ -206,6 +207,7 @@ func TestEndToEndFileAdd(t *testing.T) {
 		"shoka-cli",
 		oauthstore.Principal{Name: "Osamu Takahashi", Email: "forte.nit@gmail.com"},
 		"https://example.invalid/mcp",
+		"*",
 		time.Now(), time.Hour, 24*time.Hour,
 	)
 	if err != nil {

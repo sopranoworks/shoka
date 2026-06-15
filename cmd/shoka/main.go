@@ -268,6 +268,18 @@ func main() {
 		}
 		defer func() { _ = oauthStore.Close() }()
 
+		// OAuth dead-series cleaner (2026-06-15 authz foundation): a periodic sweep
+		// deleting fully-dead token series (refresh expired + grace) — the OAuth store
+		// has no other GC, so dead series otherwise accumulate forever. ON by default;
+		// tick-only (no boot sweep), mirroring the storage sweep workers. Only started
+		// here, inside the OAuth-enabled block, so it never runs without a store.
+		oauthStore.StartCleaner(ctx, oauthstore.CleanerConfig{
+			Enabled:  cfg.Storage.OAuthCleaner.IsEnabled(),
+			Interval: cfg.Storage.OAuthCleaner.Interval.Std(),
+			Grace:    cfg.Storage.OAuthCleaner.Grace.Std(),
+			Logger:   logger,
+		})
+
 		// Wire the OAuth connection store into the Web UI manager so the
 		// administrator-only OAUTH_LIST/OAUTH_REVOKE management requests can
 		// enumerate and revoke connections (B-39 (c)). The admin authorizer stays
@@ -317,6 +329,7 @@ func main() {
 				"shoka-cli",
 				oauthstore.Principal{Name: cfg.Identity.User.Name, Email: cfg.Identity.User.Email},
 				serverurl.ResourceURL(base),
+				"*", // the operator's self-issued CLI token is all-access, like any DCR token
 				time.Now(),
 				oc.AccessTokenTTL.Std(),
 				oc.RefreshTokenTTL.Std(),
@@ -350,7 +363,13 @@ func main() {
 			}
 			// ClientID is carried for diagnostic logging only (B-52 §2.4 — "which
 			// client got bound to the session"); the commit identity uses Name/Email.
-			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email, ClientID: rec.ClientID}, "", true
+			// Scope is the token's authorization grant for the tools/call authz gate;
+			// an empty Scope on a pre-field token is read as "*" (all-access).
+			scope := rec.Scope
+			if scope == "" {
+				scope = "*"
+			}
+			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email, ClientID: rec.ClientID, Scope: scope}, "", true
 		}
 	}
 	// The Web/non-MCP routes (/drafts/, /ws/ui, /api/) get their OWN authenticator
@@ -574,6 +593,15 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	// reorders the response so the core read/write tools appear first. It touches
 	// only the listing order — registration and tools/call dispatch are unaffected.
 	mcpServer.AddReceivingMiddleware(tools.CoreFirstToolsMiddleware())
+
+	// Authorization choke point (2026-06-15 authz foundation): one receiving
+	// middleware through which EVERY tools/call flows, so authz lives in a single
+	// place rather than scattering across handlers as tools grow. It reads the
+	// principal (already on ctx from the auth middleware) and the call's namespace/
+	// project, and applies the scope grant. *-pass today (every token is Scope "*"),
+	// with a dormant-but-tested else-branch that enforces a future pre-issued scoped
+	// token automatically. It no-ops for non-tools/call methods.
+	mcpServer.AddReceivingMiddleware(tools.AuthzMiddleware())
 
 	// Scoped MCP change notifications (B-45b): the subscribe/unsubscribe tools let
 	// an MCP client (e.g. an automation watcher) receive notifications/message for
