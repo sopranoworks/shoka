@@ -63,21 +63,25 @@ function ProjectTree({
           <span className={styles.projNs}>{ns}/</span>
           {proj}
         </span>
-        <button
-          type="button"
-          className={styles.newFileBtn}
-          title="New file"
-          aria-label="New file"
-          onClick={() =>
-            void navigate({
-              to: '/p/$namespace/$project/new',
-              params: { namespace: ns, project: proj },
-              search: launchDir ? { in: launchDir } : {},
-            })
-          }
-        >
-          + New file
-        </button>
+        {/* "+ New file" belongs to the file view only — creating a file from a
+            history view makes no sense, so it is hidden in History mode. */}
+        {openMode !== 'history' && (
+          <button
+            type="button"
+            className={styles.newFileBtn}
+            title="New file"
+            aria-label="New file"
+            onClick={() =>
+              void navigate({
+                to: '/p/$namespace/$project/new',
+                params: { namespace: ns, project: proj },
+                search: launchDir ? { in: launchDir } : {},
+              })
+            }
+          >
+            + New file
+          </button>
+        )}
       </SectionHeader>
       <div className={styles.treeWrap}>
         {isError ? (
@@ -108,19 +112,11 @@ function ExplorerView() {
   const ref = useActiveProjectRef()
   const activePath = useActiveFilePath()
 
+  // No project open: render a genuinely empty pane. There is nothing to explore,
+  // so the old "EXPLORER" heading + "Choose a project →" cushion was just noise —
+  // and the rail is disabled in this state anyway (the pane isn't reachable).
   if (!ref) {
-    return (
-      <div className={styles.pane}>
-        <SectionHeader>Explorer</SectionHeader>
-        <div className={styles.empty}>
-          No project open.
-          <br />
-          <Link to="/" className={styles.emptyLink}>
-            Choose a project →
-          </Link>
-        </div>
-      </div>
-    )
+    return <div className={styles.pane} />
   }
   return (
     <ProjectTree

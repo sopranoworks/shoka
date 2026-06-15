@@ -8,51 +8,49 @@ import {
   createMemoryHistory,
 } from '@tanstack/react-router'
 import { ActivityRail, type RailView } from '../components/ActivityRail'
-import { useRailSelect } from './useRailSelect'
+import {
+  useRailSelect,
+  useResetRailToExplorerOnProjectChange,
+} from './useRailSelect'
 
 // Render the ActivityRail wired to the real useRailSelect controls (onSelect +
-// disabledItems) inside a memory router at `url` — mirroring exactly how Shell
-// composes them. The rail is pure, so no QueryClient/wsClient is needed.
-function setup(url: string, setRail: (v: RailView) => void = () => {}) {
+// disabledItems) inside a memory router at `url` — mirroring how Shell composes
+// them. `rail`/`sidebarOpen` are the current Shell state (fixed per render); the
+// spies capture what the handler would do.
+function setup(
+  url: string,
+  opts: {
+    rail?: RailView
+    sidebarOpen?: boolean
+    setRail?: (v: RailView) => void
+    setSidebarOpen?: (open: boolean) => void
+  } = {},
+) {
+  const rail = opts.rail ?? 'explorer'
+  const sidebarOpen = opts.sidebarOpen ?? true
+  const setRail = opts.setRail ?? (() => {})
+  const setSidebarOpen = opts.setSidebarOpen ?? (() => {})
   function Harness() {
-    const { onSelect, disabledItems } = useRailSelect(setRail, () => {})
+    const { onSelect, disabledItems } = useRailSelect(
+      rail,
+      sidebarOpen,
+      setRail,
+      setSidebarOpen,
+    )
     return (
-      <ActivityRail active="explorer" onSelect={onSelect} disabled={disabledItems} />
+      <ActivityRail active={rail} onSelect={onSelect} disabled={disabledItems} />
     )
   }
   const rootRoute = createRootRoute({ component: Harness })
-  const indexRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/',
-    component: () => null,
-  })
-  const projectRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/p/$namespace/$project',
-    component: () => null,
-  })
-  const adminRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/admin/connections',
-    component: () => null,
-  })
-  const blobRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/p/$namespace/$project/blob/$',
-    component: () => null,
-  })
-  const historyRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/p/$namespace/$project/history/$',
-    component: () => null,
-  })
+  const mk = (path: string) =>
+    createRoute({ getParentRoute: () => rootRoute, path, component: () => null })
   const router = createRouter({
     routeTree: rootRoute.addChildren([
-      indexRoute,
-      projectRoute,
-      adminRoute,
-      blobRoute,
-      historyRoute,
+      mk('/'),
+      mk('/p/$namespace/$project'),
+      mk('/admin/connections'),
+      mk('/p/$namespace/$project/blob/$'),
+      mk('/p/$namespace/$project/history/$'),
     ]),
     history: createMemoryHistory({ initialEntries: [url] }),
   })
@@ -60,81 +58,81 @@ function setup(url: string, setRail: (v: RailView) => void = () => {}) {
   return router
 }
 
-// Fix (B-31 refinement): on an admin/no-project route, Explorer still routes to
-// "/" (return to where the files are), but Search and History are DISABLED — they
-// have no meaningful action there (OAuth-token search/history is unbuilt), so they
-// must be inert, not active-looking buttons that route to "/".
-describe('useRailSelect — admin: Explorer→"/", Search/History disabled', () => {
-  it('Explorer on /admin/connections navigates to "/"', async () => {
-    const router = setup('/admin/connections')
-    expect(router.state.location.pathname).toBe('/admin/connections')
-    fireEvent.click(await screen.findByRole('button', { name: 'Explorer' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
-  })
-
-  it.each(['Search', 'History'])(
-    '%s on /admin/connections is disabled and does nothing on click (RED→GREEN)',
-    async (label) => {
-      const router = setup('/admin/connections')
+// D#2 (RED→GREEN): on a no-project route (the project list "/" and the admin
+// screens) every rail item is disabled — no mode is meaningful before a project is
+// chosen. RED before: Explorer was enabled and routed to "/".
+describe('useRailSelect — no-project route disables ALL rail items', () => {
+  it.each([
+    ['/', 'project list'],
+    ['/admin/connections', 'admin screen'],
+  ])('all three rail items are disabled on %s (%s)', async (url) => {
+    const setRail = vi.fn()
+    const router = setup(url, { setRail })
+    for (const label of ['Explorer', 'Search', 'History']) {
       const btn = await screen.findByRole('button', { name: label })
       expect(btn).toBeDisabled()
       expect(btn).toHaveAttribute('aria-disabled', 'true')
-      // Not active-highlighted even if it was the last-selected pane.
-      expect(btn).toHaveAttribute('data-active', 'false')
-      // Clicking a disabled button must not navigate (RED before: it went to "/").
       fireEvent.click(btn)
-      await waitFor(() =>
-        expect(router.state.location.pathname).toBe('/admin/connections'),
-      )
-    },
-  )
+    }
+    // Disabled buttons do nothing: no navigation, no rail change.
+    expect(router.state.location.pathname).toBe(url)
+    expect(setRail).not.toHaveBeenCalled()
+  })
 })
 
-// No regression in a normal project view: all three rail items stay enabled and
-// switch the sidebar pane (no navigation).
-describe('useRailSelect — project view: all three enabled (no regression)', () => {
-  it.each(['Explorer', 'Search', 'History'])(
-    '%s in a project view is enabled',
-    async (label) => {
-      setup('/p/ns/proj')
-      const btn = await screen.findByRole('button', { name: label })
-      expect(btn).toBeEnabled()
-      expect(btn).toHaveAttribute('aria-disabled', 'false')
+// D#3: the rail is a consistent toggle — clicking the active item while its pane
+// is open closes the sidebar; clicking any other item opens that pane. Uniform
+// across Explorer/Search/History.
+describe('useRailSelect — consistent open/close toggle (project view)', () => {
+  it.each(['explorer', 'search', 'history'] as RailView[])(
+    'clicking the active+open %s closes the sidebar (does not re-set the rail)',
+    async (active) => {
+      const setRail = vi.fn()
+      const setSidebarOpen = vi.fn()
+      const label = { explorer: 'Explorer', search: 'Search', history: 'History' }[active]
+      setup('/p/ns/proj/blob/doc.md', {
+        rail: active,
+        sidebarOpen: true,
+        setRail,
+        setSidebarOpen,
+      })
+      fireEvent.click(await screen.findByRole('button', { name: label }))
+      expect(setSidebarOpen).toHaveBeenCalledWith(false)
+      expect(setRail).not.toHaveBeenCalled()
     },
   )
 
-  it('clicking Explorer in a project view sets the rail and does not navigate', async () => {
+  it('clicking an inactive item opens that pane (sets rail + opens)', async () => {
     const setRail = vi.fn()
-    const router = setup('/p/ns/proj', setRail)
+    const setSidebarOpen = vi.fn()
+    setup('/p/ns/proj/blob/doc.md', {
+      rail: 'explorer',
+      sidebarOpen: true,
+      setRail,
+      setSidebarOpen,
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Search' }))
+    expect(setRail).toHaveBeenCalledWith('search')
+    expect(setSidebarOpen).toHaveBeenCalledWith(true)
+  })
+
+  it('clicking the active item while the pane is CLOSED reopens it', async () => {
+    const setSidebarOpen = vi.fn()
+    setup('/p/ns/proj/blob/doc.md', {
+      rail: 'explorer',
+      sidebarOpen: false,
+      setSidebarOpen,
+    })
     fireEvent.click(await screen.findByRole('button', { name: 'Explorer' }))
-    expect(setRail).toHaveBeenCalledWith('explorer')
-    await waitFor(() =>
-      expect(router.state.location.pathname).toBe('/p/ns/proj'),
-    )
-  })
-
-  it('clicking History in a project view sets the rail to history', async () => {
-    const setRail = vi.fn()
-    setup('/p/ns/proj', setRail)
-    fireEvent.click(await screen.findByRole('button', { name: 'History' }))
-    expect(setRail).toHaveBeenCalledWith('history')
+    expect(setSidebarOpen).toHaveBeenCalledWith(true)
   })
 })
 
-// Fix A: clicking History opens the active file's history directly in the right
-// pane (no "View history →" cushion). RED before: History had no navigation — it
-// only switched the sidebar to a cushion you had to click again.
-describe('useRailSelect — History opens the active file’s history directly', () => {
+// History opens the active file's history in the right pane directly (no cushion),
+// on open — the 4fc366f behaviour, preserved through the toggle change.
+describe('useRailSelect — History opens the active file’s history (on open)', () => {
   it('from a file view, navigates to that file’s history route', async () => {
-    const router = setup('/p/ns/proj/blob/doc.md')
-    fireEvent.click(await screen.findByRole('button', { name: 'History' }))
-    await waitFor(() =>
-      expect(router.state.location.pathname).toBe('/p/ns/proj/history/doc.md'),
-    )
-  })
-
-  it('from a nested file view, carries the full path', async () => {
-    const router = setup('/p/ns/proj/blob/reports/doc.md')
+    const router = setup('/p/ns/proj/blob/reports/doc.md', { rail: 'explorer' })
     fireEvent.click(await screen.findByRole('button', { name: 'History' }))
     await waitFor(() =>
       expect(router.state.location.pathname).toBe(
@@ -143,11 +141,68 @@ describe('useRailSelect — History opens the active file’s history directly',
     )
   })
 
-  it('with no file selected (project root), opens the history route empty (placeholder pane)', async () => {
-    const router = setup('/p/ns/proj')
+  it('with no file selected (project root), opens the history route empty', async () => {
+    const router = setup('/p/ns/proj', { rail: 'explorer' })
     fireEvent.click(await screen.findByRole('button', { name: 'History' }))
     await waitFor(() =>
       expect(router.state.location.pathname).toContain('/p/ns/proj/history'),
     )
+  })
+})
+
+// D#4: selecting a project defaults the rail to Explorer; navigating among a
+// project's files/history does NOT reset it.
+describe('useResetRailToExplorerOnProjectChange', () => {
+  function mountReset(url: string, setRail: (v: RailView) => void) {
+    function Harness() {
+      useResetRailToExplorerOnProjectChange(setRail)
+      return null
+    }
+    const rootRoute = createRootRoute({ component: Harness })
+    const mk = (path: string) =>
+      createRoute({ getParentRoute: () => rootRoute, path, component: () => null })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([
+        mk('/'),
+        mk('/p/$namespace/$project'),
+        mk('/p/$namespace/$project/blob/$'),
+        mk('/p/$namespace/$project/history/$'),
+      ]),
+      history: createMemoryHistory({ initialEntries: [url] }),
+    })
+    render(<RouterProvider router={router as never} />)
+    return router
+  }
+
+  it('defaults the rail to Explorer on entering a project', async () => {
+    const setRail = vi.fn()
+    mountReset('/p/ns/proj', setRail)
+    await waitFor(() => expect(setRail).toHaveBeenCalledWith('explorer'))
+  })
+
+  it('does NOT reset when navigating among the same project’s files/history', async () => {
+    const setRail = vi.fn()
+    const router = mountReset('/p/ns/proj/blob/doc.md', setRail)
+    await waitFor(() => expect(setRail).toHaveBeenCalledWith('explorer'))
+    setRail.mockClear()
+    await router.navigate({
+      to: '/p/$namespace/$project/history/$',
+      params: { namespace: 'ns', project: 'proj', _splat: 'doc.md' },
+    })
+    // Same project key ⇒ no reset.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(setRail).not.toHaveBeenCalled()
+  })
+
+  it('resets again when switching to a different project', async () => {
+    const setRail = vi.fn()
+    const router = mountReset('/p/ns/projA', setRail)
+    await waitFor(() => expect(setRail).toHaveBeenCalledWith('explorer'))
+    setRail.mockClear()
+    await router.navigate({
+      to: '/p/$namespace/$project',
+      params: { namespace: 'ns', project: 'projB' },
+    })
+    await waitFor(() => expect(setRail).toHaveBeenCalledWith('explorer'))
   })
 })

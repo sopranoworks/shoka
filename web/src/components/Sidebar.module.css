@@ -20,12 +20,14 @@
   user-select: none;
 }
 
+/* Clear resting appearance — legible without hovering (the prior faint resting
+   colour read as inactive until hover). Hover adds emphasis. */
 .newFileBtn {
   flex: none;
   border: 1px solid var(--c-border);
   border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--c-text-faint);
+  background: var(--c-bg-elev-2);
+  color: var(--c-text-dim);
   font-size: var(--fs-xs);
   font-family: inherit;
   letter-spacing: normal;
@@ -36,7 +38,7 @@
 }
 .newFileBtn:hover {
   color: var(--c-text);
-  border-color: var(--c-text-faint);
+  border-color: var(--c-accent);
   background: var(--c-hover);
 }
 

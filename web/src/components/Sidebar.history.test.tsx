@@ -83,3 +83,22 @@ describe('Sidebar History panel — tree retained, no cushion (B-31)', () => {
     expect(tree).toHaveAttribute('data-active', 'doc.md')
   })
 })
+
+// E (B-31 consistency fix): the "+ New file" affordance is present (clearly
+// visible at rest) in Explorer mode, but hidden in History mode — creating a file
+// from a history view is meaningless.
+describe('Sidebar "+ New file" affordance — Explorer only (B-31 E)', () => {
+  it('is present at rest in Explorer mode (its resting class, no hover needed)', async () => {
+    renderSidebar('explorer', '/p/ns/proj/blob/doc.md')
+    const btn = await screen.findByRole('button', { name: 'New file' })
+    // Rendered with its (resting) class — visibility is not gated behind a hover
+    // pseudo-class; the resting style itself is legible (E1, a CSS change).
+    expect(btn.className).toMatch(/newFileBtn/)
+  })
+
+  it('is NOT rendered in History mode (RED→GREEN)', async () => {
+    renderSidebar('history', '/p/ns/proj/history/doc.md')
+    await screen.findByTestId('filetree')
+    expect(screen.queryByRole('button', { name: 'New file' })).toBeNull()
+  })
+})

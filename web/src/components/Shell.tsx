@@ -10,7 +10,10 @@ import { Toaster } from './Toaster'
 import { NotifyBridge } from './NotifyBridge'
 import { MoveProvider } from '../lib/moveController'
 import { useMediaQuery } from '../lib/useMediaQuery'
-import { useRailSelect } from '../lib/useRailSelect'
+import {
+  useRailSelect,
+  useResetRailToExplorerOnProjectChange,
+} from '../lib/useRailSelect'
 import styles from './Shell.module.css'
 
 /**
@@ -22,9 +25,13 @@ export function Shell({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const isNarrow = useMediaQuery('(max-width: 640px)')
   const { onSelect: onRailSelect, disabledItems } = useRailSelect(
+    rail,
+    sidebarOpen,
     setRail,
     setSidebarOpen,
   )
+  // Selecting a project defaults the rail to Explorer (the file view).
+  useResetRailToExplorerOnProjectChange(setRail)
 
   // On narrow screens the panel group stacks vertically so the content stays
   // full-width and readable (no sliver). On desktop it's a resizable split.

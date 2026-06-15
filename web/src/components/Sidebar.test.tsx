@@ -29,16 +29,14 @@ function renderSidebar(view: 'explorer' | 'search') {
   render(<RouterProvider router={router as never} />)
 }
 
-describe('Sidebar empty-state terminology (B-31)', () => {
-  it('Explorer prompts "Choose a project", not "Choose a repository"', async () => {
+// C (B-31 consistency fix): with no project open there is nothing to explore, so
+// the Explorer pane renders genuinely empty — no "EXPLORER" heading, no "Choose a
+// project →" cushion. (RED before: the cushion was present.)
+describe('Sidebar Explorer pane with no project open (B-31 C)', () => {
+  it('renders no EXPLORER heading and no "Choose a project" cushion', () => {
     renderSidebar('explorer')
-    expect(await screen.findByText('Choose a project →')).toBeInTheDocument()
-    expect(screen.queryByText(/repositor/i)).toBeNull()
-  })
-
-  it('Search prompts "Choose a project", not "Choose a repository"', async () => {
-    renderSidebar('search')
-    expect(await screen.findByText('Choose a project →')).toBeInTheDocument()
+    expect(screen.queryByText('Choose a project →')).toBeNull()
+    expect(screen.queryByText(/^explorer$/i)).toBeNull()
     expect(screen.queryByText(/repositor/i)).toBeNull()
   })
 })
