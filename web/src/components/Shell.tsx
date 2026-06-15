@@ -21,7 +21,10 @@ export function Shell({ children }: { children: ReactNode }) {
   const [rail, setRail] = useState<RailView>('explorer')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const isNarrow = useMediaQuery('(max-width: 640px)')
-  const onRailSelect = useRailSelect(setRail, setSidebarOpen)
+  const { onSelect: onRailSelect, disabledItems } = useRailSelect(
+    setRail,
+    setSidebarOpen,
+  )
 
   // On narrow screens the panel group stacks vertically so the content stays
   // full-width and readable (no sliver). On desktop it's a resizable split.
@@ -33,7 +36,11 @@ export function Shell({ children }: { children: ReactNode }) {
       <TitleBar onToggleSidebar={() => setSidebarOpen((v) => !v)} />
 
       <div className={styles.body}>
-        <ActivityRail active={rail} onSelect={onRailSelect} />
+        <ActivityRail
+          active={rail}
+          onSelect={onRailSelect}
+          disabled={disabledItems}
+        />
 
         <div className={styles.panelArea}>
           <PanelGroup

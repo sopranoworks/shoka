@@ -2,24 +2,37 @@ import { useCallback } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import type { RailView } from '../components/ActivityRail'
 
-// The activity-rail select handler. On a project route (pathname under `/p/`) the
-// rail switches the sidebar pane (Explorer/Search/History) as it always has. On a
-// route with NO project in context — the admin screens (`/admin/*`), where the
-// Explorer/Search/History panes have nothing to show and clicking them was a
-// silent no-op (B-31 fix #1) — it routes to "/" (the project list) instead, so the
-// rail is never a dead button. Home ("/") falls in the no-project branch too,
-// where routing to "/" is a harmless self-navigation.
+// Stable references so passing them as props never churns the rail.
+const NONE_DISABLED: RailView[] = []
+// Off a project route (the admin screens) Search and History have no meaningful
+// action — they would mean search/history over the admin context (e.g. OAuth
+// tokens), which is unbuilt — so they are disabled rather than routed anywhere.
+// Explorer stays enabled there (it returns to the project list).
+const ADMIN_DISABLED: RailView[] = ['search', 'history']
+
+export interface RailControls {
+  onSelect: (v: RailView) => void
+  disabledItems: RailView[]
+}
+
+// The activity-rail behaviour. On a project route (pathname under `/p/`) every
+// rail item switches the sidebar pane (Explorer/Search/History) as it always
+// has. Off a project route — the admin screens (`/admin/*`), and "/" itself —
+// only Explorer is meaningful: it routes to "/" (the project list), so the rail
+// is never a dead button; Search and History are disabled (genuinely inert).
 export function useRailSelect(
   setRail: (v: RailView) => void,
   setSidebarOpen: (open: boolean) => void,
-): (v: RailView) => void {
+): RailControls {
   const navigate = useNavigate()
   const onProjectRoute = useRouterState({
     select: (s) => s.location.pathname.startsWith('/p/'),
   })
-  return useCallback(
+  const onSelect = useCallback(
     (v: RailView) => {
       if (!onProjectRoute) {
+        // Only Explorer is enabled off a project route (Search/History are
+        // disabled and never reach here); it returns to the project list.
         void navigate({ to: '/' })
         return
       }
@@ -28,4 +41,8 @@ export function useRailSelect(
     },
     [onProjectRoute, navigate, setRail, setSidebarOpen],
   )
+  return {
+    onSelect,
+    disabledItems: onProjectRoute ? NONE_DISABLED : ADMIN_DISABLED,
+  }
 }

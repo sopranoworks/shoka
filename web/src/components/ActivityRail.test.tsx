@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { ActivityRail } from './ActivityRail'
 
 // B-31: the activity bar carries only the useful items. The "Namespaces" item
@@ -24,5 +24,30 @@ describe('ActivityRail', () => {
     render(<ActivityRail active="explorer" onSelect={() => {}} />)
     const rail = screen.getByRole('navigation', { name: 'Activity bar' })
     expect(rail.querySelectorAll('button')).toHaveLength(3)
+  })
+
+  // Per-item disabled state (admin rail refinement): a disabled item is inert
+  // (disabled + aria-disabled) and not active-highlighted, while the others stay
+  // enabled.
+  it('renders disabled items as inert (disabled + aria-disabled), others enabled', () => {
+    const onSelect = vi.fn()
+    render(
+      <ActivityRail
+        active="search"
+        onSelect={onSelect}
+        disabled={['search', 'history']}
+      />,
+    )
+    const search = screen.getByRole('button', { name: 'Search' })
+    const history = screen.getByRole('button', { name: 'History' })
+    const explorer = screen.getByRole('button', { name: 'Explorer' })
+
+    expect(search).toBeDisabled()
+    expect(search).toHaveAttribute('aria-disabled', 'true')
+    // Disabled wins over active: even as the active pane, it is not highlighted.
+    expect(search).toHaveAttribute('data-active', 'false')
+    expect(history).toBeDisabled()
+    expect(explorer).toBeEnabled()
+    expect(explorer).toHaveAttribute('aria-disabled', 'false')
   })
 })

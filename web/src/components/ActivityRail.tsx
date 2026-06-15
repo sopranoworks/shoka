@@ -49,25 +49,37 @@ const items: Item[] = [
 export function ActivityRail({
   active,
   onSelect,
+  disabled = [],
 }: {
   active: RailView
   onSelect: (v: RailView) => void
+  // Rail items that are inert in the current context (e.g. Search/History on an
+  // admin/no-project route, where they have no meaningful action). A disabled
+  // item is genuinely inert: not clickable, no hover-active, dimmed, and
+  // aria-disabled — never an active-looking button that does nothing.
+  disabled?: RailView[]
 }) {
   return (
     <nav className={styles.rail} aria-label="Activity bar">
-      {items.map((it) => (
-        <button
-          key={it.id}
-          className={styles.item}
-          data-active={active === it.id}
-          title={it.label}
-          aria-label={it.label}
-          aria-pressed={active === it.id}
-          onClick={() => onSelect(it.id)}
-        >
-          {it.icon}
-        </button>
-      ))}
+      {items.map((it) => {
+        const isDisabled = disabled.includes(it.id)
+        return (
+          <button
+            key={it.id}
+            className={styles.item}
+            data-active={!isDisabled && active === it.id}
+            data-disabled={isDisabled}
+            disabled={isDisabled}
+            aria-disabled={isDisabled}
+            title={isDisabled ? `${it.label} — not available here` : it.label}
+            aria-label={it.label}
+            aria-pressed={!isDisabled && active === it.id}
+            onClick={() => onSelect(it.id)}
+          >
+            {it.icon}
+          </button>
+        )
+      })}
     </nav>
   )
 }

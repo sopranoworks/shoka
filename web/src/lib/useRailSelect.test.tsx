@@ -10,13 +10,15 @@ import {
 import { ActivityRail, type RailView } from '../components/ActivityRail'
 import { useRailSelect } from './useRailSelect'
 
-// Render the ActivityRail wired to the real useRailSelect handler inside a memory
-// router at `url`. The rail is pure, so no QueryClient/wsClient is needed (the
-// full Shell would drag them in) — this isolates the routing decision.
+// Render the ActivityRail wired to the real useRailSelect controls (onSelect +
+// disabledItems) inside a memory router at `url` — mirroring exactly how Shell
+// composes them. The rail is pure, so no QueryClient/wsClient is needed.
 function setup(url: string, setRail: (v: RailView) => void = () => {}) {
   function Harness() {
-    const onSelect = useRailSelect(setRail, () => {})
-    return <ActivityRail active="explorer" onSelect={onSelect} />
+    const { onSelect, disabledItems } = useRailSelect(setRail, () => {})
+    return (
+      <ActivityRail active="explorer" onSelect={onSelect} disabled={disabledItems} />
+    )
   }
   const rootRoute = createRootRoute({ component: Harness })
   const indexRoute = createRoute({
@@ -42,33 +44,54 @@ function setup(url: string, setRail: (v: RailView) => void = () => {}) {
   return router
 }
 
-// Fix #1: on an admin screen (no project in context) the Explorer/Search/History
-// rail items were a silent no-op (they only set local pane state, which has
-// nothing to show there). They must route to "/" instead. RED before the fix:
-// clicking changed neither the URL nor anything visible.
-describe('useRailSelect — admin/no-project routes to "/" (B-31 #1)', () => {
-  it.each(['Explorer', 'Search', 'History'])(
-    'clicking %s on /admin/connections navigates to "/"',
+// Fix (B-31 refinement): on an admin/no-project route, Explorer still routes to
+// "/" (return to where the files are), but Search and History are DISABLED — they
+// have no meaningful action there (OAuth-token search/history is unbuilt), so they
+// must be inert, not active-looking buttons that route to "/".
+describe('useRailSelect — admin: Explorer→"/", Search/History disabled', () => {
+  it('Explorer on /admin/connections navigates to "/"', async () => {
+    const router = setup('/admin/connections')
+    expect(router.state.location.pathname).toBe('/admin/connections')
+    fireEvent.click(await screen.findByRole('button', { name: 'Explorer' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+  })
+
+  it.each(['Search', 'History'])(
+    '%s on /admin/connections is disabled and does nothing on click (RED→GREEN)',
     async (label) => {
       const router = setup('/admin/connections')
-      expect(router.state.location.pathname).toBe('/admin/connections')
-      fireEvent.click(await screen.findByRole('button', { name: label }))
+      const btn = await screen.findByRole('button', { name: label })
+      expect(btn).toBeDisabled()
+      expect(btn).toHaveAttribute('aria-disabled', 'true')
+      // Not active-highlighted even if it was the last-selected pane.
+      expect(btn).toHaveAttribute('data-active', 'false')
+      // Clicking a disabled button must not navigate (RED before: it went to "/").
+      fireEvent.click(btn)
       await waitFor(() =>
-        expect(router.state.location.pathname).toBe('/'),
+        expect(router.state.location.pathname).toBe('/admin/connections'),
       )
     },
   )
 })
 
-// Fix #1 must NOT regress the normal project view: there the rail switches the
-// sidebar pane (Explorer/Search/History) and does not navigate away.
-describe('useRailSelect — project view keeps the pane behaviour (no regression)', () => {
+// No regression in a normal project view: all three rail items stay enabled and
+// switch the sidebar pane (no navigation).
+describe('useRailSelect — project view: all three enabled (no regression)', () => {
+  it.each(['Explorer', 'Search', 'History'])(
+    '%s in a project view is enabled',
+    async (label) => {
+      setup('/p/ns/proj')
+      const btn = await screen.findByRole('button', { name: label })
+      expect(btn).toBeEnabled()
+      expect(btn).toHaveAttribute('aria-disabled', 'false')
+    },
+  )
+
   it('clicking Explorer in a project view sets the rail and does not navigate', async () => {
     const setRail = vi.fn()
     const router = setup('/p/ns/proj', setRail)
     fireEvent.click(await screen.findByRole('button', { name: 'Explorer' }))
     expect(setRail).toHaveBeenCalledWith('explorer')
-    // Give any (unexpected) navigation a chance to settle, then assert we stayed.
     await waitFor(() =>
       expect(router.state.location.pathname).toBe('/p/ns/proj'),
     )

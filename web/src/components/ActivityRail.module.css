@@ -25,6 +25,19 @@
   color: var(--c-text);
   background: var(--c-hover);
 }
+/* A disabled rail item is inert: dimmed, no pointer, and no hover-active state
+   (the :not() above the :hover keeps the highlight from applying). */
+.item:disabled,
+.item[data-disabled='true'] {
+  opacity: 0.38;
+  cursor: default;
+  pointer-events: none;
+}
+.item:disabled:hover,
+.item[data-disabled='true']:hover {
+  color: var(--c-text-faint);
+  background: transparent;
+}
 .item[data-active='true'] {
   color: var(--c-text);
 }
