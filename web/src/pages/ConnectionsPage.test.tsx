@@ -32,6 +32,14 @@ const sampleConn = {
   principal_email: 'op@example.test',
   issued_at: '2026-06-03T12:00:00Z',
   access_expiry: '2026-06-03T13:00:00Z',
+  scope: '*',
+}
+
+// isoFromNow builds an access_expiry relative to the current instant so the
+// client-derived status (expired/near/healthy) is deterministic regardless of
+// when the suite runs.
+function isoFromNow(ms: number): string {
+  return new Date(Date.now() + ms).toISOString()
 }
 
 function renderPage(admin = true): { container: HTMLElement } {
@@ -142,6 +150,49 @@ describe('ConnectionsPage', () => {
     // The denial surfaces (as a toast); no token panel appears.
     await waitFor(() => expect(issueSelfToken).toHaveBeenCalled())
     expect(screen.queryByRole('button', { name: 'Copy token' })).toBeNull()
+  })
+
+  it('marks expired connections red and near-expiry orange, leaving healthy quiet', async () => {
+    listConnections.mockResolvedValue([
+      { ...sampleConn, series_id: 's-exp', client_id: 'https://exp.example/c', access_expiry: isoFromNow(-60 * 60 * 1000) },
+      { ...sampleConn, series_id: 's-near', client_id: 'https://near.example/c', access_expiry: isoFromNow(8 * 60 * 1000) },
+      { ...sampleConn, series_id: 's-ok', client_id: 'https://ok.example/c', access_expiry: isoFromNow(5 * 60 * 60 * 1000) },
+    ])
+    const { container } = renderPage()
+    await screen.findByText('exp.example')
+
+    // Exactly one cell of each status — the derivation maps each row correctly.
+    expect(container.querySelectorAll('[data-status="expired"]')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-status="near"]')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-status="healthy"]')).toHaveLength(1)
+
+    // The attention treatment shows a relative-time badge for the problem rows;
+    // the healthy row stays quiet (no badge).
+    expect(screen.getByText(/expired .* ago/)).toBeInTheDocument()
+    expect(screen.getByText(/expires in/)).toBeInTheDocument()
+    const healthyCell = container.querySelector('[data-status="healthy"]')
+    expect(healthyCell?.querySelector('span:nth-child(2)')).toBeNull()
+  })
+
+  it('shows the token Scope column ("*" as all access; a scoped value verbatim)', async () => {
+    listConnections.mockResolvedValue([
+      { ...sampleConn, series_id: 's-star', client_id: 'https://star.example/c', scope: '*' },
+      { ...sampleConn, series_id: 's-scoped', client_id: 'https://scoped.example/c', scope: 'namespace:foo' },
+    ])
+    renderPage()
+    expect(await screen.findByText('all access')).toBeInTheDocument()
+    expect(screen.getByText('namespace:foo')).toBeInTheDocument()
+  })
+
+  it('renders connections in the order the endpoint returns (server sorts newest-first)', async () => {
+    listConnections.mockResolvedValue([
+      { ...sampleConn, series_id: 's-new', client_id: 'https://newer.example/c' },
+      { ...sampleConn, series_id: 's-old', client_id: 'https://older.example/c' },
+    ])
+    const { container } = renderPage()
+    await screen.findByText('newer.example')
+    const text = container.textContent ?? ''
+    expect(text.indexOf('newer.example')).toBeLessThan(text.indexOf('older.example'))
   })
 
   it('revoke is inline-confirm gated, targets one series, and drops the row on success', async () => {

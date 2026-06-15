@@ -119,6 +119,34 @@
   color: var(--c-text-dim);
 }
 
+/* Token authorization grant (the 2026-06-15 authz foundation). Uniform "all
+   access" today; a scoped value (e.g. namespace:foo) shows verbatim. */
+.scopeCell {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--c-text-dim);
+  white-space: nowrap;
+}
+
+/* Expiry status: surface problems with attention colour, keep healthy quiet.
+   Expired = danger (red), near-expiry = warning (orange) — reusing the design
+   system's tokens, not ad-hoc hex. */
+.expiryCell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.badgeExpired {
+  color: var(--c-bad);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.badgeNear {
+  color: var(--c-warn);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
 .actions {
   display: flex;
   gap: var(--sp-2);

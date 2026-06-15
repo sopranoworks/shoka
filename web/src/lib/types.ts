@@ -76,6 +76,10 @@ export interface OAuthConnection {
   principal_email: string
   issued_at: string
   access_expiry: string
+  // The token's authorization grant (the 2026-06-15 authz foundation): "*" =
+  // all-access (every DCR/self-issued token today), or a namespace grant for a
+  // future pre-issued scoped token. Non-secret; shown in the connections table.
+  scope: string
 }
 
 // The OAUTH_LIST response payload (mirrors Go's ui.OAuthListPayload). The slice

@@ -94,6 +94,7 @@ export function ConnectionsPage() {
                 <tr>
                   <th>Client</th>
                   <th>Principal</th>
+                  <th>Scope</th>
                   <th>Issued</th>
                   <th>Access expires</th>
                   <th>Series</th>
@@ -116,6 +117,47 @@ export function ConnectionsPage() {
 function fmtTime(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
+}
+
+// Expiry status drives the row's attention colour (the 2026-06-15 admin-UI
+// directive): surface problems, keep healthy rows quiet. Derived CLIENT-side from
+// access_expiry so it stays live without a refetch. An unparseable time yields
+// 'healthy' (never raise a false alarm on bad data).
+const NEAR_EXPIRY_MS = 15 * 60 * 1000
+
+type ExpiryStatus = 'expired' | 'near' | 'healthy'
+
+export function expiryStatus(
+  accessExpiry: string,
+  now: number = Date.now(),
+): ExpiryStatus {
+  const exp = new Date(accessExpiry).getTime()
+  if (Number.isNaN(exp)) return 'healthy'
+  const left = exp - now
+  if (left <= 0) return 'expired'
+  if (left <= NEAR_EXPIRY_MS) return 'near'
+  return 'healthy'
+}
+
+// fmtRelative renders a short, legible distance to/from the expiry instant:
+// "expires in 8m" / "expired 2h ago". Returns '' for an unparseable time.
+export function fmtRelative(accessExpiry: string, now: number = Date.now()): string {
+  const exp = new Date(accessExpiry).getTime()
+  if (Number.isNaN(exp)) return ''
+  const diff = exp - now
+  const abs = Math.abs(diff)
+  let unit: string
+  if (abs < 60_000) unit = '<1m'
+  else if (abs < 3_600_000) unit = `${Math.round(abs / 60_000)}m`
+  else if (abs < 86_400_000) unit = `${Math.round(abs / 3_600_000)}h`
+  else unit = `${Math.round(abs / 86_400_000)}d`
+  return diff < 0 ? `expired ${unit} ago` : `expires in ${unit}`
+}
+
+// fmtScope renders the token's authorization grant: "*" reads clearly as
+// "all access"; a scoped value (e.g. "namespace:foo") is shown verbatim.
+export function fmtScope(scope: string): string {
+  return scope === '*' || scope === '' ? 'all access' : scope
 }
 
 // IssueTokenButton mints a "token to self" for the CLI (B-46b §2.2). The minted
@@ -224,6 +266,7 @@ function ConnectionRow({ conn }: { conn: OAuthConnection }) {
   })
 
   const busy = revoke.isPending
+  const status = expiryStatus(conn.access_expiry)
 
   return (
     <tr>
@@ -238,8 +281,24 @@ function ConnectionRow({ conn }: { conn: OAuthConnection }) {
           <span className={styles.principalEmail}>{conn.principal_email}</span>
         )}
       </td>
+      <td className={styles.scopeCell} title={conn.scope}>
+        {fmtScope(conn.scope)}
+      </td>
       <td className={styles.time}>{fmtTime(conn.issued_at)}</td>
-      <td className={styles.time}>{fmtTime(conn.access_expiry)}</td>
+      <td className={styles.time} data-status={status}>
+        <div className={styles.expiryCell}>
+          <span>{fmtTime(conn.access_expiry)}</span>
+          {status !== 'healthy' && (
+            <span
+              className={
+                status === 'expired' ? styles.badgeExpired : styles.badgeNear
+              }
+            >
+              {fmtRelative(conn.access_expiry)}
+            </span>
+          )}
+        </div>
+      </td>
       <td className={styles.series}>
         <code>{conn.series_id_short}</code>
       </td>

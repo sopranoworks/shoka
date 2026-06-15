@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -192,6 +193,11 @@ type OAuthConnectionInfo struct {
 	PrincipalEmail string    `json:"principal_email"`
 	IssuedAt       time.Time `json:"issued_at"`
 	AccessExpiry   time.Time `json:"access_expiry"`
+	// Scope is the token's authorization grant (the 2026-06-15 authz foundation):
+	// "*" for an all-access (DCR/self-issued) token, or a namespace grant for a
+	// future pre-issued scoped token. It is non-secret routing metadata, shown in
+	// the admin connections table so the operator can see what each token may reach.
+	Scope string `json:"scope"`
 }
 
 // OAuthListPayload is the OAUTH_LIST response body: the live connections. The
@@ -766,6 +772,17 @@ func (m *Manager) handleOAuthList(client *wsClient) {
 		client.sendError(fmt.Sprintf("Failed to list OAuth connections: %v", err))
 		return
 	}
+	// Defined order (the 2026-06-15 admin-UI directive): newest connection first.
+	// Store.List() iterates bbolt key order (= random series-id order), which left
+	// the admin table in an unexplained sequence; the handler is the sort owner so
+	// the wire response is authoritatively issued_at-descending. Ties (same issue
+	// instant) fall back to the series id for a stable, deterministic order.
+	sort.Slice(infos, func(i, j int) bool {
+		if infos[i].IssuedAt.Equal(infos[j].IssuedAt) {
+			return infos[i].SeriesID < infos[j].SeriesID
+		}
+		return infos[i].IssuedAt.After(infos[j].IssuedAt)
+	})
 	conns := make([]OAuthConnectionInfo, 0, len(infos))
 	for _, s := range infos {
 		conns = append(conns, toOAuthConnectionInfo(s))
@@ -846,6 +863,7 @@ func toOAuthConnectionInfo(s oauthstore.SeriesInfo) OAuthConnectionInfo {
 		PrincipalEmail: s.Principal.Email,
 		IssuedAt:       s.IssuedAt,
 		AccessExpiry:   s.AccessExpiry,
+		Scope:          s.Scope,
 	}
 }
 

@@ -174,6 +174,43 @@ func TestWSUI_OAuthListReturnsSummaries(t *testing.T) {
 	}
 }
 
+// TestWSUI_OAuthListSortedNewestFirstAndCarriesScope pins the 2026-06-15 admin-UI
+// fixes: handleOAuthList returns connections in issued_at-DESCENDING order
+// (replacing Store.List()'s random bbolt-key order) and the wire DTO carries the
+// token Scope so the admin page can show it.
+func TestWSUI_OAuthListSortedNewestFirstAndCarriesScope(t *testing.T) {
+	base := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	// Seed deliberately OUT OF ORDER (oldest first) so a no-sort handler would fail.
+	store := &fakeOAuthStore{series: []oauthstore.SeriesInfo{
+		{
+			SeriesID: "series-old", ClientID: "https://a.example/cimd",
+			Principal: oauthstore.Principal{Name: "Op", Email: "op@example.test"},
+			IssuedAt:  base, AccessExpiry: base.Add(time.Hour), Scope: "*",
+		},
+		{
+			SeriesID: "series-new", ClientID: "https://b.example/cimd",
+			Principal: oauthstore.Principal{Name: "Op", Email: "op@example.test"},
+			IssuedAt:  base.Add(2 * time.Hour), AccessExpiry: base.Add(3 * time.Hour), Scope: "namespace:foo",
+		},
+	}}
+	conn := newOAuthManager(t, nil, store)
+
+	out := decodeOAuthList(t, roundTrip(t, conn, MsgOAuthList, `{}`))
+	if len(out.Connections) != 2 {
+		t.Fatalf("connections = %d, want 2", len(out.Connections))
+	}
+	// Newest (issued later) first.
+	if out.Connections[0].SeriesID != "series-new" || out.Connections[1].SeriesID != "series-old" {
+		t.Fatalf("order = [%s, %s], want newest-first [series-new, series-old]",
+			out.Connections[0].SeriesID, out.Connections[1].SeriesID)
+	}
+	// Scope rides the wire DTO, verbatim per series.
+	if out.Connections[0].Scope != "namespace:foo" || out.Connections[1].Scope != "*" {
+		t.Fatalf("scopes = [%q, %q], want [namespace:foo, *]",
+			out.Connections[0].Scope, out.Connections[1].Scope)
+	}
+}
+
 func TestWSUI_OAuthListEmptyReturnsEmptySlice(t *testing.T) {
 	store := &fakeOAuthStore{} // no connections
 	conn := newOAuthManager(t, nil, store)
