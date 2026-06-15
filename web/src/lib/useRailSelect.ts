@@ -47,9 +47,31 @@ export function useRailSelect(
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const onProjectRoute = pathname.startsWith('/p/')
+  const onHistoryRoute = /^\/p\/[^/]+\/[^/]+\/history(\/|$)/.test(pathname)
   const onSelect = useCallback(
     (v: RailView) => {
       if (!onProjectRoute) return // all items disabled off a project route
+      // Explorer leaving History: symmetric to File→History — return the content
+      // to the SAME file's file view (`/blob/<file>`), not just switch the rail.
+      // Runs before the toggle check so it also corrects a reload-desync (rail
+      // 'explorer' on a history URL). No file selected → the project root.
+      if (v === 'explorer' && onHistoryRoute) {
+        const ref = parseProjectFile(pathname)
+        setRail('explorer')
+        setSidebarOpen(true)
+        if (ref?.path) {
+          void navigate({
+            to: '/p/$namespace/$project/blob/$',
+            params: { namespace: ref.ns, project: ref.proj, _splat: ref.path },
+          })
+        } else if (ref) {
+          void navigate({
+            to: '/p/$namespace/$project',
+            params: { namespace: ref.ns, project: ref.proj },
+          })
+        }
+        return
+      }
       // Toggle: clicking the already-open active pane closes the sidebar.
       if (v === rail && sidebarOpen) {
         setSidebarOpen(false)
@@ -71,7 +93,16 @@ export function useRailSelect(
         }
       }
     },
-    [onProjectRoute, rail, sidebarOpen, pathname, navigate, setRail, setSidebarOpen],
+    [
+      onProjectRoute,
+      onHistoryRoute,
+      rail,
+      sidebarOpen,
+      pathname,
+      navigate,
+      setRail,
+      setSidebarOpen,
+    ],
   )
   return {
     onSelect,

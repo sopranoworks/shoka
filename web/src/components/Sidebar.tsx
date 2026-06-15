@@ -28,10 +28,29 @@ function useActiveHistoryPath(): string | null {
 }
 
 export function Sidebar({ view }: { view: RailView }) {
+  // All hooks unconditional, top-level, fixed order (Rules of Hooks — respect the
+  // 1a370a4 #310 fix).
   const ref = useActiveProjectRef()
+  const blobPath = useActiveFilePath()
+  const historyPath = useActiveHistoryPath()
+
   if (view === 'search') return <SearchView projectRef={ref} />
-  if (view === 'history') return <HistoryView />
-  return <ExplorerView />
+  if (!ref) return <div className={styles.pane} />
+
+  // Explorer AND History render the SAME ProjectTree at the SAME position (only
+  // openMode/activePath differ), so switching Explorer↔History does NOT remount
+  // the tree — the file tree keeps its expansion state across the mode switch.
+  // (Previously Sidebar returned different ExplorerView/HistoryView component
+  // types, which remounted the tree to all-collapsed on every switch.)
+  const isHistory = view === 'history'
+  return (
+    <ProjectTree
+      ns={ref.ns}
+      proj={ref.proj}
+      activePath={isHistory ? historyPath : blobPath}
+      openMode={isHistory ? 'history' : 'blob'}
+    />
+  )
 }
 
 // The Explorer and History rails both show the file tree (History keeps the tree
@@ -108,26 +127,6 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   return <div className={styles.sectionHeader}>{children}</div>
 }
 
-function ExplorerView() {
-  const ref = useActiveProjectRef()
-  const activePath = useActiveFilePath()
-
-  // No project open: render a genuinely empty pane. There is nothing to explore,
-  // so the old "EXPLORER" heading + "Choose a project →" cushion was just noise —
-  // and the rail is disabled in this state anyway (the pane isn't reachable).
-  if (!ref) {
-    return <div className={styles.pane} />
-  }
-  return (
-    <ProjectTree
-      ns={ref.ns}
-      proj={ref.proj}
-      activePath={activePath}
-      openMode="blob"
-    />
-  )
-}
-
 // Project-scoped full-text search. The form navigates to the search route,
 // where the URL's ?q= is the source of truth; this sidebar input is just an
 // entry point. Search needs a project in context (the backend searches one
@@ -180,40 +179,5 @@ function SearchView({ projectRef }: { projectRef: { ns: string; proj: string } |
         anywhere.
       </div>
     </div>
-  )
-}
-
-// History mode keeps the file tree in place (no separate cushioned route): the
-// rail toggles the right pane to the selected file's history, and the tree here
-// opens each file's history (openMode="history") so selecting another file makes
-// the right pane follow it. The full commit list / version / diff render in the
-// content pane on the history route; when no file is selected that pane shows a
-// quiet placeholder.
-function HistoryView() {
-  const ref = useActiveProjectRef()
-  const activePath = useActiveHistoryPath()
-
-  if (!ref) {
-    return (
-      <div className={styles.pane}>
-        <SectionHeader>History</SectionHeader>
-        <div className={styles.empty}>
-          Open a project to view file history.
-          <br />
-          <Link to="/" className={styles.emptyLink}>
-            Choose a project →
-          </Link>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <ProjectTree
-      ns={ref.ns}
-      proj={ref.proj}
-      activePath={activePath}
-      openMode="history"
-    />
   )
 }

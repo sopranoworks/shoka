@@ -150,6 +150,40 @@ describe('useRailSelect — History opens the active file’s history (on open)'
   })
 })
 
+// Defect 1 (RED→GREEN): Explorer leaving History returns the content to the SAME
+// file's file view — symmetric to File→History. RED before: the URL stayed on
+// /history/<file> (Explorer click only set the rail).
+describe('useRailSelect — Explorer on a history route returns to /blob/<same file>', () => {
+  it('from a sub-dir file history, navigates to that file’s blob view + rail Explorer', async () => {
+    const setRail = vi.fn()
+    const router = setup('/p/ns/proj/history/reports/doc.md', {
+      rail: 'history',
+      setRail,
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Explorer' }))
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe('/p/ns/proj/blob/reports/doc.md'),
+    )
+    expect(setRail).toHaveBeenCalledWith('explorer')
+  })
+
+  it('from a root file history, navigates to that file’s blob view', async () => {
+    const router = setup('/p/ns/proj/history/doc.md', { rail: 'history' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Explorer' }))
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe('/p/ns/proj/blob/doc.md'),
+    )
+  })
+
+  it('on a history route with NO file, goes to the project root (not a broken route)', async () => {
+    const router = setup('/p/ns/proj/history/', { rail: 'history' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Explorer' }))
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe('/p/ns/proj'),
+    )
+  })
+})
+
 // D#4: selecting a project defaults the rail to Explorer; navigating among a
 // project's files/history does NOT reset it.
 describe('useResetRailToExplorerOnProjectChange', () => {
