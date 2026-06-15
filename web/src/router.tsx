@@ -141,9 +141,20 @@ const searchRoute = createRoute({
 
 // "/p/$namespace/$project/new" path-less new-file editor (session 4). Additive
 // and parallel to /edit/$ — an empty editor where the path is chosen at Save.
+// The optional ?in= search carries the directory the create was launched from
+// (B-31 fix #3/#4), so the Save-path dialog can be prefilled with that location
+// (sibling-ready); the path stays fully editable to any nested target.
+interface NewFileSearch {
+  in?: string
+}
+
 const newFileRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/p/$namespace/$project/new',
+  validateSearch: (search: Record<string, unknown>): NewFileSearch => {
+    const dir = typeof search.in === 'string' && search.in ? search.in : undefined
+    return dir ? { in: dir } : {}
+  },
   component: lazyRoute(NewFilePage),
 })
 
@@ -200,4 +211,5 @@ export {
   type IndexSearch,
   type SearchSearch,
   type HistorySearch,
+  type NewFileSearch,
 }

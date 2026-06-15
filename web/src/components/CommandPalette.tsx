@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Command } from 'cmdk'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { usePalette } from '../lib/palette'
-import { useMoveController } from '../lib/moveController'
+import { useMoveController, dirOf } from '../lib/moveController'
 import { useTheme } from '../lib/theme'
 import { useIsAdmin } from '../lib/admin'
 import { useProjectsQuery, useAllProjectFiles } from '../lib/queries'
@@ -75,12 +75,16 @@ export function CommandPalette() {
   const searchProjectRef = useRef(searchProject)
   searchProjectRef.current = searchProject
 
-  // New file in the project in context (path chosen at Save time).
+  // New file in the project in context (path chosen at Save time). When a file is
+  // open, carry its directory so the create dialog prefills that location
+  // (B-31 fix #3); the path stays editable to any nested target.
   const newFileInProject = useCallback(() => {
     if (!view.namespace || !view.project) return
+    const launchDir = view.path ? dirOf(view.path) : ''
     void navigate({
       to: '/p/$namespace/$project/new',
       params: { namespace: view.namespace, project: view.project },
+      search: launchDir ? { in: launchDir } : {},
     })
   }, [view, navigate])
 

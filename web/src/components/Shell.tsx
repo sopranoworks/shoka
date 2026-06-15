@@ -10,6 +10,7 @@ import { Toaster } from './Toaster'
 import { NotifyBridge } from './NotifyBridge'
 import { MoveProvider } from '../lib/moveController'
 import { useMediaQuery } from '../lib/useMediaQuery'
+import { useRailSelect } from '../lib/useRailSelect'
 import styles from './Shell.module.css'
 
 /**
@@ -20,6 +21,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const [rail, setRail] = useState<RailView>('explorer')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const isNarrow = useMediaQuery('(max-width: 640px)')
+  const onRailSelect = useRailSelect(setRail, setSidebarOpen)
 
   // On narrow screens the panel group stacks vertically so the content stays
   // full-width and readable (no sliver). On desktop it's a resizable split.
@@ -31,13 +33,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <TitleBar onToggleSidebar={() => setSidebarOpen((v) => !v)} />
 
       <div className={styles.body}>
-        <ActivityRail
-          active={rail}
-          onSelect={(v) => {
-            setRail(v)
-            setSidebarOpen(true)
-          }}
-        />
+        <ActivityRail active={rail} onSelect={onRailSelect} />
 
         <div className={styles.panelArea}>
           <PanelGroup

@@ -3,6 +3,7 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import type { RailView } from './ActivityRail'
 import { FileTree } from './FileTree'
 import { useTreeQuery } from '../lib/queries'
+import { dirOf } from '../lib/moveController'
 import styles from './Sidebar.module.css'
 
 // Pull the active namespace/project (if any) from the URL.
@@ -70,6 +71,12 @@ function ExplorerForProject({
   activePath: string | null
 }) {
   const { data: tree, isError } = useTreeQuery(ns, proj)
+  const navigate = useNavigate()
+  // "+ New file" launches the create flow prefilled with the current location:
+  // the directory of the open file (so the new file lands beside it), or the
+  // project root when no file is open. The path stays editable to any nested
+  // target (B-31 fix #3/#4) — this is the reach-it-from-anywhere affordance.
+  const launchDir = activePath ? dirOf(activePath) : ''
   return (
     <div className={styles.pane}>
       <SectionHeader>
@@ -77,6 +84,21 @@ function ExplorerForProject({
           <span className={styles.projNs}>{ns}/</span>
           {proj}
         </span>
+        <button
+          type="button"
+          className={styles.newFileBtn}
+          title="New file"
+          aria-label="New file"
+          onClick={() =>
+            void navigate({
+              to: '/p/$namespace/$project/new',
+              params: { namespace: ns, project: proj },
+              search: launchDir ? { in: launchDir } : {},
+            })
+          }
+        >
+          + New file
+        </button>
       </SectionHeader>
       <div className={styles.treeWrap}>
         {isError ? (

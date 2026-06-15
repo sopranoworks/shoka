@@ -7,6 +7,7 @@ import { useEditorBuffer } from '../lib/useEditorBuffer'
 import { useTheme } from '../lib/theme'
 import { saveFile, fileExists } from '../lib/fileOps'
 import { validateFilePath } from '../lib/pathValidation'
+import { newFilePrefill } from '../lib/newFilePrefill'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PromptDialog } from '../components/PromptDialog'
 import styles from './EditorPage.module.css'
@@ -21,6 +22,12 @@ import styles from './EditorPage.module.css'
 // browser-memory only: reloading /new yields an empty buffer (no draft restore).
 export function NewFilePage() {
   const { namespace, project } = newFileRoute.useParams()
+  const { in: launchedFrom } = newFileRoute.useSearch()
+  // Seed the Save-path dialog with the directory the create was launched from
+  // (the ?in= search): `subdir/` from a file view (cursor ready to type the
+  // sibling's name), empty at the project root. Fully editable to any nested
+  // path — the server creates intermediate dirs as a by-product of the write.
+  const pathPrefill = newFilePrefill(launchedFrom)
   const { theme } = useTheme()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -145,6 +152,7 @@ export function NewFilePage() {
         open={promptOpen}
         title="Save new file"
         label="File path (relative to the project)"
+        defaultValue={pathPrefill}
         confirmLabel="Save"
         validate={validateFilePath}
         onConfirm={onPromptConfirm}
