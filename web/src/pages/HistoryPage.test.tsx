@@ -140,4 +140,18 @@ describe('HistoryPage (B-31 phase 2)', () => {
     renderHistory('/p/ns/proj/history/doc.md?mode=diff')
     expect(await screen.findByRole('status')).toHaveTextContent(/binary/i)
   })
+
+  // Fix A: History opened with no file selected (empty path) shows a quiet
+  // placeholder in the right pane rather than erroring (the tree stays visible to
+  // pick a file from).
+  it('shows a quiet placeholder when no file is selected (empty path)', async () => {
+    renderHistory('/p/ns/proj/history/')
+    expect(
+      await screen.findByText(/select a file to see its history/i),
+    ).toBeInTheDocument()
+    // No commit-history list is rendered in the placeholder state.
+    expect(
+      screen.queryByRole('complementary', { name: 'Commit history' }),
+    ).toBeNull()
+  })
 })

@@ -30,16 +30,29 @@ import styles from './FileTree.module.css'
  *   controller (lib/moveController), never wsClient directly. A move is a pure
  *   path change — no link surface anywhere.
  */
+// Which route a tree file opens into: the file view (default) or — in the
+// sidebar's History mode — that file's history. Exported for a focused unit test.
+export type TreeOpenMode = 'blob' | 'history'
+export function fileOpenRoute(openMode: TreeOpenMode) {
+  return openMode === 'history'
+    ? '/p/$namespace/$project/history/$'
+    : '/p/$namespace/$project/blob/$'
+}
+
 export function FileTree({
   namespace,
   project,
   nodes,
   activePath,
+  openMode = 'blob',
 }: {
   namespace: string
   project: string
   nodes: FileNode[]
   activePath: string | null
+  // In History mode the tree opens each file's history (the right pane follows
+  // the selected file) instead of the file view. Default: open the file.
+  openMode?: TreeOpenMode
 }) {
   const navigate = useNavigate()
   const { requestMove, executeMove } = useMoveController()
@@ -85,7 +98,7 @@ export function FileTree({
 
   const openFile = (path: string) => {
     navigate({
-      to: '/p/$namespace/$project/blob/$',
+      to: fileOpenRoute(openMode),
       params: { namespace, project, _splat: path },
     })
   }

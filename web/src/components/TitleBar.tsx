@@ -53,12 +53,26 @@ function useCrumbs(): Crumb[] {
   return crumbs
 }
 
-function CrumbLink({ crumb }: { crumb: Crumb }) {
+// An ancestor crumb is a link back to that position. Only ns/project ancestors
+// are links — a sub-directory ancestor has no "open this directory" route, so it
+// is rendered as plain text by the trail below, never reaching here.
+//
+// `activeOptions={{ exact: true }}` is required: without it, TanStack marks a link
+// "active" (and adds aria-current="page") whenever its target is a PREFIX of the
+// current URL — so `/p/ns/proj` would read as current on `…/blob/dir/file.md`.
+// Exact matching keeps the single current marker on the final crumb only. (An
+// ancestor's target is never an exact match for the deeper page it sits above.)
+function CrumbLink({ crumb }: { crumb: Extract<Crumb, { kind: 'ns' | 'project' }> }) {
   const cls = styles.crumbLink
   switch (crumb.kind) {
     case 'ns':
       return (
-        <Link to="/" search={{ ns: crumb.ns }} className={cls}>
+        <Link
+          to="/"
+          search={{ ns: crumb.ns }}
+          activeOptions={{ exact: true }}
+          className={cls}
+        >
           {crumb.label}
         </Link>
       )
@@ -67,20 +81,7 @@ function CrumbLink({ crumb }: { crumb: Crumb }) {
         <Link
           to="/p/$namespace/$project"
           params={{ namespace: crumb.ns, project: crumb.proj }}
-          className={cls}
-        >
-          {crumb.label}
-        </Link>
-      )
-    case 'blob':
-      return (
-        <Link
-          to="/p/$namespace/$project/blob/$"
-          params={{
-            namespace: crumb.ns,
-            project: crumb.proj,
-            _splat: crumb.path,
-          }}
+          activeOptions={{ exact: true }}
           className={cls}
         >
           {crumb.label}
@@ -150,6 +151,11 @@ export function TitleBar({
                   <span className={styles.crumbCurrent} aria-current="page">
                     {c.label}
                   </span>
+                ) : c.kind === 'blob' ? (
+                  // A sub-directory segment: there is no "open this directory"
+                  // route, so render it as plain (non-navigating) text rather than
+                  // a broken blob/<dir> link that would 404 as "File not found".
+                  <span className={styles.crumbDir}>{c.label}</span>
                 ) : (
                   <CrumbLink crumb={c} />
                 )}

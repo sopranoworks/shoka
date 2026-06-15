@@ -91,6 +91,13 @@
   color: var(--c-text-faint);
   margin: 0 6px;
 }
+.crumbDir {
+  color: var(--c-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
 .crumbLink {
   color: var(--c-text-dim);
   white-space: nowrap;

@@ -40,6 +40,17 @@ export function HistoryPage() {
   const search = useSearch({ strict: false }) as HistorySearch
   const mode = search.mode ?? 'diff'
 
+  // History is per-file. When the History rail is opened with no file selected
+  // (e.g. at the project root), the right pane shows a quiet placeholder rather
+  // than erroring — the file tree stays visible to pick a file from.
+  if (!path) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.empty}>Select a file to see its history.</div>
+      </div>
+    )
+  }
+
   const { data: history, isError: histErr } = useHistoryQuery(
     namespace,
     project,

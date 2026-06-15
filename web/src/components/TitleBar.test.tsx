@@ -36,8 +36,18 @@ function renderTitleBar(initialPath: string) {
     path: '/p/$namespace/$project/history/$',
     component: () => null,
   })
+  const blobRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/p/$namespace/$project/blob/$',
+    component: () => null,
+  })
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute, projectRoute, historyRoute]),
+    routeTree: rootRoute.addChildren([
+      indexRoute,
+      projectRoute,
+      historyRoute,
+      blobRoute,
+    ]),
     history: createMemoryHistory({ initialEntries: [initialPath] }),
   })
   // The test router is a distinct instance from the app's; cast to the
@@ -133,5 +143,49 @@ describe('TitleBar breadcrumb', () => {
     expect(within(nav).getByRole('link', { name: 'design' })).toBeInTheDocument()
     const file = within(nav).getByText('spec.md')
     expect(file).toHaveAttribute('aria-current', 'page')
+  })
+})
+
+// B-31 (this fix): a SUB-DIRECTORY breadcrumb segment must not link to the blob
+// (file) route — that 404s as "File not found". And only the final segment may be
+// aria-current (TanStack's prefix-active Links were marking ancestors current too).
+describe('TitleBar breadcrumb — sub-directory segment (B-31 fix)', () => {
+  const url = '/p/shoka/maintenance/blob/reports/2026-06-15.md'
+
+  it('renders the sub-dir crumb as plain text, NOT a broken blob/<dir> link (RED→GREEN)', async () => {
+    renderTitleBar(url)
+    const nav = await screen.findByRole('navigation', { name: 'Breadcrumb' })
+    // `reports` is a directory: it must not be a link at all (and certainly not to
+    // /blob/reports). RED before: it was a <Link> to /…/blob/reports.
+    expect(within(nav).queryByRole('link', { name: 'reports' })).toBeNull()
+    // The segment is still shown (as text).
+    expect(within(nav).getByText('reports')).toBeInTheDocument()
+    // No crumb anchor points at the broken blob/<dir> href.
+    const links = within(nav).getAllByRole('link')
+    for (const a of links) {
+      expect(a.getAttribute('href') ?? '').not.toContain('/blob/reports')
+    }
+  })
+
+  it('marks exactly one aria-current — the final file segment, not ancestors', async () => {
+    renderTitleBar(url)
+    const nav = await screen.findByRole('navigation', { name: 'Breadcrumb' })
+    const current = nav.querySelectorAll('[aria-current="page"]')
+    expect(current).toHaveLength(1)
+    expect(current[0].textContent).toBe('2026-06-15.md')
+    // The project ancestor `maintenance` is a link and NOT current.
+    const proj = within(nav).getByRole('link', { name: 'maintenance' })
+    expect(proj).not.toHaveAttribute('aria-current')
+  })
+
+  it('keeps the root/project/ns crumbs working (no 01e8a0f regression)', async () => {
+    renderTitleBar(url)
+    const nav = await screen.findByRole('navigation', { name: 'Breadcrumb' })
+    expect(
+      within(nav).getByRole('link', { name: 'shoka' }).getAttribute('href'),
+    ).toContain('ns=shoka')
+    expect(
+      within(nav).getByRole('link', { name: 'maintenance' }).getAttribute('href'),
+    ).toContain('/p/shoka/maintenance')
   })
 })

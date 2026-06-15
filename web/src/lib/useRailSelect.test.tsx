@@ -36,8 +36,24 @@ function setup(url: string, setRail: (v: RailView) => void = () => {}) {
     path: '/admin/connections',
     component: () => null,
   })
+  const blobRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/p/$namespace/$project/blob/$',
+    component: () => null,
+  })
+  const historyRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/p/$namespace/$project/history/$',
+    component: () => null,
+  })
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute, projectRoute, adminRoute]),
+    routeTree: rootRoute.addChildren([
+      indexRoute,
+      projectRoute,
+      adminRoute,
+      blobRoute,
+      historyRoute,
+    ]),
     history: createMemoryHistory({ initialEntries: [url] }),
   })
   render(<RouterProvider router={router as never} />)
@@ -102,5 +118,36 @@ describe('useRailSelect — project view: all three enabled (no regression)', ()
     setup('/p/ns/proj', setRail)
     fireEvent.click(await screen.findByRole('button', { name: 'History' }))
     expect(setRail).toHaveBeenCalledWith('history')
+  })
+})
+
+// Fix A: clicking History opens the active file's history directly in the right
+// pane (no "View history →" cushion). RED before: History had no navigation — it
+// only switched the sidebar to a cushion you had to click again.
+describe('useRailSelect — History opens the active file’s history directly', () => {
+  it('from a file view, navigates to that file’s history route', async () => {
+    const router = setup('/p/ns/proj/blob/doc.md')
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }))
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe('/p/ns/proj/history/doc.md'),
+    )
+  })
+
+  it('from a nested file view, carries the full path', async () => {
+    const router = setup('/p/ns/proj/blob/reports/doc.md')
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }))
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(
+        '/p/ns/proj/history/reports/doc.md',
+      ),
+    )
+  })
+
+  it('with no file selected (project root), opens the history route empty (placeholder pane)', async () => {
+    const router = setup('/p/ns/proj')
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }))
+    await waitFor(() =>
+      expect(router.state.location.pathname).toContain('/p/ns/proj/history'),
+    )
   })
 })

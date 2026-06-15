@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import type { RailView } from './ActivityRail'
-import { FileTree } from './FileTree'
+import { FileTree, type TreeOpenMode } from './FileTree'
 import { useTreeQuery } from '../lib/queries'
 import { dirOf } from '../lib/moveController'
 import styles from './Sidebar.module.css'
@@ -20,13 +20,11 @@ function useActiveFilePath(): string | null {
   return m ? m[1] : null
 }
 
-// The active file path across the file-bearing routes (blob view, editor, and
-// the history view itself), so the History panel can offer that file's history
-// whichever way the user arrived. Returns the raw (still URL-encoded) splat.
-function useActiveFileAnyView(): string | null {
+// The file shown by the History route (so the History tree highlights it).
+function useActiveHistoryPath(): string | null {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const m = pathname.match(/^\/p\/[^/]+\/[^/]+\/(?:blob|edit|history)\/(.*)$/)
-  return m && m[1] ? decodeURIComponent(m[1]) : null
+  const m = pathname.match(/^\/p\/[^/]+\/[^/]+\/history\/(.*)$/)
+  return m && m[1] ? m[1] : null
 }
 
 export function Sidebar({ view }: { view: RailView }) {
@@ -36,39 +34,20 @@ export function Sidebar({ view }: { view: RailView }) {
   return <ExplorerView />
 }
 
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return <div className={styles.sectionHeader}>{children}</div>
-}
-
-function ExplorerView() {
-  const ref = useActiveProjectRef()
-  const activePath = useActiveFilePath()
-
-  if (!ref) {
-    return (
-      <div className={styles.pane}>
-        <SectionHeader>Explorer</SectionHeader>
-        <div className={styles.empty}>
-          No project open.
-          <br />
-          <Link to="/" className={styles.emptyLink}>
-            Choose a project →
-          </Link>
-        </div>
-      </div>
-    )
-  }
-  return <ExplorerForProject ns={ref.ns} proj={ref.proj} activePath={activePath} />
-}
-
-function ExplorerForProject({
+// The Explorer and History rails both show the file tree (History keeps the tree
+// in place — no separate cushioned route). They differ only in what a tree file
+// opens: the file view, or that file's history (the right pane follows the
+// selection). The header is identical so the tree reads the same in both modes.
+function ProjectTree({
   ns,
   proj,
   activePath,
+  openMode,
 }: {
   ns: string
   proj: string
   activePath: string | null
+  openMode: TreeOpenMode
 }) {
   const { data: tree, isError } = useTreeQuery(ns, proj)
   const navigate = useNavigate()
@@ -113,10 +92,43 @@ function ExplorerForProject({
             project={proj}
             nodes={tree}
             activePath={activePath}
+            openMode={openMode}
           />
         )}
       </div>
     </div>
+  )
+}
+
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return <div className={styles.sectionHeader}>{children}</div>
+}
+
+function ExplorerView() {
+  const ref = useActiveProjectRef()
+  const activePath = useActiveFilePath()
+
+  if (!ref) {
+    return (
+      <div className={styles.pane}>
+        <SectionHeader>Explorer</SectionHeader>
+        <div className={styles.empty}>
+          No project open.
+          <br />
+          <Link to="/" className={styles.emptyLink}>
+            Choose a project →
+          </Link>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <ProjectTree
+      ns={ref.ns}
+      proj={ref.proj}
+      activePath={activePath}
+      openMode="blob"
+    />
   )
 }
 
@@ -175,14 +187,15 @@ function SearchView({ projectRef }: { projectRef: { ns: string; proj: string } |
   )
 }
 
-// The History panel is the entry point to the per-file History view (commit list
-// → version → diff), mirroring how the Search panel is an entry point to the
-// search route. History is per-file, so it needs a file in context; with one
-// open it links to /p/$ns/$proj/history/$path, otherwise it prompts to open a
-// file. (The full commit list / version / diff render on that route's page.)
+// History mode keeps the file tree in place (no separate cushioned route): the
+// rail toggles the right pane to the selected file's history, and the tree here
+// opens each file's history (openMode="history") so selecting another file makes
+// the right pane follow it. The full commit list / version / diff render in the
+// content pane on the history route; when no file is selected that pane shows a
+// quiet placeholder.
 function HistoryView() {
   const ref = useActiveProjectRef()
-  const file = useActiveFileAnyView()
+  const activePath = useActiveHistoryPath()
 
   if (!ref) {
     return (
@@ -199,31 +212,12 @@ function HistoryView() {
     )
   }
 
-  if (!file) {
-    return (
-      <div className={styles.pane}>
-        <SectionHeader>History</SectionHeader>
-        <div className={styles.empty}>
-          Open a file to view its commit history.
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className={styles.pane}>
-      <SectionHeader>History</SectionHeader>
-      <div className={styles.empty}>
-        Commit history for <code>{file}</code>.
-        <br />
-        <Link
-          to="/p/$namespace/$project/history/$"
-          params={{ namespace: ref.ns, project: ref.proj, _splat: file }}
-          className={styles.emptyLink}
-        >
-          View history →
-        </Link>
-      </div>
-    </div>
+    <ProjectTree
+      ns={ref.ns}
+      proj={ref.proj}
+      activePath={activePath}
+      openMode="history"
+    />
   )
 }
