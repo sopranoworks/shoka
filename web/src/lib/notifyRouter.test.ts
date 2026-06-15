@@ -115,15 +115,31 @@ describe('routeNotify file.write', () => {
     expect(r.banner?.text).toBe('This file was updated')
   })
 
-  it('on the displayed project: tree stale (no refetch) + banner', () => {
+  // B-31 fix: on the bare project root (no file open) a file update has no
+  // actionable meaning to notify about — the sidebar tree refreshes live (active
+  // query, no refetchType:'none'), but NO banner is raised. (Was: a meaningless
+  // "Files in this project changed" banner.)
+  it('on the displayed project (no file open): tree refreshes live, NO banner', () => {
     const { qc, invalidate } = makeQc()
     const r = routeNotify(
       { kind: 'file.write', target: 'demo/docs', path: 'guides/x.md' },
       qc,
       PROJECT,
     )
-    expect(has(invalidate, ['tree', 'demo', 'docs'])?.refetchType).toBe('none')
-    expect(r.banner?.text).toBe('Files in this project changed')
+    // Live refresh of the tree (active query) — not the gated "none".
+    expect(has(invalidate, ['tree', 'demo', 'docs'])?.refetchType).toBeUndefined()
+    expect(r.banner).toBeUndefined()
+  })
+
+  // The meaningful banner is kept: the open file changing.
+  it('on the displayed file: still raises the "This file was updated" banner', () => {
+    const { qc } = makeQc()
+    const r = routeNotify(
+      { kind: 'file.write', target: 'demo/docs', path: 'README.md' },
+      qc,
+      BLOB,
+    )
+    expect(r.banner?.text).toBe('This file was updated')
   })
 
   it('on an unrelated view: silent invalidate, no banner', () => {

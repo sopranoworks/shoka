@@ -40,17 +40,12 @@ export function HistoryPage() {
   const search = useSearch({ strict: false }) as HistorySearch
   const mode = search.mode ?? 'diff'
 
-  // History is per-file. When the History rail is opened with no file selected
-  // (e.g. at the project root), the right pane shows a quiet placeholder rather
-  // than erroring — the file tree stays visible to pick a file from.
-  if (!path) {
-    return (
-      <div className={styles.page}>
-        <div className={styles.empty}>Select a file to see its history.</div>
-      </div>
-    )
-  }
-
+  // ALL hooks must run unconditionally and in a fixed order every render (Rules of
+  // Hooks). useHistoryQuery is gated internally (enabled: path !== ''), so it is a
+  // no-op when no file is selected — the empty-path placeholder is returned BELOW,
+  // after every hook has been called. (A prior early return here, above this hook,
+  // changed the hook count between the no-file and file-selected renders → React
+  // error #310 when a file was picked in History mode.)
   const { data: history, isError: histErr } = useHistoryQuery(
     namespace,
     project,
@@ -66,6 +61,18 @@ export function HistoryPage() {
   const toIdx = commits.findIndex((c) => c.hash === toHash)
   const prevHash = toIdx >= 0 ? commits[toIdx + 1]?.hash : undefined
   const fromHash = search.from ?? prevHash ?? ''
+
+  // History is per-file. When the History rail is opened with no file selected
+  // (e.g. at the project root), the right pane shows a quiet placeholder rather
+  // than erroring — the file tree stays visible to pick a file from. (Below all
+  // hooks, so the hook count never varies between renders.)
+  if (!path) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.empty}>Select a file to see its history.</div>
+      </div>
+    )
+  }
 
   return (
     <div className={styles.page}>

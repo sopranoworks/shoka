@@ -149,10 +149,6 @@ export function routeNotify(
       view.namespace === namespace &&
       view.project === project &&
       (view.path ?? '') === path
-    const onThisProject =
-      view.route === 'project' &&
-      view.namespace === namespace &&
-      view.project === project
     const editingThisFile =
       view.route === 'edit' &&
       view.namespace === namespace &&
@@ -185,17 +181,11 @@ export function routeNotify(
         },
       }
     }
-    if (onThisProject) {
-      queryClient.invalidateQueries({ queryKey: treeKey, refetchType: 'none' })
-      queryClient.invalidateQueries({ queryKey: fileKey })
-      return {
-        banner: {
-          text: 'Files in this project changed',
-          reload: () => void queryClient.refetchQueries({ queryKey: treeKey }),
-        },
-      }
-    }
-    // Not the displayed core: silent invalidate (active queries refetch).
+    // No file open / on the bare project root (or any non-file view): a file
+    // update has no actionable meaning to raise a notification about — the sidebar
+    // tree is an active query that refreshes live, so the change still surfaces in
+    // the visible context, but WITHOUT a banner. (A "project top" banner with no
+    // file selected was meaningless.) Only the open blob/edit file raises one.
     queryClient.invalidateQueries({ queryKey: treeKey })
     queryClient.invalidateQueries({ queryKey: fileKey })
     return {}
