@@ -7,14 +7,17 @@ import (
 	"strings"
 )
 
-// ListNamespaces returns every namespace that currently has at least one
-// project on disk. The result is sorted ascending. Returns an empty slice when
-// no projects exist.
+// ListNamespaces returns every namespace that exists on disk, sorted ascending.
+// Returns an empty slice when none exist.
 //
-// A namespace is an immediate subdirectory of base_dir that contains at least
-// one project subdirectory. Hidden directories (e.g. the ".shoka" WAL/state
-// store) and regular files are skipped, as are namespace directories that hold
-// no projects.
+// A namespace is an immediate, non-hidden subdirectory of base_dir. It is a
+// FIRST-CLASS object (B-28 namespace/project management): a namespace is enumerated
+// whether or not it currently holds any projects — an explicitly-created empty namespace
+// (CreateNamespace) appears here, and a namespace SURVIVES the deletion of its last
+// project (it no longer auto-vanishes; only DeleteNamespace removes it). Hidden
+// directories (the ".shoka" WAL/state store, the ".shoka-lostfound" quarantine area)
+// and regular files (the users.db / oauth.db / per-project <project>.db siblings) are
+// skipped — a dot-prefixed entry is Shoka-internal, never a namespace.
 func (s *FSGitStorage) ListNamespaces() ([]string, error) {
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
@@ -29,13 +32,7 @@ func (s *FSGitStorage) ListNamespaces() ([]string, error) {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-		projects, err := s.ListProjects(entry.Name())
-		if err != nil {
-			return nil, err
-		}
-		if len(projects) > 0 {
-			namespaces = append(namespaces, entry.Name())
-		}
+		namespaces = append(namespaces, entry.Name())
 	}
 	sort.Strings(namespaces)
 	return namespaces, nil

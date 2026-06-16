@@ -120,6 +120,83 @@ func (s *Store) RemoveUser(email string) error {
 	})
 }
 
+// RewriteScopes applies fn to every user's scope AND every pending invite's scope,
+// rewriting any record whose scope fn changes — the cascade cleanup after a namespace/
+// project delete (B-28 ns/proj management). fn is a pure scope→scope transform (the
+// authz prune helpers); the store stays grammar-agnostic (it treats Scope as opaque). It
+// returns the number of records changed (users + invites). One write transaction; keys
+// are collected during each scan and written after it, never mutating mid-iteration
+// (the RemoveUser / DeleteDeadSeries discipline).
+func (s *Store) RewriteScopes(fn func(scope string) string) (int, error) {
+	changed := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		// Users.
+		ub := tx.Bucket([]byte(usersBucket))
+		type userKV struct {
+			k   []byte
+			rec UserRecord
+		}
+		var userUpd []userKV
+		if err := ub.ForEach(func(k, v []byte) error {
+			var rec UserRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("userstore: decode user: %w", err)
+			}
+			if ns := fn(rec.Scope); ns != rec.Scope {
+				rec.Scope = ns
+				rec.UpdatedAt = time.Now()
+				userUpd = append(userUpd, userKV{append([]byte(nil), k...), rec})
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, u := range userUpd {
+			val, err := json.Marshal(&u.rec)
+			if err != nil {
+				return fmt.Errorf("userstore: encode user: %w", err)
+			}
+			if err := ub.Put(u.k, val); err != nil {
+				return err
+			}
+			changed++
+		}
+
+		// Pending invites.
+		ib := tx.Bucket([]byte(invitesBucket))
+		type inviteKV struct {
+			k   []byte
+			rec InviteRecord
+		}
+		var invUpd []inviteKV
+		if err := ib.ForEach(func(k, v []byte) error {
+			var rec InviteRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("userstore: decode invite: %w", err)
+			}
+			if ns := fn(rec.Scope); ns != rec.Scope {
+				rec.Scope = ns
+				invUpd = append(invUpd, inviteKV{append([]byte(nil), k...), rec})
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, u := range invUpd {
+			val, err := json.Marshal(&u.rec)
+			if err != nil {
+				return fmt.Errorf("userstore: encode invite: %w", err)
+			}
+			if err := ib.Put(u.k, val); err != nil {
+				return err
+			}
+			changed++
+		}
+		return nil
+	})
+	return changed, err
+}
+
 // --- invites (B-28 stage 3) --------------------------------------------------
 
 // InviteRecord is one outstanding invitation: a hash of the single-use code (the

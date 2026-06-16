@@ -91,10 +91,19 @@ var toolLevels = map[string]authz.Level{
 	"append_to_file": authz.LevelWrite,
 	"move_file":      authz.LevelWrite,
 	"delete_file":    authz.LevelWrite,
-	"create_project": authz.LevelWrite,
 	"translate_file": authz.LevelWrite,
 	// admin
 	"recover_project": authz.LevelAdmin,
+	// admin on the target namespace (B-28 ns/proj management part 1): project
+	// create/delete are namespace:admin (create RAISED from write — a write-only
+	// principal can no longer create projects). The namespace ops carry admin here too,
+	// but are SUPER-USER only — their handlers additionally enforce authz.IsSuperUser,
+	// because the namespace-targeted middleware check (admin on the named namespace) is
+	// not "super-user only" (a namespace-admin would satisfy it for its own namespace).
+	"create_project":   authz.LevelAdmin,
+	"delete_project":   authz.LevelAdmin,
+	"create_namespace": authz.LevelAdmin,
+	"delete_namespace": authz.LevelAdmin,
 }
 
 // toolLevel returns the required level for a tool, defaulting to admin (fail-closed)

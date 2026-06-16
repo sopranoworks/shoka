@@ -40,6 +40,12 @@ const (
 	// carries the current etag) without parsing a free-form error string.
 	MsgConflict      MessageType = "CONFLICT"
 	MsgCreateProject MessageType = "CREATE_PROJECT"
+	// B-28 ns/proj management part 1: the destructive + identity ops. Project
+	// create/delete = admin on the target namespace; namespace create/delete =
+	// super-user only (gated via authz.IsSuperUser in authzGate, see wsSuperUserOps).
+	MsgDeleteProject   MessageType = "DELETE_PROJECT"
+	MsgCreateNamespace MessageType = "CREATE_NAMESPACE"
+	MsgDeleteNamespace MessageType = "DELETE_NAMESPACE"
 	// MsgSearchFiles requests a project-scoped full-text/filename search and
 	// MsgSearchResult carries the matches back. Search is read-only and
 	// project-scoped: it wires the existing storage.SearchFiles capability (the
@@ -567,11 +573,17 @@ var wsLevels = map[MessageType]wsOp{
 	MsgGetFileAt:   {authz.LevelRead, false},
 	MsgGetDiff:     {authz.LevelRead, false},
 
-	WriteDraft:       {authz.LevelWrite, false},
-	SaveFile:         {authz.LevelWrite, false},
-	MsgMoveFile:      {authz.LevelWrite, false},
-	MsgDeleteFile:    {authz.LevelWrite, false},
-	MsgCreateProject: {authz.LevelWrite, false},
+	WriteDraft:    {authz.LevelWrite, false},
+	SaveFile:      {authz.LevelWrite, false},
+	MsgMoveFile:   {authz.LevelWrite, false},
+	MsgDeleteFile: {authz.LevelWrite, false},
+
+	// Project create/delete = admin on the target namespace (B-28; create RAISED from
+	// write — a write-only principal can no longer create projects). The namespace ops
+	// (CREATE_NAMESPACE/DELETE_NAMESPACE) are NOT here: they are super-user only and
+	// handled by wsSuperUserOps, not the namespace-targeted gate.
+	MsgCreateProject: {authz.LevelAdmin, false},
+	MsgDeleteProject: {authz.LevelAdmin, false},
 
 	MsgRecoverProject: {authz.LevelAdmin, false},
 	MsgOAuthList:      {authz.LevelAdmin, true},
@@ -586,6 +598,16 @@ var wsLevels = map[MessageType]wsOp{
 	MsgAdminRevokeInvite: {authz.LevelAdmin, true},
 }
 
+// wsSuperUserOps are the /ws/ui messages that require a SUPER-USER (wildcard admin), not
+// merely admin-on-a-namespace — namespace create/delete (B-28). They are gated via
+// authz.IsSuperUser, NOT the namespace-targeted Authorize a namespace-admin would satisfy
+// for its own namespace (the loose empty-target footgun). They are deliberately absent
+// from wsLevels so authzGate routes them through the super-user check, checked FIRST.
+var wsSuperUserOps = map[MessageType]bool{
+	MsgCreateNamespace: true,
+	MsgDeleteNamespace: true,
+}
+
 // authzGate applies the shared authz decision to one /ws/ui message before its
 // handler runs. It returns true to PROCEED and false when the message was refused
 // (a PERMISSION_DENIED frame has been sent). The principal is the connection's session
@@ -594,13 +616,27 @@ var wsLevels = map[MessageType]wsOp{
 // the ONE /ws/ui enforcement site (not per-handler), calling the same authz.Authorize
 // the MCP middleware uses.
 func (m *Manager) authzGate(client *wsClient, msgType MessageType, payload json.RawMessage) bool {
-	op, known := wsLevels[msgType]
-	if !known {
-		op = wsOp{level: authz.LevelAdmin, global: true} // fail closed
-	}
 	scope := "*" // no session principal ⇒ super-user (no-lockout / single-operator)
 	if client.hasPrincipal {
 		scope = client.principal.Scope
+	}
+	// Super-user-only ops (namespace create/delete) are checked FIRST, via the strict
+	// IsSuperUser predicate — never the namespace-targeted Authorize a namespace-admin
+	// would satisfy for its own namespace (B-28 ns/proj management).
+	if wsSuperUserOps[msgType] {
+		if !authz.IsSuperUser(scope) {
+			client.sendResponse(MsgPermissionDenied, PermissionDeniedPayload{
+				Op:       string(msgType),
+				Required: "super-user",
+				Message:  "permission denied: namespace management requires a super-user",
+			})
+			return false
+		}
+		return true
+	}
+	op, known := wsLevels[msgType]
+	if !known {
+		op = wsOp{level: authz.LevelAdmin, global: true} // fail closed
 	}
 	var ns, proj string
 	if !op.global {
@@ -712,6 +748,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleSaveFile(client, wsMsg.Payload)
 		case MsgCreateProject:
 			m.handleCreateProject(client, wsMsg.Payload)
+		case MsgDeleteProject:
+			m.handleDeleteProject(client, wsMsg.Payload)
+		case MsgCreateNamespace:
+			m.handleCreateNamespace(client, wsMsg.Payload)
+		case MsgDeleteNamespace:
+			m.handleDeleteNamespace(client, wsMsg.Payload)
 		case MsgSearchFiles:
 			m.handleSearchFiles(client, wsMsg.Payload)
 		case MsgGetHistory:
@@ -779,6 +821,18 @@ type projectRecoverer interface {
 	ResyncToHead(namespace, projectName string) (storage.ProjectState, error)
 }
 
+// projectDeleter / namespaceManager are the optional storage capabilities behind the
+// B-28 ns/proj-management destructive ops, type-asserted (like projectRecoverer) so
+// StorageService stays unwidened.
+type projectDeleter interface {
+	DeleteProject(ctx context.Context, namespace, projectName string) error
+}
+
+type namespaceManager interface {
+	CreateNamespace(namespace string) error
+	DeleteNamespace(ctx context.Context, namespace string) error
+}
+
 // handleGetProjects returns one entry per project across every namespace, each
 // carrying its namespace, name, and health state. The payload's namespace field
 // is ignored: the Web UI receives the full set and filters client-side (B-13 /
@@ -835,6 +889,67 @@ func (m *Manager) handleCreateProject(client *wsClient, payload json.RawMessage)
 	client.sendResponse(MsgCreateProject, map[string]string{
 		"status": "ok",
 	})
+}
+
+// NamespacePayload carries just a namespace name (CREATE_NAMESPACE / DELETE_NAMESPACE).
+type NamespacePayload struct {
+	Namespace string `json:"namespace"`
+}
+
+func (m *Manager) handleDeleteProject(client *wsClient, payload json.RawMessage) {
+	var p CreateProjectPayload // {namespace, projectName} — same shape as create
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for DELETE_PROJECT")
+		return
+	}
+	pd, ok := m.storage.(projectDeleter)
+	if !ok {
+		client.sendError("project deletion is not available on this server")
+		return
+	}
+	ctx := notify.WithSender(context.Background(), client.id)
+	if err := pd.DeleteProject(ctx, p.Namespace, p.ProjectName); err != nil {
+		client.sendError(fmt.Sprintf("Failed to delete project: %v", err))
+		return
+	}
+	client.sendResponse(MsgDeleteProject, map[string]string{"status": "ok"})
+}
+
+func (m *Manager) handleCreateNamespace(client *wsClient, payload json.RawMessage) {
+	var p NamespacePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for CREATE_NAMESPACE")
+		return
+	}
+	nm, ok := m.storage.(namespaceManager)
+	if !ok {
+		client.sendError("namespace management is not available on this server")
+		return
+	}
+	if err := nm.CreateNamespace(p.Namespace); err != nil {
+		client.sendError(fmt.Sprintf("Failed to create namespace: %v", err))
+		return
+	}
+	client.sendResponse(MsgCreateNamespace, map[string]string{"status": "ok"})
+}
+
+func (m *Manager) handleDeleteNamespace(client *wsClient, payload json.RawMessage) {
+	var p NamespacePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for DELETE_NAMESPACE")
+		return
+	}
+	nm, ok := m.storage.(namespaceManager)
+	if !ok {
+		client.sendError("namespace management is not available on this server")
+		return
+	}
+	ctx := notify.WithSender(context.Background(), client.id)
+	if err := nm.DeleteNamespace(ctx, p.Namespace); err != nil {
+		client.sendError(fmt.Sprintf("Failed to delete namespace: %v", err))
+		return
+	}
+	client.sendResponse(MsgDeleteNamespace, map[string]string{"status": "ok"})
 }
 
 func (m *Manager) handleGetTree(client *wsClient, payload json.RawMessage) {

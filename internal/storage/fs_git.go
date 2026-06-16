@@ -149,6 +149,15 @@ type FSGitStorage struct {
 	// MVP) must never affect a storage operation's outcome.
 	notify *notify.Center
 
+	// scopeCleaner removes authorization grants that reference a deleted namespace/
+	// project BY NAME (the B-28 cascade cleanup) from the userstore + oauthstore + invite
+	// scopes, so re-creating the same name never resurrects old access. It is wired at
+	// composition (cmd/shoka) over those sibling stores via SetScopeCleaner; storage
+	// only knows the interface, keeping the go-git layer decoupled from the auth stores.
+	// nil = no-op (e.g. tests with no user/oauth stores) — DeleteProject/DeleteNamespace
+	// then perform only the on-disk removal.
+	scopeCleaner ScopeCleaner
+
 	// identityDefaults is the configured single-user identity + agent fallback
 	// used to author commits (the 2026-06-01 identity-config directive). The
 	// per-request agent declaration arrives on the write's context; this is the
@@ -190,7 +199,7 @@ type Options struct {
 // ChangeEvent describes a successful mutation, delivered to a registered handler
 // after the background git commit lands.
 type ChangeEvent struct {
-	Event      string // file_written | file_deleted | project_created
+	Event      string // file_written | file_deleted | project_created | project_deleted
 	Namespace  string
 	Project    string
 	Path       string

@@ -21,8 +21,14 @@ func TestToolLevel_Registry(t *testing.T) {
 		"list_projects":   authz.LevelRead,
 		"write_file":      authz.LevelWrite,
 		"move_file":       authz.LevelWrite,
-		"create_project":  authz.LevelWrite,
 		"recover_project": authz.LevelAdmin, // the formerly-unclassified gap
+		// B-28 ns/proj management part 1: project create/delete = admin on the target
+		// namespace (create RAISED from write); namespace create/delete carry admin in the
+		// registry and their handlers tighten to super-user.
+		"create_project":   authz.LevelAdmin,
+		"delete_project":   authz.LevelAdmin,
+		"create_namespace": authz.LevelAdmin,
+		"delete_namespace": authz.LevelAdmin,
 	}
 	for tool, want := range cases {
 		if got := toolLevel(tool); got != want {

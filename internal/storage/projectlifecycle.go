@@ -1,0 +1,202 @@
+package storage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/sopranoworks/shoka/internal/notify"
+	"github.com/sopranoworks/shoka/internal/utils"
+)
+
+// ScopeCleaner removes authorization grants that reference a deleted namespace or
+// project BY NAME (the B-28 namespace/project-management cascade cleanup). It is wired at
+// composition time (cmd/shoka) over the userstore (accounts + pending invites) and the
+// optional oauthstore (issued token series); storage holds only this interface so the
+// go-git layer never imports the auth stores. The invariant it enforces: after a
+// namespace/project is deleted, no persisted scope still references it, so re-creating
+// the same name does NOT resurrect old access (leave-graceful is rejected).
+type ScopeCleaner interface {
+	// PurgeNamespace removes every grant referencing namespace ns (the namespace-wide
+	// grant and any project under it) from every persisted scope.
+	PurgeNamespace(ns string) error
+	// PurgeProject removes every grant referencing the specific project ns/proj from
+	// every persisted scope (namespace-wide and wildcard grants are left intact).
+	PurgeProject(ns, proj string) error
+}
+
+// SetScopeCleaner installs the cascade-cleanup hook DeleteProject/DeleteNamespace call
+// after a delete. Passing nil disables cascade cleanup (the delete then performs only the
+// on-disk removal) — the default for storage built without the auth stores (tests).
+func (s *FSGitStorage) SetScopeCleaner(c ScopeCleaner) { s.scopeCleaner = c }
+
+// CreateNamespace makes an explicit, EMPTY namespace: it creates the directory
+// <base>/<ns> so the namespace is enumerated by ListNamespaces even with zero projects,
+// and (because ListNamespaces no longer requires a project) it SURVIVES deleting its last
+// project — only DeleteNamespace removes it. Idempotent: creating an existing namespace
+// is a no-op success (mirroring CreateProjectCtx's already-exists handling). The name is
+// validated with utils.IsValidName (so the wildcard sentinel "*" can never be a real
+// namespace — the authz super-user gate depends on that).
+func (s *FSGitStorage) CreateNamespace(namespace string) error {
+	if namespace == "" {
+		namespace = "default"
+	}
+	if !utils.IsValidName(namespace) {
+		return fmt.Errorf("invalid namespace: %s", namespace)
+	}
+	if err := os.MkdirAll(filepath.Join(s.baseDir, namespace), 0o755); err != nil {
+		return fmt.Errorf("failed to create namespace directory: %w", err)
+	}
+	return nil
+}
+
+// DeleteProject permanently removes an entire project — its working tree + git repo AND
+// both sibling derivative DBs (the catalog <proj>.db and the index <proj>.index.db) — and
+// evicts the in-memory handles, then cascade-cleans every authorization grant that
+// referenced it by name. It is the destructive admin op behind the management UI's
+// project delete (B-28 part 1), and the riskiest unit in this change.
+//
+// Atomicity / sibling-safety (the c9f6827 substrate): the catalog and index live as
+// SIBLING files beside the project dir, not inside it, so removing only the dir would
+// strand them and the discovery sweep would flag a leftover. All three are removed
+// together, and only this project's in-memory handles (catalogs/indexes/states) are
+// evicted — a sibling project in the same namespace is never touched.
+//
+// Ordering: cascade-clean grants FIRST (a reliable, idempotent bbolt mutation), so a
+// cleanup failure aborts before any on-disk removal, and a successful cleanup followed by
+// a failed removal only REDUCES access (fail-safe) — it never strands a grant for a
+// deleted name. Reads take no lock, so an in-flight read is not fenced; the on-disk
+// removal happens LAST, so such a read either completes against the still-present files or
+// sees not-found. A write in progress IS fenced (refuse-while-locked).
+func (s *FSGitStorage) DeleteProject(ctx context.Context, namespace, projectName string) error {
+	projectPath, err := s.getProjectPath(namespace, projectName) // validates names
+	if err != nil {
+		return err
+	}
+
+	// Fence: refuse while any write lock is held on a path within this project.
+	if s.projectHasActiveLease(projectPath) {
+		return fmt.Errorf("cannot delete project %s/%s: a write is in progress", namespace, projectName)
+	}
+
+	// Cascade-clean grants first (fail-safe ordering — see the doc above).
+	if s.scopeCleaner != nil {
+		if cerr := s.scopeCleaner.PurgeProject(namespace, projectName); cerr != nil {
+			return fmt.Errorf("cascade-clean project grants for %s/%s: %w", namespace, projectName, cerr)
+		}
+	}
+
+	// Evict the in-memory handles FIRST (close the bbolt catalog + index, drop the state)
+	// so the .db sibling files can be unlinked with no open handle.
+	s.evictProjectHandles(namespace, projectName)
+
+	// Remove all three on-disk artefacts together; collect errors so a partial failure is
+	// surfaced rather than silently leaving a sibling behind.
+	var errs []error
+	if rerr := os.RemoveAll(projectPath); rerr != nil {
+		errs = append(errs, fmt.Errorf("remove project dir: %w", rerr))
+	}
+	if rerr := os.Remove(s.catalogPath(namespace, projectName)); rerr != nil && !os.IsNotExist(rerr) {
+		errs = append(errs, fmt.Errorf("remove catalog db: %w", rerr))
+	}
+	if rerr := os.Remove(s.indexPath(namespace, projectName)); rerr != nil && !os.IsNotExist(rerr) {
+		errs = append(errs, fmt.Errorf("remove index db: %w", rerr))
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
+	// project_deleted change event + notification (mirrors the project_created emit in
+	// CreateProjectCtx) so open /ws/ui subscriptions viewing this project are told it is
+	// gone. The ctx-borne sender excludes the originator from its own event.
+	s.notify.NotifyFrom(notify.SenderFrom(ctx), "project.delete", namespace+"/"+projectName, "")
+	s.emit(ChangeEvent{
+		Event:     "project_deleted",
+		Namespace: namespace,
+		Project:   projectName,
+		Timestamp: time.Now(),
+	})
+	return nil
+}
+
+// DeleteNamespace removes an entire namespace: it deletes every project under it (each
+// via DeleteProject — atomic, sibling-safe, with its own cascade cleanup), then
+// cascade-cleans any remaining namespace-wide grants and removes the (now-empty)
+// namespace directory and any residual namespace-level state. super-user-only at the call
+// sites. A mid-fan-out failure leaves a consistent state — the projects deleted so far
+// stay deleted, no sibling is stranded — and the error is returned.
+func (s *FSGitStorage) DeleteNamespace(ctx context.Context, namespace string) error {
+	if namespace == "" {
+		namespace = "default"
+	}
+	if !utils.IsValidName(namespace) {
+		return fmt.Errorf("invalid namespace: %s", namespace)
+	}
+	projects, err := s.ListProjects(namespace)
+	if err != nil {
+		return fmt.Errorf("list projects for namespace delete: %w", err)
+	}
+	for _, p := range projects {
+		if derr := s.DeleteProject(ctx, namespace, p); derr != nil {
+			return fmt.Errorf("delete project %s/%s during namespace delete: %w", namespace, p, derr)
+		}
+	}
+	// Cascade-clean namespace-wide grants (namespace:<ns> and any residual
+	// namespace:<ns>/*) before removing the directory.
+	if s.scopeCleaner != nil {
+		if cerr := s.scopeCleaner.PurgeNamespace(namespace); cerr != nil {
+			return fmt.Errorf("cascade-clean namespace grants for %s: %w", namespace, cerr)
+		}
+	}
+	if rerr := os.RemoveAll(filepath.Join(s.baseDir, namespace)); rerr != nil {
+		return fmt.Errorf("remove namespace dir: %w", rerr)
+	}
+	return nil
+}
+
+// evictProjectHandles closes and unregisters a project's in-memory catalog and index
+// handles and drops its health state, so the on-disk .db siblings can be unlinked with no
+// open handle and no stale entry survives. It touches only this project's keys.
+func (s *FSGitStorage) evictProjectHandles(namespace, projectName string) {
+	key := projectKey(namespace, projectName)
+	s.catMu.Lock()
+	if c, ok := s.catalogs[key]; ok {
+		if c != nil {
+			if err := c.Close(); err != nil {
+				s.log().Warn("catalog close on delete failed", "project", key, "err", err)
+			}
+		}
+		delete(s.catalogs, key)
+	}
+	s.catMu.Unlock()
+	s.idxMu.Lock()
+	if ix, ok := s.indexes[key]; ok {
+		if ix != nil {
+			if err := ix.Close(); err != nil {
+				s.log().Warn("index close on delete failed", "project", key, "err", err)
+			}
+		}
+		delete(s.indexes, key)
+	}
+	s.idxMu.Unlock()
+	s.stateMu.Lock()
+	delete(s.states, key)
+	s.stateMu.Unlock()
+}
+
+// projectHasActiveLease reports whether any held write lease covers a path within the
+// project (leases are keyed by the joined full path). Reads take no lock and are not
+// covered — the delete removes files LAST so an in-flight read tolerates it.
+func (s *FSGitStorage) projectHasActiveLease(projectPath string) bool {
+	prefix := projectPath + string(os.PathSeparator)
+	for _, l := range s.locks.ActiveLeases() {
+		if l.Path == projectPath || strings.HasPrefix(l.Path, prefix) {
+			return true
+		}
+	}
+	return false
+}

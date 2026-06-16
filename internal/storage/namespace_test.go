@@ -55,7 +55,10 @@ func TestListAllProjects_EmptyBaseDir(t *testing.T) {
 	}
 }
 
-func TestListNamespaces_NonEmptyOnly(t *testing.T) {
+func TestListNamespaces_IncludesEmpty(t *testing.T) {
+	// B-28: a namespace is a first-class object — it is enumerated even with zero
+	// projects (the inverse of the pre-B-28 "non-empty only" rule). A bare namespace
+	// directory (here created directly; CreateNamespace does the same MkdirAll) is listed.
 	s := newEmptyStorage(t)
 	if err := s.CreateProject("shoka", "maintenance"); err != nil {
 		t.Fatal(err)
@@ -63,8 +66,11 @@ func TestListNamespaces_NonEmptyOnly(t *testing.T) {
 	if err := s.CreateProject("rohrpost", "rohrpost-dev"); err != nil {
 		t.Fatal(err)
 	}
-	// A namespace directory with no project subdirectories must not be listed.
 	if err := os.MkdirAll(filepath.Join(s.baseDir, "emptyns"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A hidden Shoka-internal directory must still be excluded.
+	if err := os.MkdirAll(filepath.Join(s.baseDir, ".shoka-internal"), 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,9 +78,9 @@ func TestListNamespaces_NonEmptyOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"rohrpost", "shoka"}
+	want := []string{"emptyns", "rohrpost", "shoka"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ListNamespaces() = %v, want %v (emptyns must be excluded)", got, want)
+		t.Fatalf("ListNamespaces() = %v, want %v (empty namespace included, hidden excluded)", got, want)
 	}
 }
 

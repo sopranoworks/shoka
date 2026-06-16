@@ -34,6 +34,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/oauth"
 	"github.com/sopranoworks/shoka/internal/reqtrace"
+	"github.com/sopranoworks/shoka/internal/scopeclean"
 	"github.com/sopranoworks/shoka/internal/serverurl"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/internal/storage/filelock"
@@ -439,6 +440,13 @@ func main() {
 	// admin level by the stage-2 dispatch gate. Wiring the store enables them.
 	uim.SetUserStore(userStore)
 
+	// Cascade cleanup (B-28 ns/proj management part 1): when a namespace/project is
+	// deleted, every grant referencing it by name is purged from user + invite + token
+	// scopes, so re-creating the same name never resurrects old access. Wired over the
+	// user store and the (optional, possibly-nil) OAuth store; storage drives it from
+	// inside DeleteProject/DeleteNamespace via the ScopeCleaner interface.
+	s.SetScopeCleaner(scopeclean.New(userStore, oauthStore))
+
 	// WebAuthn engine: built only when a canonical rp_id is configured (the
 	// per-deployment "passkeys on" choice). Empty rp_id ⇒ nil ⇒ passkeys disabled
 	// while the password+TOTP floor still works (incl. a bare internal-IP deployment
@@ -748,6 +756,21 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 		Name:        "recover_project",
 		Description: "Recover a project stuck in a 'corrupted' (uncommitted working-tree drift) state by re-syncing its write-path baseline to the ACTUAL on-disk git HEAD and clearing a FALSE corrupted flag. Non-destructive: it neither commits nor discards working-tree content. Use it when a project went corrupted after an external git HEAD move (a host 'git reset', an out-of-band 'git add' landing/revert) even though the working tree is clean — writes are re-enabled. A project with GENUINE uncommitted drift stays corrupted (the response says so); resolve that from the Web UI recover action (accept-working-tree to adopt, accept-head to discard).",
 	}, tools.LoggedTool(logger, "recover_project", tools.RecoverProjectHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "delete_project",
+		Description: "Permanently delete an ENTIRE project — its working tree, git history, and derivative state — distinct from delete_file (which removes one file). DESTRUCTIVE and irreversible. Requires admin on the target namespace.",
+	}, tools.LoggedTool(logger, "delete_project", tools.DeleteProjectHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "create_namespace",
+		Description: "Create an explicit, empty namespace that is listed even with zero projects and survives deleting its last project. Requires a super-user.",
+	}, tools.LoggedTool(logger, "create_namespace", tools.CreateNamespaceHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "delete_namespace",
+		Description: "Permanently delete an ENTIRE namespace and EVERY project under it. DESTRUCTIVE and irreversible. Requires a super-user.",
+	}, tools.LoggedTool(logger, "delete_namespace", tools.DeleteNamespaceHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "subscribe",

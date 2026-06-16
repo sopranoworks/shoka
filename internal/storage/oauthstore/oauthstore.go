@@ -480,6 +480,50 @@ func (s *Store) DeleteDeadSeries(now time.Time, grace time.Duration) (int, error
 	return deleted, nil
 }
 
+// RewriteScopes applies fn to every token series' scope, rewriting any series whose
+// scope fn changes — the cascade cleanup after a namespace/project delete (B-28 ns/proj
+// management). Only the series row's Scope field changes; the access/refresh handle
+// buckets carry no scope and are untouched. fn is a pure scope→scope transform (the authz
+// prune helpers). It returns the number of series changed. One write transaction; keys
+// are collected during the scan and written after it, never mutating mid-iteration (the
+// DeleteDeadSeries discipline).
+func (s *Store) RewriteScopes(fn func(scope string) string) (int, error) {
+	changed := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		sb := tx.Bucket([]byte(seriesBucket))
+		type seriesKV struct {
+			k   []byte
+			rec SeriesRecord
+		}
+		var upd []seriesKV
+		if err := sb.ForEach(func(k, v []byte) error {
+			var rec SeriesRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("oauthstore: decode series: %w", err)
+			}
+			if ns := fn(rec.Scope); ns != rec.Scope {
+				rec.Scope = ns
+				upd = append(upd, seriesKV{append([]byte(nil), k...), rec})
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, u := range upd {
+			val, err := json.Marshal(&u.rec)
+			if err != nil {
+				return fmt.Errorf("oauthstore: encode series: %w", err)
+			}
+			if err := sb.Put(u.k, val); err != nil {
+				return err
+			}
+			changed++
+		}
+		return nil
+	})
+	return changed, err
+}
+
 // --- registered clients (DCR, RFC 7591 — the 2026-06-12 B-63 directive) ------
 
 // PutClient persists a DCR-registered client under its issued ClientID. The

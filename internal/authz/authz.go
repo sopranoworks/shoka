@@ -99,6 +99,11 @@ func parseGrant(g string) Grant {
 	if g == "*" {
 		return Grant{Wildcard: true, Level: LevelAdmin}
 	}
+	if g == NoAccessScope {
+		// The explicit no-access sentinel (cascade-cleanup's empty-scope substitute):
+		// a grant that matches nothing, so the principal has LevelNone everywhere.
+		return Grant{Level: LevelNone}
+	}
 	if rest, lvl, ok := splitPerm(g); ok && rest == "*" {
 		return Grant{Wildcard: true, Level: lvl}
 	}
