@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/sopranoworks/shoka/internal/auth"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/notify"
@@ -326,6 +327,24 @@ type wsClient struct {
 	// OAUTH_ISSUE_SELF handler can derive the RFC 8707 resource (forwarded-header
 	// aware) the same way /authorize does. It is read-only after the upgrade.
 	req *http.Request
+	// principal is the authenticated WebUI session principal carried on the upgrade
+	// request context (the B-28 stage-1 login: authapi.Middleware attaches it). Zero
+	// when no user has logged in yet (the no-lockout single-operator path); when set,
+	// hasPrincipal is true and the user's email becomes the git Author on web writes.
+	principal    auth.Principal
+	hasPrincipal bool
+}
+
+// userIdentity returns the owning-user identity for a web write. When the connection
+// carries an authenticated session principal (B-28 stage 1), the logged-in user's
+// email is the git Author (email = account = git author). Otherwise it returns the
+// empty User, which identity.Resolve fills with the configured single operator — the
+// pre-login behaviour, preserved so an empty user store is never locked out.
+func (c *wsClient) userIdentity() identity.User {
+	if c.hasPrincipal {
+		return identity.User{Name: c.principal.Name, Email: c.principal.Email}
+	}
+	return identity.User{}
 }
 
 func (c *wsClient) writeMessage(msgType MessageType, payload interface{}) error {
@@ -502,6 +521,14 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	client := &wsClient{conn: conn, id: fmt.Sprintf("ws-%d", m.connSeq.Add(1)), req: r}
+	// The WebUI session principal (B-28 stage 1) rides the upgrade request context,
+	// attached by authapi.Middleware from the session cookie. Capturing it here lets
+	// web writes be authored as the logged-in user (email = git author) and is the
+	// seam the later enforcement sweep reads. Absent when no user has logged in.
+	if p, ok := auth.PrincipalFrom(r.Context()); ok {
+		client.principal = p
+		client.hasPrincipal = true
+	}
 
 	// Subscribe to the notification center and forward events to this browser as
 	// NOTIFY messages. The callback is non-blocking: it pushes onto a bounded
@@ -774,7 +801,7 @@ func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
 		return
 	}
 
-	ctx := identity.WithUser(context.Background(), identity.User{})
+	ctx := identity.WithUser(context.Background(), client.userIdentity())
 	ctx = notify.WithSender(ctx, client.id)
 
 	var ifMatch *string
@@ -821,7 +848,7 @@ func (m *Manager) handleDeleteFile(client *wsClient, payload json.RawMessage) {
 		return
 	}
 
-	ctx := identity.WithUser(context.Background(), identity.User{})
+	ctx := identity.WithUser(context.Background(), client.userIdentity())
 	ctx = notify.WithSender(ctx, client.id)
 
 	var ifMatch *string
@@ -1063,7 +1090,7 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	// the actual user at this call site. The ctx-aware Write carries the identity
 	// (the old WriteFile path used context.Background() and resolved to the default
 	// agent).
-	ctx := identity.WithUser(context.Background(), identity.User{})
+	ctx := identity.WithUser(context.Background(), client.userIdentity())
 	// Sender identity: this connection originated the write, so the resulting
 	// file.write NOTIFY must not be echoed back to it (2026-06-01 directive).
 	ctx = notify.WithSender(ctx, client.id)

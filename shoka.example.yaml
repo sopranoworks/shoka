@@ -110,6 +110,41 @@ server:
     # allowed_origins:
     #   - "http://localhost:8080"
 
+    # WebUI multi-user login (B-28 stage 1). The user DB lives at
+    # <base_dir>/users.db (a go-git-free bbolt sibling of oauth.db). This is the
+    # interactive human login for the Web UI — SEPARATE from the MCP OAuth token
+    # surface (a session is an opaque cookie, never an OAuth token).
+    users:
+      # FIRST-RUN: with no users yet, the Web UI shows a zero-config setup wizard
+      # and the first person to complete it becomes the wildcard admin (*:admin).
+      # Default true = "usable right away" on docker run / apt install. A PUBLIC
+      # deployment should set this false (in the same config it edits to expose the
+      # server) to close the open-registration window; once an admin exists,
+      # further users arrive only by invitation (a later stage).
+      # allow_first_run_admin: true
+      #
+      # TOTP secrets are encrypted at rest. By default a random key is generated
+      # once and persisted at <base_dir>/userstore.key. Set this to pin the key
+      # (any string, hashed to 32 bytes) — e.g. to share the store across a rebuild.
+      # totp_encryption_key: ""
+      #
+      # Login session lifetime (default 720h = 30 days).
+      # session_ttl: "720h"
+
+    # WebUI passkeys / WebAuthn (B-28 stage 1). Passkeys are the primary,
+    # passwordless factor; password (+ optional TOTP) is the universal floor that
+    # always works. Passkeys require a SECURE CONTEXT and a registrable-domain RP
+    # ID — so they work on a public domain (HTTPS via a reverse proxy) and on
+    # `localhost` (dev), but NOT on a bare internal IP (an IP cannot be a WebAuthn
+    # RP ID — log in there with the password/TOTP floor). Leave rp_id EMPTY to
+    # disable passkeys for this deployment (password+TOTP still works). These values
+    # live ONLY here in config, never in source.
+    webauthn:
+      # rp_id: "docs.example.com"        # canonical registrable domain (or "localhost" for dev)
+      # rp_display_name: "Shoka"
+      # rp_origins:
+      #   - "https://docs.example.com"   # permitted fully-qualified origin(s)
+
   # Operator-only diagnostics. OFF by default.
   debug:
     # Verbatim HTTP request/response dump (B-56/B-59). When true, EVERY request and EVERY

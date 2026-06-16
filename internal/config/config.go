@@ -102,10 +102,53 @@ type DebugConfig struct {
 // endpoints require no token and accept all WebSocket origins, preserving
 // single-operator local behaviour.
 type AuthConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	Tokens         []string `yaml:"tokens"`
-	AllowedOrigins []string `yaml:"allowed_origins"`
+	Enabled        bool            `yaml:"enabled"`
+	Tokens         []string        `yaml:"tokens"`
+	AllowedOrigins []string        `yaml:"allowed_origins"`
+	Users          UsersAuthConfig `yaml:"users"`
+	WebAuthn       WebAuthnConfig  `yaml:"webauthn"`
 }
+
+// UsersAuthConfig configures the multi-user WebUI login store (B-28 stage 1). The
+// user DB lives at <base_dir>/users.db (a go-git-free bbolt sibling of oauth.db).
+// AllowFirstRunAdmin (default TRUE) keeps the zero-config first-run wizard open so a
+// fresh `docker run` / `apt` install is "usable right away": with no users yet, the
+// first person to complete the WebUI wizard becomes the wildcard admin. A public
+// deployment sets it FALSE — in the config it is already editing to expose the
+// server — to close the open-registration window. TOTPEncryptionKey, when set, pins
+// the key used to encrypt TOTP secrets at rest (any string, hashed to 32 bytes);
+// empty means a random key generated once and persisted beside the store. SessionTTL
+// is the login session lifetime (default 720h = 30d).
+type UsersAuthConfig struct {
+	AllowFirstRunAdmin *bool    `yaml:"allow_first_run_admin"`
+	TOTPEncryptionKey  string   `yaml:"totp_encryption_key"`
+	SessionTTL         Duration `yaml:"session_ttl"`
+}
+
+// FirstRunAdminAllowed reports the effective allow_first_run_admin value (default
+// true — usable right away).
+func (u UsersAuthConfig) FirstRunAdminAllowed() bool {
+	return u.AllowFirstRunAdmin == nil || *u.AllowFirstRunAdmin
+}
+
+// WebAuthnConfig configures passkey/WebAuthn for the WebUI login (B-28 stage 1).
+// RPID is the canonical registrable domain (a public domain via reverse proxy, or
+// "localhost" for dev); an EMPTY RPID disables passkeys for this deployment (the
+// allowed "don't use it" per-deployment choice) while password+TOTP still works as
+// the universal floor. RPDisplayName is the human-facing RP name shown by the
+// authenticator. RPOrigins is the allow-list of permitted fully-qualified origins
+// (e.g. https://example.com). All three live ONLY in config, never in source (the
+// trusted_client_metadata_domains pattern), so no host/domain ships in the binary.
+// A bare internal IP cannot be a WebAuthn RP ID, so an IP-only deployment leaves
+// RPID empty and logs in via the password/TOTP floor.
+type WebAuthnConfig struct {
+	RPID          string   `yaml:"rp_id"`
+	RPDisplayName string   `yaml:"rp_display_name"`
+	RPOrigins     []string `yaml:"rp_origins"`
+}
+
+// Enabled reports whether passkeys are configured (a non-empty RPID).
+func (w WebAuthnConfig) Enabled() bool { return w.RPID != "" }
 
 // MCPConfig configures the MCP transport surface (B-50). Shoka runs the MCP
 // transport as up to two instances over one shared worker layer, selected by
@@ -441,6 +484,10 @@ func (c *Config) applyDefaults() {
 	}
 	if c.WALWorker.BackoffMax == 0 {
 		c.WALWorker.BackoffMax = Duration(30 * time.Second)
+	}
+	// WebUI login session lifetime (B-28 stage 1): default 30 days.
+	if c.Server.Auth.Users.SessionTTL == 0 {
+		c.Server.Auth.Users.SessionTTL = Duration(720 * time.Hour)
 	}
 	// Identity defaults (single-user mode). Absent config still yields a valid,
 	// intentional author rather than falling back to environmental git config.

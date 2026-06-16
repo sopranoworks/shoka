@@ -20,9 +20,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sopranoworks/shoka/internal/adminapi"
 	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/authapi"
 	"github.com/sopranoworks/shoka/internal/config"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/httplog"
@@ -36,6 +38,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/internal/storage/filelock"
 	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/internal/storage/userstore"
 	"github.com/sopranoworks/shoka/internal/storage/walworker"
 	"github.com/sopranoworks/shoka/internal/tools"
 	"github.com/sopranoworks/shoka/internal/translation"
@@ -416,7 +419,47 @@ func main() {
 
 	mcpServer := setupMCPServer(ctx, cfg, s, ts, logger, notifyCenter)
 
-	webHandler, err := setupWebHandler(s, dm, uim, webAuth, backupSweepCfg)
+	// WebUI multi-user login (B-28 stage 1): a server-level user/session store
+	// (go-git-free bbolt sibling of oauth.db) backing the /auth/* login surface. It
+	// is INDEPENDENT of the OAuth MCP transport — login works whether or not OAuth is
+	// enabled — and strictly separate from the MCP token surface (B-50): a session is
+	// an opaque cookie, never an OAuth token, and the OAuth ValidateToken closure is
+	// never consulted on the Web path.
+	totpKey, terr := userstore.ResolveTOTPKey(cfg.Server.Auth.Users.TOTPEncryptionKey, filepath.Join(cfg.Storage.BaseDir, "userstore.key"))
+	if terr != nil {
+		log.Fatalf("failed to resolve user-store TOTP key: %v", terr)
+	}
+	userStore, uerr := userstore.Open(filepath.Join(cfg.Storage.BaseDir, "users.db"), totpKey)
+	if uerr != nil {
+		log.Fatalf("failed to open user store: %v", uerr)
+	}
+	defer func() { _ = userStore.Close() }()
+
+	// WebAuthn engine: built only when a canonical rp_id is configured (the
+	// per-deployment "passkeys on" choice). Empty rp_id ⇒ nil ⇒ passkeys disabled
+	// while the password+TOTP floor still works (incl. a bare internal-IP deployment
+	// that cannot host a WebAuthn RP ID). rp_id/origins live ONLY in config.
+	var webAuthn *webauthn.WebAuthn
+	if cfg.Server.Auth.WebAuthn.Enabled() {
+		webAuthn, err = webauthn.New(&webauthn.Config{
+			RPID:          cfg.Server.Auth.WebAuthn.RPID,
+			RPDisplayName: cfg.Server.Auth.WebAuthn.RPDisplayName,
+			RPOrigins:     cfg.Server.Auth.WebAuthn.RPOrigins,
+		})
+		if err != nil {
+			log.Fatalf("failed to configure WebAuthn: %v", err)
+		}
+	}
+	authHandler := authapi.New(authapi.Config{
+		Users:              userStore,
+		WebAuthn:           webAuthn,
+		RPDisplayName:      cfg.Server.Auth.WebAuthn.RPDisplayName,
+		SessionTTL:         cfg.Server.Auth.Users.SessionTTL.Std(),
+		AllowFirstRunAdmin: cfg.Server.Auth.Users.FirstRunAdminAllowed(),
+		Logger:             logger,
+	})
+
+	webHandler, err := setupWebHandler(s, dm, uim, webAuth, authHandler, backupSweepCfg)
 	if err != nil {
 		log.Fatalf("failed to setup web handler: %v", err)
 	}
@@ -814,7 +857,7 @@ func describeStartupPostures(cfg *config.Config) []startupPosture {
 	return out
 }
 
-func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator, backupSweepCfg storage.SnapshotSweepConfig) (http.Handler, error) {
+func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manager, authenticator *auth.Authenticator, authHandler *authapi.Handler, backupSweepCfg storage.SnapshotSweepConfig) (http.Handler, error) {
 	mux := http.NewServeMux()
 	// WebSocket endpoints accept the ?token= query fallback (browsers cannot set
 	// an Authorization header on a WS handshake). The MCP/SSE endpoint uses the
@@ -823,7 +866,17 @@ func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manage
 	// request 401'd before the handler shows route="unrouted" while a served request
 	// names its handler — both under the shared request_id.
 	mux.Handle("/drafts/", authenticator.MiddlewareAllowQueryToken(reqtrace.Route("web-drafts", dm)))
-	mux.Handle("/ws/ui", authenticator.MiddlewareAllowQueryToken(reqtrace.Route("web-ws-ui", uim)))
+	// /ws/ui additionally requires a valid WebUI login session ONCE a user exists
+	// (B-28 stage 1): authHandler.RequireSession passes through while the user store
+	// is empty (no-lockout) and 401s an un-authenticated connection afterward, so the
+	// WebUI is used under the logged-in user's principal (attached by the outer
+	// authHandler.Middleware that wraps this whole mux).
+	mux.Handle("/ws/ui", authenticator.MiddlewareAllowQueryToken(authHandler.RequireSession(reqtrace.Route("web-ws-ui", uim))))
+
+	// Multi-user login surface (B-28 stage 1): /auth/status|register|login|logout and
+	// the WebAuthn passkey ceremonies. No bearer — it mints/clears the session cookie
+	// itself, on the Web surface, never touching the MCP token path.
+	mux.Handle("/auth/", reqtrace.Route("web-auth", authHandler))
 
 	// Admin API (project state/rescan/recover) — shared by the `shoka project`
 	// CLI and the Web UI recovery dialog. Header-bearer auth (no ?token=).
@@ -852,7 +905,13 @@ func setupWebHandler(s *storage.FSGitStorage, dm *drafts.Manager, uim *ui.Manage
 		fileServer.ServeHTTP(w, r)
 	})))
 
-	return mux, nil
+	// Wrap the whole web mux so the WebUI session principal (B-28 stage 1) is
+	// resolved from the session cookie and attached to the request context for every
+	// route — /ws/ui then reads it (writes authored as the logged-in user; the
+	// RequireSession gate checks it). Attaching never blocks; only RequireSession
+	// gates. The principal is the SAME auth.Principal the MCP path uses, but it is
+	// sourced from the user store, never the OAuth token closure (B-50 separation).
+	return authHandler.Middleware(mux), nil
 }
 
 // isLoopbackHost reports whether host is a loopback address or "localhost".

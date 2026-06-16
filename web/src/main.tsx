@@ -9,7 +9,7 @@ import { ToastProvider } from './lib/toast'
 import { BannerProvider } from './lib/banner'
 import { EditSignalProvider } from './lib/editSignal'
 import { AdminProvider } from './lib/admin'
-import { wsClient } from './lib/wsClient'
+import { AuthGate } from './components/AuthGate'
 import './styles/global.css'
 
 const queryClient = new QueryClient({
@@ -18,10 +18,9 @@ const queryClient = new QueryClient({
   },
 })
 
-// Open the /ws/ui connection eagerly so the first query has a warm socket.
-// The client reconnects with backoff on close; NOTIFY frames are routed into
-// the cache + banners/toasts by the NotifyBridge mounted in the Shell.
-wsClient().connect()
+// The /ws/ui connection is opened by AuthGate once the user is authenticated (or
+// the no-lockout single-operator case): opening it from the login screen would be
+// 401'd by the server's session gate once a user exists (B-28 stage 1).
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -35,7 +34,9 @@ createRoot(document.getElementById('root')!).render(
                   identity here (and the matching server seam). */}
               <AdminProvider>
                 <PaletteProvider>
-                  <RouterProvider router={router} />
+                  <AuthGate>
+                    <RouterProvider router={router} />
+                  </AuthGate>
                 </PaletteProvider>
               </AdminProvider>
             </EditSignalProvider>

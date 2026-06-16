@@ -162,6 +162,12 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       '    level: "warn"',
       '  auth:',
       '    enabled: false',
+      // B-28 stage 1: these existing E2Es predate the login gate and drive the app
+      // directly. Disable the first-run wizard so an empty user store renders the app
+      // via the no-lockout single-operator path (the pre-login behaviour). The passkey
+      // register+login flow is exercised by its own server in passkey.spec.ts.
+      '    users:',
+      '      allow_first_run_admin: false',
       'storage:',
       `  base_dir: "${join(dataDir, 'data')}"`,
       '  drift_scan:',
