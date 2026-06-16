@@ -5,9 +5,20 @@ import type { RailView } from '../components/ActivityRail'
 // Stable references so passing them as props never churns the rail.
 const NONE_DISABLED: RailView[] = []
 // Off a project route — the project-selection screen ("/") and the admin screens
-// (`/admin/*`) — no rail mode is meaningful (there is no project to explore,
-// search, or view history for), so ALL three items are disabled (genuinely inert).
+// (`/admin/*`) — Explorer/Search/History are not meaningful (no project to explore,
+// search, or view history for), so they are disabled. Settings is NOT disabled: it is
+// a GLOBAL view (its items, e.g. user management, are server-level), available
+// everywhere (B-28 stage 3).
 const NO_PROJECT_DISABLED: RailView[] = ['explorer', 'search', 'history']
+
+// parseProjectPrefix extracts ns/proj from any "/p/<ns>/<proj>..." path (including
+// the settings sub-route), where parseProjectFile (which requires a blob/edit/history
+// tail) does not match.
+function parseProjectPrefix(pathname: string): { ns: string; proj: string } | null {
+  const m = pathname.match(/^\/p\/([^/]+)\/([^/]+)/)
+  if (!m) return null
+  return { ns: decodeURIComponent(m[1]), proj: decodeURIComponent(m[2]) }
+}
 
 // The namespace/project, and (if any) the file shown by the current file-bearing
 // route, parsed from the pathname — so History can open the active file's history
@@ -48,9 +59,48 @@ export function useRailSelect(
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const onProjectRoute = pathname.startsWith('/p/')
   const onHistoryRoute = /^\/p\/[^/]+\/[^/]+\/history(\/|$)/.test(pathname)
+  const onSettingsRoute =
+    /^\/settings(\/|$)/.test(pathname) || /^\/p\/[^/]+\/[^/]+\/settings(\/|$)/.test(pathname)
   const onSelect = useCallback(
     (v: RailView) => {
-      if (!onProjectRoute) return // all items disabled off a project route
+      // Settings is global (available everywhere); the other modes need a project.
+      if (v !== 'settings' && !onProjectRoute) return
+
+      // Settings: switch to the Settings rail mode. Project-scoped when in a project
+      // (so the file tree stays mounted in the sidebar — no remount/collapse on
+      // return), global otherwise. Toggling the open Settings pane closes it.
+      if (v === 'settings') {
+        if (v === rail && sidebarOpen) {
+          setSidebarOpen(false)
+          return
+        }
+        setRail('settings')
+        setSidebarOpen(true)
+        const ref = parseProjectPrefix(pathname)
+        if (ref) {
+          void navigate({
+            to: '/p/$namespace/$project/settings',
+            params: { namespace: ref.ns, project: ref.proj },
+          })
+        } else {
+          void navigate({ to: '/settings' })
+        }
+        return
+      }
+
+      // Explorer leaving Settings → back to the project view (symmetric to leaving
+      // History): return the content to the project root, or the repo list if global.
+      if (v === 'explorer' && onSettingsRoute) {
+        setRail('explorer')
+        setSidebarOpen(true)
+        const ref = parseProjectPrefix(pathname)
+        if (ref) {
+          void navigate({ to: '/p/$namespace/$project', params: { namespace: ref.ns, project: ref.proj } })
+        } else {
+          void navigate({ to: '/' })
+        }
+        return
+      }
       // Explorer leaving History: symmetric to File→History — return the content
       // to the SAME file's file view (`/blob/<file>`), not just switch the rail.
       // Runs before the toggle check so it also corrects a reload-desync (rail
@@ -96,6 +146,7 @@ export function useRailSelect(
     [
       onProjectRoute,
       onHistoryRoute,
+      onSettingsRoute,
       rail,
       sidebarOpen,
       pathname,
@@ -128,4 +179,19 @@ export function useResetRailToExplorerOnProjectChange(
   useEffect(() => {
     if (projectKey) setRail('explorer')
   }, [projectKey, setRail])
+}
+
+// Sync the rail to Settings when the URL is a settings route (so a reload / deep-link
+// to /settings or /p/ns/proj/settings shows the Settings mode). Declared AFTER the
+// explorer-reset in Shell so it wins on a direct load of a project-scoped settings
+// route (where the project-change reset would otherwise force Explorer).
+export function useSettingsRailSync(setRail: (v: RailView) => void): void {
+  const onSettings = useRouterState({
+    select: (s) =>
+      /^\/settings(\/|$)/.test(s.location.pathname) ||
+      /^\/p\/[^/]+\/[^/]+\/settings(\/|$)/.test(s.location.pathname),
+  })
+  useEffect(() => {
+    if (onSettings) setRail('settings')
+  }, [onSettings, setRail])
 }

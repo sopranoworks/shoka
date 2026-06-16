@@ -18,6 +18,7 @@ import { useMediaQuery } from '../lib/useMediaQuery'
 import {
   useRailSelect,
   useResetRailToExplorerOnProjectChange,
+  useSettingsRailSync,
 } from '../lib/useRailSelect'
 import styles from './Shell.module.css'
 
@@ -37,6 +38,9 @@ export function Shell({ children }: { children: ReactNode }) {
   )
   // Selecting a project defaults the rail to Explorer (the file view).
   useResetRailToExplorerOnProjectChange(setRail)
+  // A settings route (reload / deep-link) shows the Settings mode. Declared AFTER the
+  // explorer-reset so it wins on a direct load of a project-scoped settings route.
+  useSettingsRailSync(setRail)
 
   // On narrow screens the panel group stacks vertically so the content stays
   // full-width and readable (no sliver). On desktop it's a resizable split.

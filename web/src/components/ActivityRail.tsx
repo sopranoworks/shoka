@@ -1,6 +1,6 @@
 import styles from './ActivityRail.module.css'
 
-export type RailView = 'explorer' | 'search' | 'history'
+export type RailView = 'explorer' | 'search' | 'history' | 'settings'
 
 interface Item {
   id: RailView
@@ -41,6 +41,21 @@ const items: Item[] = [
         <path d="M4 12a8 8 0 1 0 2.5-5.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
         <path d="M4 4v3h3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
         <path d="M12 8v4l3 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    id: 'settings',
+    label: 'Settings',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
+        <path
+          d="M12 3.5v2M12 18.5v2M20.5 12h-2M5.5 12h-2M17.5 6.5l-1.4 1.4M7.9 16.1l-1.4 1.4M17.5 17.5l-1.4-1.4M7.9 7.9 6.5 6.5"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
       </svg>
     ),
   },

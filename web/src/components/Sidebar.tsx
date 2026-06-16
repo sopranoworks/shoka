@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import type { RailView } from './ActivityRail'
 import { FileTree, type TreeOpenMode } from './FileTree'
+import { SettingsItemList } from './SettingsItemList'
 import { useTreeQuery } from '../lib/queries'
 import { dirOf } from '../lib/moveController'
 import styles from './Sidebar.module.css'
@@ -35,21 +36,31 @@ export function Sidebar({ view }: { view: RailView }) {
   const historyPath = useActiveHistoryPath()
 
   if (view === 'search') return <SearchView projectRef={ref} />
-  if (!ref) return <div className={styles.pane} />
 
-  // Explorer AND History render the SAME ProjectTree at the SAME position (only
-  // openMode/activePath differ), so switching Explorer↔History does NOT remount
-  // the tree — the file tree keeps its expansion state across the mode switch.
-  // (Previously Sidebar returned different ExplorerView/HistoryView component
-  // types, which remounted the tree to all-collapsed on every switch.)
+  // Explorer, History AND Settings keep the SAME ProjectTree mounted at the SAME
+  // position (only hidden in Settings), so switching among them never remounts the
+  // tree — the file tree keeps its expansion state across the mode switch (74a7c8c,
+  // extended to Settings: the tree is display:none in Settings, not unmounted). In
+  // Settings the sidebar shows the permission-filtered settings-item list above the
+  // (hidden) tree; on return to Explorer/History the tree is reconciled in place.
   const isHistory = view === 'history'
+  const isSettings = view === 'settings'
   return (
-    <ProjectTree
-      ns={ref.ns}
-      proj={ref.proj}
-      activePath={isHistory ? historyPath : blobPath}
-      openMode={isHistory ? 'history' : 'blob'}
-    />
+    <>
+      {isSettings && <SettingsItemList />}
+      {ref ? (
+        <div style={isSettings ? { display: 'none' } : { display: 'contents' }}>
+          <ProjectTree
+            ns={ref.ns}
+            proj={ref.proj}
+            activePath={isHistory ? historyPath : blobPath}
+            openMode={isHistory ? 'history' : 'blob'}
+          />
+        </div>
+      ) : (
+        !isSettings && <div className={styles.pane} />
+      )}
+    </>
   )
 }
 

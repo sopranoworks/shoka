@@ -435,6 +435,10 @@ func main() {
 	}
 	defer func() { _ = userStore.Close() }()
 
+	// The super-user-only user-management ops (B-28 stage 3) ride /ws/ui, gated at
+	// admin level by the stage-2 dispatch gate. Wiring the store enables them.
+	uim.SetUserStore(userStore)
+
 	// WebAuthn engine: built only when a canonical rp_id is configured (the
 	// per-deployment "passkeys on" choice). Empty rp_id ⇒ nil ⇒ passkeys disabled
 	// while the password+TOTP floor still works (incl. a bare internal-IP deployment

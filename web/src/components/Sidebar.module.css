@@ -103,3 +103,21 @@
   border-color: var(--c-accent);
 }
 
+
+/* Settings rail mode: the permission-filtered item list (B-28 stage 3). */
+.settingsItem {
+  display: block;
+  padding: 0.45rem 0.75rem;
+  color: var(--c-text, #cfcfcf);
+  text-decoration: none;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  margin: 0.1rem 0.4rem;
+}
+.settingsItem:hover {
+  background: var(--c-hover, rgba(255, 255, 255, 0.06));
+}
+.settingsItem[data-active='true'] {
+  background: var(--c-active, rgba(79, 124, 255, 0.18));
+  color: var(--c-text, #fff);
+}

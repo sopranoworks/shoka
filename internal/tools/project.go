@@ -8,11 +8,31 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/authz"
 	"github.com/sopranoworks/shoka/internal/markdown"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/internal/utils"
 )
+
+// filterProjectsByReadScope narrows a list of "<namespace>/<name>" entries to the
+// namespaces the request's principal has at least read access on (B-28 stage 3 — the
+// deferred stage-2 global-read filter). A super-user (scope "" or "*") keeps every
+// entry, so behaviour is unchanged for today's tokens; a namespace-scoped principal
+// sees only its granted namespaces. This is result-shaping AFTER the call is
+// authorized by the gate (list_projects is a global read), not a second gate.
+func filterProjectsByReadScope(ctx context.Context, projects []string) []string {
+	p, _ := auth.PrincipalFrom(ctx)
+	out := make([]string, 0, len(projects))
+	for _, pr := range projects {
+		ns, _, _ := strings.Cut(pr, "/")
+		if authz.Authorize(p.Scope, ns, "", authz.LevelRead) == nil {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
 
 type CreateProjectInput struct {
 	Namespace   string `json:"namespace,omitempty" jsonschema:"optional, the namespace for the project (defaults to 'default')"`
@@ -81,7 +101,7 @@ func ListProjectsHandler(s storage.StorageService) func(context.Context, *mcp.Ca
 					IsError: true,
 				}, ListProjectsOutput{}, nil
 			}
-			return nil, ListProjectsOutput{Projects: projects}, nil
+			return nil, ListProjectsOutput{Projects: filterProjectsByReadScope(ctx, projects)}, nil
 		}
 
 		// Explicit namespace → only that namespace, same "<ns>/<name>" shape.
@@ -103,7 +123,7 @@ func ListProjectsHandler(s storage.StorageService) func(context.Context, *mcp.Ca
 		for _, name := range names {
 			projects = append(projects, input.Namespace+"/"+name)
 		}
-		return nil, ListProjectsOutput{Projects: projects}, nil
+		return nil, ListProjectsOutput{Projects: filterProjectsByReadScope(ctx, projects)}, nil
 	}
 }
 

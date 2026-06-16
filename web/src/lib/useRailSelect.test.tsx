@@ -89,7 +89,7 @@ describe('useRailSelect — consistent open/close toggle (project view)', () => 
     async (active) => {
       const setRail = vi.fn()
       const setSidebarOpen = vi.fn()
-      const label = { explorer: 'Explorer', search: 'Search', history: 'History' }[active]
+      const label = { explorer: 'Explorer', search: 'Search', history: 'History', settings: 'Settings' }[active]
       setup('/p/ns/proj/blob/doc.md', {
         rail: active,
         sidebarOpen: true,

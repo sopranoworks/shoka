@@ -8,11 +8,13 @@ import { ActivityRail } from './ActivityRail'
 // test fails against the pre-fix rail (which had a fourth "Namespaces" button)
 // and passes after, guarding against reintroduction.
 describe('ActivityRail', () => {
-  it('renders Explorer, Search and History', () => {
+  it('renders Explorer, Search, History and Settings', () => {
     render(<ActivityRail active="explorer" onSelect={() => {}} />)
     expect(screen.getByRole('button', { name: 'Explorer' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'History' })).toBeInTheDocument()
+    // The Settings gear (B-28 stage 3) is always present.
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 
   it('does NOT render a Namespaces item', () => {
@@ -20,10 +22,10 @@ describe('ActivityRail', () => {
     expect(screen.queryByRole('button', { name: 'Namespaces' })).toBeNull()
   })
 
-  it('renders exactly three activity-bar items', () => {
+  it('renders exactly four activity-bar items (incl. the Settings gear)', () => {
     render(<ActivityRail active="explorer" onSelect={() => {}} />)
     const rail = screen.getByRole('navigation', { name: 'Activity bar' })
-    expect(rail.querySelectorAll('button')).toHaveLength(3)
+    expect(rail.querySelectorAll('button')).toHaveLength(4)
   })
 
   // Per-item disabled state (admin rail refinement): a disabled item is inert
@@ -54,13 +56,13 @@ describe('ActivityRail', () => {
 
 // B-31 trash-can: a trash box at the bottom of the rail opens/collapses the trash
 // pane and doubles as the drag-to-trash drop target. It is a SEPARATE surface
-// from the three activity items (so the "exactly three" invariant above holds).
+// from the activity items (it lives outside the nav region).
 describe('ActivityRail trash box (B-31)', () => {
-  it('renders a Trash box that is NOT one of the three activity items', () => {
+  it('renders a Trash box that is NOT one of the activity items', () => {
     render(<ActivityRail active="explorer" onSelect={() => {}} />)
     const nav = screen.getByRole('navigation', { name: 'Activity bar' })
-    // The nav still holds exactly three items; trash lives outside it.
-    expect(nav.querySelectorAll('button')).toHaveLength(3)
+    // The nav holds the four activity items (incl. Settings); trash lives outside it.
+    expect(nav.querySelectorAll('button')).toHaveLength(4)
     expect(nav.querySelector('[aria-label="Trash"]')).toBeNull()
     expect(screen.getByRole('button', { name: 'Trash' })).toBeInTheDocument()
   })

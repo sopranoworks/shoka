@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { login, loginPasskey, isPasskeyCapable } from '../lib/authClient'
+import { RedeemInvite } from './RedeemInvite'
 import styles from './AuthScreen.module.css'
 
 // LoginScreen authenticates an existing user (B-28 stage 1). A passkey is offered
@@ -19,8 +20,13 @@ export function LoginScreen({
   const [totpRequired, setTOTPRequired] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [redeeming, setRedeeming] = useState(false)
 
   const canPasskey = passkeyEnabled && isPasskeyCapable()
+
+  if (redeeming) {
+    return <RedeemInvite passkeyEnabled={passkeyEnabled} onDone={onDone} onBack={() => setRedeeming(false)} />
+  }
 
   async function submitPassword(e: React.FormEvent) {
     e.preventDefault()
@@ -109,6 +115,13 @@ export function LoginScreen({
         )}
         <button className={styles.button} type="submit" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+        <button
+          type="button"
+          className={`${styles.button} ${styles.secondary}`}
+          onClick={() => setRedeeming(true)}
+        >
+          Have an invite code?
         </button>
       </form>
     </div>

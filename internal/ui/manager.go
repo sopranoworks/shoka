@@ -22,6 +22,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/internal/storage/userstore"
 )
 
 type MessageType string
@@ -115,6 +116,15 @@ const (
 	// switch on type are unaffected.
 	MsgNotify MessageType = "NOTIFY"
 	Error     MessageType = "ERROR"
+	// User-management ops (B-28 stage 3) — all super-user-only (admin level, global),
+	// enforced by the stage-2 dispatch gate; the destructive ones additionally refuse
+	// the caller's own account (server-side self-guard, defence in depth).
+	MsgAdminListUsers    MessageType = "ADMIN_LIST_USERS"
+	MsgAdminSetUserScope MessageType = "ADMIN_SET_USER_SCOPE"
+	MsgAdminRemoveUser   MessageType = "ADMIN_REMOVE_USER"
+	MsgAdminCreateInvite MessageType = "ADMIN_CREATE_INVITE"
+	MsgAdminListInvites  MessageType = "ADMIN_LIST_INVITES"
+	MsgAdminRevokeInvite MessageType = "ADMIN_REVOKE_INVITE"
 	// MsgPermissionDenied is the authorization-refusal frame for the /ws/ui dispatch
 	// gate (the B-28 stage-2 enforcement flip): a session principal whose scope lacks
 	// the level the requested operation requires gets this instead of the handler
@@ -354,6 +364,21 @@ func (c *wsClient) userIdentity() identity.User {
 	return identity.User{}
 }
 
+// scope returns the connection's authorization scope: the session principal's scope,
+// or "*" (super-user) for the no-principal / no-lockout single-operator connection.
+func (c *wsClient) scope() string {
+	if c.hasPrincipal {
+		return c.principal.Scope
+	}
+	return "*"
+}
+
+// canRead reports whether the connection may read the given namespace (the
+// global-read result filter, B-28 stage 3).
+func (c *wsClient) canRead(namespace string) bool {
+	return authz.Authorize(c.scope(), namespace, "", authz.LevelRead) == nil
+}
+
 func (c *wsClient) writeMessage(msgType MessageType, payload interface{}) error {
 	payloadData, err := json.Marshal(payload)
 	if err != nil {
@@ -416,6 +441,20 @@ type OAuthSelfIssuerFunc func(r *http.Request) (string, time.Time, error)
 // IssueSelf calls f.
 func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request) (string, time.Time, error) { return f(r) }
 
+// UserAdminStore is the narrow capability the super-user-only user-management ops
+// (B-28 stage 3) depend on — exactly the userstore admin/invite methods. The Manager
+// depends on this interface, not the concrete *userstore.Store, so the handle stays
+// nil when the user store is absent and tests can inject a fake. *userstore.Store
+// already satisfies it.
+type UserAdminStore interface {
+	ListUsers() ([]userstore.UserInfo, error)
+	UpdateUserScope(email, scope string) error
+	RemoveUser(email string) error
+	CreateInvite(email, scope, createdBy string, now time.Time, ttl time.Duration) (string, userstore.InviteRecord, error)
+	ListInvites() ([]userstore.InviteInfo, error)
+	RevokeInvite(codeHash string) error
+}
+
 // AdminAuthorizer is the administrator-only authorization seam for the OAuth
 // management requests (the 2026-06-03 MCP OAuth (c) directive §2.1a). It gates
 // OAUTH_LIST/OAUTH_REVOKE on the SERVER side — the authoritative gate — because
@@ -461,6 +500,9 @@ type Manager struct {
 	// admin gates the administrator-only OAuth requests (§2.1a). Never nil:
 	// NewManager defaults it to singleUserAdmin (trivially true).
 	admin AdminAuthorizer
+	// users backs the super-user-only user-management ops (B-28 stage 3). nil when no
+	// user store is wired (the ADMIN_* handlers then report it unavailable).
+	users UserAdminStore
 	// connSeq assigns each connection a unique sender id ("ws-<seq>"). Atomic so
 	// concurrent upgrades never collide on an id.
 	connSeq atomic.Uint64
@@ -504,6 +546,13 @@ func (m *Manager) SetOAuthStore(s OAuthConnectionStore) {
 // OAUTH_ISSUE_SELF returns MsgOAuthDenied ("oauth_disabled").
 func (m *Manager) SetOAuthSelfIssuer(i OAuthSelfIssuer) {
 	m.selfIssuer = i
+}
+
+// SetUserStore wires the user store for the super-user-only user-management ops
+// (B-28 stage 3). Called in startup; when unset the ADMIN_* handlers report the
+// capability unavailable.
+func (m *Manager) SetUserStore(u UserAdminStore) {
+	m.users = u
 }
 
 // SetAdminAuthorizer overrides the administrator-only authorization seam for the
@@ -562,6 +611,13 @@ var wsLevels = map[MessageType]wsOp{
 	MsgOAuthList:      {authz.LevelAdmin, true},
 	MsgOAuthRevoke:    {authz.LevelAdmin, true},
 	MsgOAuthIssueSelf: {authz.LevelAdmin, true},
+
+	MsgAdminListUsers:    {authz.LevelAdmin, true},
+	MsgAdminSetUserScope: {authz.LevelAdmin, true},
+	MsgAdminRemoveUser:   {authz.LevelAdmin, true},
+	MsgAdminCreateInvite: {authz.LevelAdmin, true},
+	MsgAdminListInvites:  {authz.LevelAdmin, true},
+	MsgAdminRevokeInvite: {authz.LevelAdmin, true},
 }
 
 // authzGate applies the shared authz decision to one /ws/ui message before its
@@ -710,6 +766,18 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleOAuthRevoke(client, wsMsg.Payload)
 		case MsgOAuthIssueSelf:
 			m.handleOAuthIssueSelf(client)
+		case MsgAdminListUsers:
+			m.handleAdminListUsers(client)
+		case MsgAdminSetUserScope:
+			m.handleAdminSetUserScope(client, wsMsg.Payload)
+		case MsgAdminRemoveUser:
+			m.handleAdminRemoveUser(client, wsMsg.Payload)
+		case MsgAdminCreateInvite:
+			m.handleAdminCreateInvite(client, wsMsg.Payload)
+		case MsgAdminListInvites:
+			m.handleAdminListInvites(client)
+		case MsgAdminRevokeInvite:
+			m.handleAdminRevokeInvite(client, wsMsg.Payload)
 		default:
 			client.sendError("Unknown message type")
 		}
@@ -764,6 +832,13 @@ func (m *Manager) handleGetProjects(client *wsClient, payload json.RawMessage) {
 		if err != nil {
 			client.sendError(fmt.Sprintf("Failed to list projects: %v", err))
 			return
+		}
+		// Global-read filter (B-28 stage 3, the deferred stage-2 item): a logged-in
+		// scoped user sees only the namespaces it has at least read on; a super-user
+		// (or the no-principal no-lockout connection) sees all. Result-shaping after
+		// the gate already authorized the global read.
+		if !client.canRead(ns) {
+			continue
 		}
 		for _, name := range projects {
 			state := string(storage.StateHealthy)

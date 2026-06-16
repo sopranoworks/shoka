@@ -76,6 +76,25 @@ export async function newTOTP(email: string): Promise<NewTOTP> {
   return asJSON<NewTOTP>(await post('/auth/totp/new', { email }))
 }
 
+export interface InviteInfo {
+  email: string
+  scope: string
+}
+
+export async function inviteInfo(code: string): Promise<InviteInfo> {
+  return asJSON<InviteInfo>(await post('/auth/invite/info', { code }))
+}
+
+export async function redeemInvite(input: {
+  code: string
+  display_name: string
+  password: string
+  totp_secret?: string
+  totp_code?: string
+}): Promise<AuthStatus> {
+  return asJSON<AuthStatus>(await post('/auth/invite/redeem', input))
+}
+
 // --- WebAuthn (passkey) glue -------------------------------------------------
 
 function b64urlToBuf(s: string): ArrayBuffer {

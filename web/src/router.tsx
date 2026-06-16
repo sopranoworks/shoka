@@ -33,6 +33,11 @@ const ConnectionsPage = lazy(() =>
     default: m.ConnectionsPage,
   })),
 )
+// The Settings view's right pane (B-28 stage 3) — the gear rail mode's content,
+// lazy since it pulls the user-management screen.
+const SettingsPage = lazy(() =>
+  import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
+)
 
 // Wrap a lazily-loaded page in a Suspense boundary with the delayed fallback.
 function lazyRoute(Page: React.ComponentType) {
@@ -169,6 +174,32 @@ const connectionsRoute = createRoute({
   component: lazyRoute(ConnectionsPage),
 })
 
+// Settings (B-28 stage 3): the gear rail mode's content. The selected item lives in
+// `?item=`. Project-scoped (`/p/$ns/$proj/settings`) keeps the project in the URL so
+// the sidebar file tree stays mounted (no remount/collapse) while in Settings; the
+// global form (`/settings`) is reachable off-project (e.g. from the repo list).
+interface SettingsSearch {
+  item?: string
+}
+function validateSettingsSearch(search: Record<string, unknown>): SettingsSearch {
+  const item = typeof search.item === 'string' && search.item ? search.item : undefined
+  return item ? { item } : {}
+}
+
+const projectSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/p/$namespace/$project/settings',
+  validateSearch: validateSettingsSearch,
+  component: lazyRoute(SettingsPage),
+})
+
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  validateSearch: validateSettingsSearch,
+  component: lazyRoute(SettingsPage),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   projectRoute,
@@ -178,6 +209,8 @@ const routeTree = rootRoute.addChildren([
   searchRoute,
   newFileRoute,
   connectionsRoute,
+  projectSettingsRoute,
+  settingsRoute,
 ])
 
 export const router = createRouter({

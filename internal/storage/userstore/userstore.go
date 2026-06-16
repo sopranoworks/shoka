@@ -61,6 +61,7 @@ var (
 const (
 	usersBucket    = "users"
 	sessionsBucket = "sessions"
+	invitesBucket  = "invites"
 )
 
 // UserRecord is one account. Email is the primary key AND the git Author identity
@@ -139,7 +140,7 @@ func Open(path string, totpKey []byte) (*Store, error) {
 		return nil, fmt.Errorf("userstore: open %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{usersBucket, sessionsBucket} {
+		for _, b := range []string{usersBucket, sessionsBucket, invitesBucket} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}

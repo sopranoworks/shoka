@@ -89,6 +89,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleStatus(w, r)
 	case "/totp/new":
 		h.requirePOST(w, r, h.handleTOTPNew)
+	case "/invite/info":
+		h.requirePOST(w, r, h.handleInviteInfo)
+	case "/invite/redeem":
+		h.requirePOST(w, r, h.handleInviteRedeem)
 	case "/register":
 		h.requirePOST(w, r, h.handleRegister)
 	case "/login":
