@@ -54,6 +54,8 @@ export function ActivityRail({
   trashActive = false,
   onTrashClick,
   onTrashDrop,
+  onTrashDragEnter,
+  onTrashDragLeave,
 }: {
   active: RailView
   onSelect: (v: RailView) => void
@@ -70,6 +72,11 @@ export function ActivityRail({
   trashActive?: boolean
   onTrashClick?: () => void
   onTrashDrop?: () => void
+  // Drag-to-trash hover tracking (B-31 fix F): dragenter/dragleave fire regardless
+  // of dropEffect, so they let the source row's dragend know the drag was released
+  // over the trash box even when react-dnd suppresses the rail's native `drop`.
+  onTrashDragEnter?: () => void
+  onTrashDragLeave?: () => void
 }) {
   return (
     <div className={styles.rail}>
@@ -107,6 +114,11 @@ export function ActivityRail({
           // Drop target for a dragged tree row (drag-to-trash). preventDefault on
           // dragover marks the box as a valid drop zone; the drop reads the file
           // recorded at drag-start (lib/dragSource) and reserves it.
+          onDragEnter={(e) => {
+            e.preventDefault()
+            onTrashDragEnter?.()
+          }}
+          onDragLeave={() => onTrashDragLeave?.()}
           onDragOver={(e) => {
             e.preventDefault()
             if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'

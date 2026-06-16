@@ -18,6 +18,15 @@ export interface DragSource {
 
 let current: DragSource | null = null
 
+// Whether the active drag is currently OVER the activity-rail trash box. Tracked
+// from the rail's dragenter/dragleave (which fire regardless of dropEffect) so the
+// source row's dragend — which ALWAYS fires, even when react-arborist's react-dnd
+// HTML5Backend suppresses the rail's native `drop` over a non-dnd target — can tell
+// whether the drag was released on the trash box and enqueue accordingly. This is
+// the robust fallback that makes drag-to-trash work despite react-dnd owning the
+// row drag (B-31 fix F).
+let overTrash = false
+
 export function setDragSource(src: DragSource | null): void {
   current = src
 }
@@ -26,6 +35,18 @@ export function getDragSource(): DragSource | null {
   return current
 }
 
+// Clears the whole drag lifecycle: the dragged file AND the over-trash flag. Called
+// when a drag ends (success or cancel) and after a drop is consumed, so the next
+// drag starts clean and a consumed drag can never be re-enqueued.
 export function clearDragSource(): void {
   current = null
+  overTrash = false
+}
+
+export function setOverTrash(v: boolean): void {
+  overTrash = v
+}
+
+export function isOverTrash(): boolean {
+  return overTrash
 }

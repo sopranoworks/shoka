@@ -16,7 +16,6 @@ import {
 } from '../lib/moveController'
 import { useToast } from '../lib/toast'
 import { useTrashController } from '../lib/trashController'
-import { setDragSource, clearDragSource } from '../lib/dragSource'
 import type { FileNode, TreeNode } from '../lib/types'
 import styles from './FileTree.module.css'
 
@@ -58,7 +57,8 @@ export function FileTree({
 }) {
   const navigate = useNavigate()
   const { requestMove, executeMove } = useMoveController()
-  const { enqueuePath, items: trashItems } = useTrashController()
+  const { enqueuePath, onRowDragStart, onRowDragEnd, items: trashItems } =
+    useTrashController()
   const { add: addToast } = useToast()
   const data = useMemo(() => toTreeNodes(nodes), [nodes])
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
@@ -195,6 +195,8 @@ export function FileTree({
             namespace={namespace}
             project={project}
             isReserved={props.node.data.isFile && reserved.has(props.node.data.path)}
+            onRowDragStart={onRowDragStart}
+            onRowDragEnd={onRowDragEnd}
             onContext={(e, node) => {
               if (!node.isFile) return
               e.preventDefault()
@@ -307,12 +309,16 @@ function Row({
   namespace,
   project,
   isReserved,
+  onRowDragStart,
+  onRowDragEnd,
   onContext,
 }: NodeRendererProps<TreeNode> & {
   activePath: string | null
   namespace: string
   project: string
   isReserved: boolean
+  onRowDragStart: (src: { namespace: string; project: string; path: string }) => void
+  onRowDragEnd: () => void
   onContext: (e: React.MouseEvent, node: TreeNode) => void
 }) {
   const isActive = node.data.isFile && node.data.path === activePath
@@ -325,12 +331,15 @@ function Row({
       data-reserved={isReserved}
       // Record the dragged file so the activity-rail trash box (a drop target
       // OUTSIDE this Tree) can learn which file was dropped — react-arborist's own
-      // drag still drives in-tree moves; this is additive (lib/dragSource).
+      // drag still drives in-tree moves; this is additive (the trash controller's
+      // drag bridge, lib/dragSource). onRowDragEnd is the robust fallback: if the
+      // drag was released over the trash box it enqueues, even when react-dnd
+      // suppresses the rail's native drop (B-31 fix F).
       onDragStart={() => {
         if (node.data.isFile)
-          setDragSource({ namespace, project, path: node.data.path })
+          onRowDragStart({ namespace, project, path: node.data.path })
       }}
-      onDragEnd={() => clearDragSource()}
+      onDragEnd={() => onRowDragEnd()}
       onClick={(e) => {
         e.stopPropagation()
         if (node.data.isFile) {

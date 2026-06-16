@@ -1,7 +1,10 @@
 .pane {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  /* flex:1 (not height:100%) so the sidebar view shares the flex-column sidebar
+     Panel with the in-column trash pane below it (B-31 fix G): the view yields
+     space when the trash pane opens, instead of the trash floating over it. */
+  flex: 1;
   min-height: 0;
 }
 

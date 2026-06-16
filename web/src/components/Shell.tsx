@@ -3,6 +3,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { TitleBar } from './TitleBar'
 import { ActivityRail, type RailView } from './ActivityRail'
 import { Sidebar } from './Sidebar'
+import { SidebarTrash } from './SidebarTrash'
 import { StatusBar } from './StatusBar'
 import { CommandPalette } from './CommandPalette'
 import { Banner } from './Banner'
@@ -67,7 +68,12 @@ export function Shell({ children }: { children: ReactNode }) {
                   maxSize={isNarrow ? 60 : 40}
                   className={styles.sidebarPanel}
                 >
+                  {/* The sidebar column splits vertically: the view (file tree)
+                      above, the trash pane as an in-column collapsible section
+                      below (B-31 fix G). SidebarTrash renders nothing when the
+                      pane is closed, so the view fills the column. */}
                   <Sidebar view={rail} />
+                  <SidebarTrash />
                 </Panel>
                 <PanelResizeHandle
                   className={
@@ -107,7 +113,14 @@ function ShellRail({
   onSelect: (v: RailView) => void
   disabled: RailView[]
 }) {
-  const { items, paneOpen, togglePane, enqueueFromDrag } = useTrashController()
+  const {
+    items,
+    paneOpen,
+    togglePane,
+    enqueueFromDrag,
+    onTrashDragEnter,
+    onTrashDragLeave,
+  } = useTrashController()
   return (
     <ActivityRail
       active={active}
@@ -117,6 +130,8 @@ function ShellRail({
       trashActive={paneOpen}
       onTrashClick={togglePane}
       onTrashDrop={enqueueFromDrag}
+      onTrashDragEnter={onTrashDragEnter}
+      onTrashDragLeave={onTrashDragLeave}
     />
   )
 }
