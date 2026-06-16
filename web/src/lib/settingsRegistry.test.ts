@@ -5,13 +5,15 @@ import { visibleSettingsItems } from './settingsRegistry'
 // item is super-user-only, so a non-super-user's list omits it (the gear/Settings view
 // itself is always shown; only the items inside are filtered).
 describe('visibleSettingsItems', () => {
-  it('shows user management to a super-user', () => {
-    const items = visibleSettingsItems(true)
-    expect(items.map((i) => i.id)).toContain('users')
+  it('shows the super-user items (user management + OAuth connections) to a super-user', () => {
+    const ids = visibleSettingsItems(true).map((i) => i.id)
+    expect(ids).toContain('users')
+    expect(ids).toContain('oauth')
   })
 
-  it('hides user management from a non-super-user', () => {
-    const items = visibleSettingsItems(false)
-    expect(items.map((i) => i.id)).not.toContain('users')
+  it('hides the super-user items from a non-super-user', () => {
+    const ids = visibleSettingsItems(false).map((i) => i.id)
+    expect(ids).not.toContain('users')
+    expect(ids).not.toContain('oauth')
   })
 })

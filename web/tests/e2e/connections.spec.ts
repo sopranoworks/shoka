@@ -48,12 +48,21 @@ test('lists the seeded connection by client domain + principal, with no secret o
   }
 })
 
-test('the admin palette entry opens the management view', async ({ page }) => {
+test('the admin palette entry opens the management view (the OAuth settings item)', async ({ page }) => {
   await page.goto('/')
   await page.keyboard.press('Meta+k')
   await expect(page.getByPlaceholder('Type a command or search…')).toBeVisible()
   await page.getByText('Manage OAuth connections…').click()
-  await expect(page).toHaveURL(/\/admin\/connections$/)
+  // The OAuth screen now lives in the Settings view (B-28 OAuth-settings-item), reached
+  // at /settings?item=oauth (the command palette points here; /admin/connections also
+  // redirects here).
+  await expect(page).toHaveURL(/\/settings\?item=oauth$/)
+  await expect(page.getByText('connector.example.com')).toBeVisible()
+})
+
+test('the old /admin/connections path redirects to the OAuth settings item', async ({ page }) => {
+  await page.goto('/admin/connections')
+  await expect(page).toHaveURL(/\/settings\?item=oauth$/)
   await expect(page.getByText('connector.example.com')).toBeVisible()
 })
 

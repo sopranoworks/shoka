@@ -136,10 +136,14 @@ test('Settings rail mode: gear present, user-management visible, no tree collaps
 
   // The gear is present; activate Settings.
   await page.getByRole('button', { name: 'Settings' }).click()
-  // The settings item list shows "User management" (the admin is a super-user).
+  // The settings item list shows BOTH super-user items (User management + OAuth).
   await expect(page.getByRole('link', { name: 'User management' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'OAuth connections' })).toBeVisible()
   await page.getByRole('link', { name: 'User management' }).click()
   await expect(page.getByRole('heading', { name: 'User management' })).toBeVisible()
+  // Selecting the OAuth item renders the existing Connections screen in the right pane.
+  await page.getByRole('link', { name: 'OAuth connections' }).click()
+  await expect(page.getByRole('button', { name: 'Refresh connections' })).toBeVisible()
 
   // Back to Explorer: the tree did NOT collapse — "intro.md" is still visible
   // (the ProjectTree stayed mounted while hidden in Settings; 74a7c8c intact).

@@ -4,6 +4,7 @@ import {
   createRoute,
   createRouter,
   Outlet,
+  redirect,
 } from '@tanstack/react-router'
 import { Shell } from './components/Shell'
 import { RouteFallback } from './components/RouteFallback'
@@ -26,15 +27,8 @@ const SearchPage = lazy(() =>
 const NewFilePage = lazy(() =>
   import('./pages/NewFilePage').then((m) => ({ default: m.NewFilePage })),
 )
-// The OAuth connection management view (B-39 (c)) — a global, administrator-only
-// admin screen, lazy-loaded since it is rarely opened.
-const ConnectionsPage = lazy(() =>
-  import('./pages/ConnectionsPage').then((m) => ({
-    default: m.ConnectionsPage,
-  })),
-)
 // The Settings view's right pane (B-28 stage 3) — the gear rail mode's content,
-// lazy since it pulls the user-management screen.
+// lazy since it pulls the user-management + OAuth connections screens.
 const SettingsPage = lazy(() =>
   import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
 )
@@ -163,15 +157,17 @@ const newFileRoute = createRoute({
   component: lazyRoute(NewFilePage),
 })
 
-// "/admin/connections" administrator-only OAuth connection management (B-39 (c)).
-// The /admin prefix encodes the authorization boundary in the URL and is the
-// future attach point for a route-level admin gate — but it does NOT itself
-// secure anything: the authoritative gate is the server-side admin predicate on
-// OAUTH_LIST/OAUTH_REVOKE (the page also hides for non-admins via useIsAdmin).
+// "/admin/connections" now REDIRECTS to the OAuth connections Settings item
+// (`/settings?item=oauth`) — the screen's real home as of the OAuth-settings-item
+// work. The old path is kept as a redirect so existing links/bookmarks never break.
+// Authorization is unchanged (server-side admin gate on OAUTH_*; the Settings item is
+// super-user-only via the registry filter).
 const connectionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/connections',
-  component: lazyRoute(ConnectionsPage),
+  beforeLoad: () => {
+    throw redirect({ to: '/settings', search: { item: 'oauth' } })
+  },
 })
 
 // Settings (B-28 stage 3): the gear rail mode's content. The selected item lives in

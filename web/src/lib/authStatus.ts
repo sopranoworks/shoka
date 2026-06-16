@@ -13,9 +13,15 @@ export function useAuthStatus() {
   })
 }
 
-// useIsSuperUser reports whether the current session is a super-user (admin over all
-// namespaces) — the gate for the user-management settings item.
+// useIsSuperUser reports whether the current viewer is a super-user (admin over all
+// namespaces) — the UI gate for the super-user settings items (user management, OAuth
+// connections). It mirrors the SERVER's notion of super-user on both its paths:
+//   - an authenticated session whose principal is admin (is_admin), AND
+//   - the no-lockout empty-store posture (no users yet) — the de-facto single operator,
+//     which the server treats as super-user (the no-session scope()="*" pass-through).
+// Returns false until /auth/status has loaded (no flash of the items mid-fetch).
 export function useIsSuperUser(): boolean {
   const { data } = useAuthStatus()
-  return !!data?.principal?.is_admin
+  if (!data) return false
+  return !data.users_exist || !!data.principal?.is_admin
 }

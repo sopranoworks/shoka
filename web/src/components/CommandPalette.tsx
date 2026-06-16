@@ -308,7 +308,7 @@ export function CommandPalette() {
                   label="Manage OAuth connections…"
                   hint="List & revoke MCP connections"
                   onSelect={() =>
-                    run(() => navigate({ to: '/admin/connections' }))
+                    run(() => navigate({ to: '/settings', search: { item: 'oauth' } }))
                   }
                 />
               </Command.Group>

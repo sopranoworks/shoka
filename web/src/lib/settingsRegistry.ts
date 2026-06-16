@@ -15,6 +15,10 @@ export interface SettingsItem {
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
   { id: 'users', label: 'User management', superUserOnly: true },
+  // The OAuth/MCP connection management screen — its real home now (it was reachable
+  // only via the command palette before). Super-user-only, like user management; the
+  // OAUTH_* ops are admin-gated server-side (stages 2/4), so this filter is the UI half.
+  { id: 'oauth', label: 'OAuth connections', superUserOnly: true },
 ]
 
 // visibleSettingsItems returns the items the current principal may access.

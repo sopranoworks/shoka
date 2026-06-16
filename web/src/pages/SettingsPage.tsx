@@ -1,5 +1,6 @@
 import { useRouterState } from '@tanstack/react-router'
 import { UserManagementPage } from './UserManagementPage'
+import { ConnectionsPage } from './ConnectionsPage'
 import { useIsSuperUser } from '../lib/authStatus'
 import styles from './SettingsPage.module.css'
 
@@ -31,6 +32,18 @@ export function SettingsPage() {
       )
     }
     return <UserManagementPage />
+  }
+
+  if (item === 'oauth') {
+    if (!isSuperUser) {
+      return (
+        <div className={styles.placeholder}>
+          <h1 className={styles.title}>OAuth connections</h1>
+          <p>You do not have permission to manage OAuth connections.</p>
+        </div>
+      )
+    }
+    return <ConnectionsPage />
   }
 
   return (
