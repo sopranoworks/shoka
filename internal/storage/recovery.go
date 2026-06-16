@@ -36,6 +36,28 @@ import (
 // violation structurally: archlint fails the build on any go-git ref-write API
 // call in internal/storage, so this code cannot regress to the porcelain.
 
+// ResyncToHead is the in-product recovery for a project that an EXTERNAL git HEAD
+// move stranded in a false `corrupted` state (a host `git reset`, the documented
+// out-of-band "git add" landing, a revert): it re-derives the project's state
+// against the LIVE on-disk git HEAD and re-syncs the (possibly stale) catalog to it,
+// then returns the resulting state. It is a thin, explicitly-named entry point over
+// DetectDrift, whose HEAD reconciliation does the work — a working tree that is
+// clean vs HEAD is restored to healthy and its catalog rebuilt from HEAD.
+//
+// It is deliberately NON-destructive: it neither commits nor discards anything. A
+// working tree with GENUINE uncommitted drift therefore still reports `corrupted`
+// (DetectDrift will not rebuild over real divergence); the operator's path for that
+// is the destructive RepairTrackedChanges (adopt) or RestoreToLatest (discard)
+// intents. This is the "clears a FALSE corrupted flag" recovery the MCP
+// `recover_project` tool and the Web UI recover action both invoke.
+func (s *FSGitStorage) ResyncToHead(namespace, projectName string) (ProjectState, error) {
+	sum, err := s.DetectDrift(namespace, projectName)
+	if err != nil {
+		return s.State(namespace, projectName), err
+	}
+	return sum.State, nil
+}
+
 // RepairTrackedChanges adopts the working tree's TRACKED changes as truth: it
 // stages only files git already tracks that have been modified or deleted, then
 // commits them and returns the project to healthy. It returns the new commit

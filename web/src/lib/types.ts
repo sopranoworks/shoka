@@ -11,6 +11,17 @@ export interface ProjectInfo {
   state: ProjectState
 }
 
+// The RECOVER_PROJECT (RECOVER_ACK) response: a project's health after re-syncing
+// its write-path baseline to the on-disk git HEAD. `recovered` is true iff it is now
+// healthy and writable; otherwise `message` explains why (genuine drift / dangerous).
+export interface RecoverAck {
+  namespace: string
+  project: string
+  state: ProjectState
+  recovered: boolean
+  message: string
+}
+
 // A file-tree node in the GET_TREE response (mirrors Go's ui.FileNode).
 // Directories carry children; files do not.
 export interface FileNode {

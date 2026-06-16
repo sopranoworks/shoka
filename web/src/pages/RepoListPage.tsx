@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { indexRoute } from '../router'
 import { useProjectsQuery } from '../lib/queries'
 import { namespacesOf } from '../lib/tree'
+import { RecoverButton } from '../components/RecoverButton'
 import styles from './RepoListPage.module.css'
 
 export function RepoListPage() {
@@ -83,6 +84,11 @@ export function RepoListPage() {
                 {p.state}
               </div>
             </Link>
+            {/* A non-healthy project gets an in-product recovery control (it sits
+                outside the card <Link> so recovering never navigates). */}
+            {p.state !== 'healthy' && (
+              <RecoverButton namespace={p.namespace} project={p.name} />
+            )}
           </li>
         ))}
       </ul>

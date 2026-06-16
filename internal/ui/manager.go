@@ -67,6 +67,19 @@ const (
 	// History) — no storage or MCP-tool change.
 	MsgDeleteFile MessageType = "DELETE_FILE"
 	MsgDeleteAck  MessageType = "DELETE_ACK"
+	// MsgRecoverProject is the in-product recovery for a project stuck in
+	// `corrupted` (uncommitted working-tree drift): it re-syncs the write-path
+	// baseline to the ACTUAL on-disk git HEAD and clears a FALSE corrupted flag,
+	// re-enabling writes when an external HEAD move (a host `git reset`, an
+	// out-of-band landing) stranded a clean project. MsgRecoverAck carries the
+	// resulting state back so the badge updates and the operator learns whether the
+	// project recovered. It wires storage.ResyncToHead (the same call the MCP
+	// recover_project tool uses) — NON-DESTRUCTIVE: it never commits or discards
+	// working-tree content, so a genuinely-drifted project stays corrupted (the ack
+	// says so, pointing the operator at the destructive accept-working-tree /
+	// accept-head modes on the adminapi recover endpoint).
+	MsgRecoverProject MessageType = "RECOVER_PROJECT"
+	MsgRecoverAck     MessageType = "RECOVER_ACK"
 	// MsgOAuthList enumerates the live OAuth/MCP connections (token series) the
 	// built-in authorization server holds, and MsgOAuthList carries the summaries
 	// back; MsgOAuthRevoke revokes one connection by series id and acks. This is
@@ -200,6 +213,25 @@ type DeleteFilePayload struct {
 // the client can drop it from its caches/tree and clear the trash item.
 type DeleteAckPayload struct {
 	Path string `json:"path"`
+}
+
+// RecoverProjectPayload is the RECOVER_PROJECT request body: which project to
+// re-sync to its on-disk git HEAD.
+type RecoverProjectPayload struct {
+	Namespace   string `json:"namespace"`
+	ProjectName string `json:"projectName"`
+}
+
+// RecoverAckPayload is the RECOVER_ACK frame's body: the project's resulting health
+// after the re-sync. Recovered is true iff it is now healthy (writes enabled);
+// otherwise State explains why (corrupted = genuine drift, dangerous = unreadable
+// .git) and Message carries operator-facing guidance.
+type RecoverAckPayload struct {
+	Namespace string `json:"namespace"`
+	Project   string `json:"project"`
+	State     string `json:"state"`
+	Recovered bool   `json:"recovered"`
+	Message   string `json:"message"`
 }
 
 // OAuthConnectionInfo is one live OAuth/MCP connection in the OAUTH_LIST
@@ -539,6 +571,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleMoveFile(client, wsMsg.Payload)
 		case MsgDeleteFile:
 			m.handleDeleteFile(client, wsMsg.Payload)
+		case MsgRecoverProject:
+			m.handleRecoverProject(client, wsMsg.Payload)
 		case MsgOAuthList:
 			m.handleOAuthList(client)
 		case MsgOAuthRevoke:
@@ -571,6 +605,13 @@ type ProjectInfo struct {
 // per-project health; type-asserted so the UI need not widen StorageService.
 type projectStateReader interface {
 	State(namespace, projectName string) storage.ProjectState
+}
+
+// projectRecoverer is the optional storage capability behind RECOVER_PROJECT:
+// re-sync the write-path baseline to the on-disk git HEAD and return the resulting
+// state. Type-asserted (like projectStateReader) so StorageService stays unwidened.
+type projectRecoverer interface {
+	ResyncToHead(namespace, projectName string) (storage.ProjectState, error)
 }
 
 // handleGetProjects returns one entry per project across every namespace, each
@@ -803,6 +844,53 @@ func (m *Manager) handleDeleteFile(client *wsClient, payload json.RawMessage) {
 	}
 
 	client.sendResponse(MsgDeleteAck, DeleteAckPayload{Path: p.Path})
+}
+
+// handleRecoverProject re-syncs a project's write-path baseline to the actual
+// on-disk git HEAD (storage.ResyncToHead) and reports the resulting state. It is the
+// Web UI half of the stale-HEAD recovery: a clean-on-disk project stranded in a
+// false `corrupted` is restored to healthy and writes re-enable; a project with
+// genuine uncommitted drift stays corrupted and the ack says so. Non-destructive —
+// no commit, no discard.
+func (m *Manager) handleRecoverProject(client *wsClient, payload json.RawMessage) {
+	var p RecoverProjectPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for RECOVER_PROJECT")
+		return
+	}
+	if p.ProjectName == "" {
+		client.sendError("RECOVER_PROJECT requires projectName")
+		return
+	}
+
+	rec, ok := m.storage.(projectRecoverer)
+	if !ok {
+		client.sendError("Recovery is not supported by this server")
+		return
+	}
+	state, err := rec.ResyncToHead(p.Namespace, p.ProjectName)
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to recover project: %v", err))
+		return
+	}
+
+	ack := RecoverAckPayload{
+		Namespace: p.Namespace,
+		Project:   p.ProjectName,
+		State:     string(state),
+		Recovered: state == storage.StateHealthy,
+	}
+	switch state {
+	case storage.StateHealthy:
+		ack.Message = "Re-synced to the on-disk HEAD; the project is healthy and writes are enabled."
+	case storage.StateCorrupted:
+		ack.Message = "The working tree has genuine uncommitted drift, so the project stays corrupted. Use the recover dialog's accept-working-tree (adopt) or accept-head (discard) to resolve it."
+	case storage.StateDangerous:
+		ack.Message = "The project's .git is unreadable or absent (dangerous); it cannot be recovered from here."
+	default:
+		ack.Message = fmt.Sprintf("Project state: %s.", state)
+	}
+	client.sendResponse(MsgRecoverAck, ack)
 }
 
 // adminGate enforces the §2.1a administrator-only authorization on the OAuth

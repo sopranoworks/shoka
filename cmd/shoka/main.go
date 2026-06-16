@@ -698,6 +698,11 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	}
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "recover_project",
+		Description: "Recover a project stuck in a 'corrupted' (uncommitted working-tree drift) state by re-syncing its write-path baseline to the ACTUAL on-disk git HEAD and clearing a FALSE corrupted flag. Non-destructive: it neither commits nor discards working-tree content. Use it when a project went corrupted after an external git HEAD move (a host 'git reset', an out-of-band 'git add' landing/revert) even though the working tree is clean — writes are re-enabled. A project with GENUINE uncommitted drift stays corrupted (the response says so); resolve that from the Web UI recover action (accept-working-tree to adopt, accept-head to discard).",
+	}, tools.LoggedTool(logger, "recover_project", tools.RecoverProjectHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "subscribe",
 		Description: "Subscribe to scoped file-change notifications. Pass a pattern '<namespace>/<project>/<path>' where namespace and project are required and literal (no wildcards) and the path part is a prefix (e.g. 'directives/') or a single-segment glob (e.g. 'directives/2026-*'); recursive '**' is not supported. The session then receives a notifications/message for each external file.write/file.move/file.delete under a matching pattern — never its own writes. Additive: call again to watch more patterns (Redis SUBSCRIBE semantics). Requires the client to issue logging/setLevel to receive the messages",
 	}, tools.LoggedTool(logger, "subscribe", subMgr.SubscribeHandler()))

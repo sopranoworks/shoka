@@ -41,6 +41,12 @@ func (d DriftSummary) HasDrift() bool {
 // operator but NOT a corrupting condition). Dangerous is reserved for a project
 // whose .git cannot be opened. The catalog is disposable: if it cannot be
 // opened it is rebuilt from git HEAD before verification.
+//
+// Catalog violations are reconciled against the LIVE on-disk git HEAD before they
+// become a verdict (see the block below): a catalog left stale by an EXTERNAL HEAD
+// move over a clean working tree is re-synced from HEAD and reads healthy, not
+// corrupted (2026-06-16 stale-HEAD fix). Only a working tree that genuinely diverges
+// from HEAD stays corrupted.
 func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
@@ -48,7 +54,8 @@ func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary,
 	}
 
 	// Dangerous: .git is missing/unreadable.
-	if _, oerr := git.PlainOpen(projectPath); oerr != nil {
+	r, oerr := git.PlainOpen(projectPath)
+	if oerr != nil {
 		s.setState(namespace, projectName, StateDangerous)
 		return DriftSummary{State: StateDangerous}, nil
 	}
@@ -71,6 +78,39 @@ func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary,
 	if verr != nil {
 		s.setState(namespace, projectName, StateDangerous)
 		return DriftSummary{State: StateDangerous}, nil
+	}
+
+	// Reconcile a divergent catalog against the ACTUAL on-disk git HEAD (re-read
+	// live, every call). The catalog is the drift baseline and is maintained
+	// SYNCHRONOUSLY on the write path (catalogPut/catalogDelete under the per-file
+	// lock), so catalog↔working-tree is correct even during the async-commit window
+	// where git HEAD still lags — which is why the hot path trusts it. But an
+	// EXTERNAL HEAD move (a host `git reset`, the documented out-of-band "git add"
+	// landing, a revert) changes the working tree WITHOUT updating the catalog,
+	// leaving stale etags that VerifyInvariant reports as drift. That false positive
+	// is the stale-HEAD defect: it stranded a clean project in `corrupted`
+	// permanently — the `.db` persists, so every restart re-derived it, and the D1
+	// lazy-rescan re-confirmed it against the same stale catalog. state.go documents
+	// corrupted as "working tree drifted from HEAD"; this restores that intent.
+	//
+	// When the catalog reports drift but the working tree is CLEAN against the
+	// current HEAD, the catalog is merely stale: rebuild it from HEAD (re-sync the
+	// baseline) and the project is healthy. A working tree that GENUINELY diverges
+	// from HEAD (an un-committed hand-edit/delete) is NOT clean, so it correctly
+	// stays corrupted and is never silently rebuilt over. The git status is computed
+	// ONLY on this violation path — never on the healthy hot path.
+	if len(violations) > 0 {
+		if clean, cerr := worktreeCleanVsHead(r); cerr == nil && clean {
+			if rerr := s.rebuildAndRegister(namespace, projectName); rerr == nil {
+				violations = nil
+				if fresh, ferr := s.catalogFor(namespace, projectName); ferr == nil {
+					cat = fresh
+				}
+			} else {
+				s.log().Warn("drift: catalog re-sync to HEAD failed (staying with catalog verdict)",
+					"namespace", namespace, "project", projectName, "err", rerr)
+			}
+		}
 	}
 
 	var sum DriftSummary
@@ -107,6 +147,42 @@ func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary,
 	return sum, nil
 }
 
+// worktreeCleanVsHead reports whether the working tree has NO uncommitted drift of
+// tracked files against the current on-disk git HEAD — i.e. no tracked path whose
+// git worktree status is Modified or Deleted. This is the live, authoritative test
+// that distinguishes a merely-stale catalog (the tree matches a validly-moved HEAD)
+// from genuine corruption (the tree diverges from HEAD), and it re-reads HEAD every
+// call rather than trusting any cached baseline.
+//
+// Untracked files ('?': .DS_Store, .claude/, the derivative dirs, an out-of-band
+// commit's brand-new file) are NOT drift — they are informational noise
+// (DriftSummary.Added), exactly as before. The tracked Modified/Deleted set mirrors
+// precisely what RepairTrackedChanges would adopt / RestoreToLatest would discard,
+// so "not clean" ⟺ "there are tracked uncommitted changes a recovery would act on".
+//
+// A repository with no commits yet (unborn HEAD: CreateProject git-inits without an
+// initial commit) has no committed baseline, so nothing can have drifted from it —
+// reported clean. This also keeps go-git's Status off an unborn HEAD.
+func worktreeCleanVsHead(r *git.Repository) (bool, error) {
+	if _, herr := r.Head(); herr != nil {
+		return true, nil
+	}
+	w, err := r.Worktree()
+	if err != nil {
+		return false, err
+	}
+	st, err := w.Status()
+	if err != nil {
+		return false, err
+	}
+	for _, fileStatus := range st {
+		if fileStatus.Worktree == git.Modified || fileStatus.Worktree == git.Deleted {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // workingTreeContentHashes maps each working-tree path to the sha256 of its
 // content, skipping .git/.shoka/.drafts and transient atomic-write temp files.
 //
@@ -120,7 +196,7 @@ func (s *FSGitStorage) DetectDrift(namespace, projectName string) (DriftSummary,
 // (ENOTEMPTY) until their subdirs are gone — one level per pass.
 func workingTreeContentHashes(projectPath string) (map[string]string, []string, error) {
 	m := map[string]string{}
-	dirSeen := map[string]struct{}{}    // every visited non-root, non-derivative dir
+	dirSeen := map[string]struct{}{}     // every visited non-root, non-derivative dir
 	hasFileDesc := map[string]struct{}{} // dirs with >=1 file anywhere beneath
 	err := filepath.WalkDir(projectPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

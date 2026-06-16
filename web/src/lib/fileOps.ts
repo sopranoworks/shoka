@@ -1,5 +1,12 @@
 import { wsClient } from './wsClient'
-import type { FileContent, SaveAck, ConflictPayload, MoveAck, DeleteAck } from './types'
+import type {
+  FileContent,
+  SaveAck,
+  ConflictPayload,
+  MoveAck,
+  DeleteAck,
+  RecoverAck,
+} from './types'
 
 // Imperative /ws/ui file operations for the editor. Unlike the read queries
 // (lib/queries), these are user-initiated mutations, so they live outside
@@ -138,6 +145,23 @@ export async function deleteFile(args: DeleteArgs): Promise<DeleteResult> {
   }
   const p = frame.payload as DeleteAck
   return { ok: true, path: p.path }
+}
+
+// Recover a project stuck in `corrupted` (uncommitted working-tree drift) by
+// re-syncing its write-path baseline to the ACTUAL on-disk git HEAD. The in-product
+// recovery for a project an external HEAD move (a host `git reset`, an out-of-band
+// landing) stranded as unwritable. Non-destructive: a clean-on-disk project returns
+// to healthy (recovered:true); a genuinely-drifted one stays corrupted
+// (recovered:false) with guidance in `message`. Wires /ws/ui RECOVER_PROJECT over
+// storage.ResyncToHead — the same call the MCP recover_project tool uses.
+export function recoverProject(
+  namespace: string,
+  project: string,
+): Promise<RecoverAck> {
+  return wsClient().request<RecoverAck>('RECOVER_PROJECT', {
+    namespace,
+    projectName: project,
+  })
 }
 
 // A fresh read straight off /ws/ui (not the query cache), for "Discard mine,

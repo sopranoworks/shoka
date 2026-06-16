@@ -222,7 +222,7 @@ of being handed a static one.
 
 ## 4. Tool catalog
 
-v1 exposes **18 tools**. Seventeen are always registered; `translate_file` is
+v1 exposes **19 tools**. Eighteen are always registered; `translate_file` is
 registered **only** when `services.google_cloud.project_id` is set. (Source:
 `cmd/shoka/main.go`.)
 
@@ -230,7 +230,7 @@ registered **only** when `services.google_cloud.project_id` is set. (Source:
 get_server_info  list_projects  create_project  list_files  read_file
 read_file_at_version  write_file  delete_file  append_to_file  patch_file
 move_file  get_history  read_summary  list_files_since  search_files
-subscribe  unsubscribe  translate_file*  (*conditional)
+recover_project  subscribe  unsubscribe  translate_file*  (*conditional)
 ```
 
 `subscribe` / `unsubscribe` register scoped file-change notifications delivered as
@@ -568,7 +568,27 @@ Apply to every tool unless noted:
 > and the exact `old_string`/`anchor` match are the integrity guarantees; both are
 > stronger than a fragment hash and free.
 
-### 4.16 `translate_file` (conditional)
+### 4.16 `recover_project`
+- **Purpose:** recover a project stuck in `corrupted` (uncommitted working-tree
+  drift) by **re-syncing its write-path baseline to the actual on-disk git HEAD** and
+  clearing a **false** corrupted flag. The recovery for a project that an external
+  HEAD move (a host `git reset`, an out-of-band `git add` landing/revert) stranded as
+  unwritable even though the working tree is clean. **Non-destructive:** it neither
+  commits nor discards working-tree content.
+- **Input:** `namespace` (opt), `project_name` (**required**).
+- **Output:** `namespace`, `project`, `state` (`healthy` | `corrupted` |
+  `dangerous`), `recovered` (bool — true iff now healthy/writable), `message`.
+- **Behaviour:** a clean-on-disk project is restored to `healthy` and writes are
+  re-enabled. A project with **genuine** uncommitted drift stays `corrupted`
+  (`recovered:false`) and the message directs the operator to the Web UI recover
+  action's destructive modes (`accept-working-tree` to adopt, `accept-head` to
+  discard). A `dangerous` project (unreadable `.git`) is not recoverable over MCP.
+- **Side effects:** no commit and no webhook; it may rebuild the project's disposable
+  catalog from HEAD. (Source: `internal/tools/recover.go`;
+  `internal/storage/recovery.go` `ResyncToHead`; `internal/storage/drift.go`
+  `DetectDrift`.)
+
+### 4.17 `translate_file` (conditional)
 - **Availability:** registered **only** when `services.google_cloud.project_id`
   is configured. (Source: `cmd/shoka/main.go:75-83,200-205`.)
 - **Purpose:** translate a Markdown file and write the result as a sibling file.
