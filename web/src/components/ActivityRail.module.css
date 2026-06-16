@@ -47,6 +47,13 @@
 .trash[data-active='true'] {
   color: var(--c-text);
 }
+/* Drop affordance (B-31 RE-OPEN fix F): while a valid tree-row drag hovers the
+   trash box (react-dnd isOver), highlight it so the drop target is obvious. */
+.trash[data-drop-active='true'] {
+  color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 18%, transparent);
+  outline: 1px solid var(--c-accent);
+}
 .trash[data-active='true']::before {
   content: '';
   position: absolute;

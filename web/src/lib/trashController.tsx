@@ -12,22 +12,15 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { readFileFresh, type DeleteResult } from './fileOps'
 import { deriveViewContext } from './viewContext'
-import {
-  getDragSource,
-  setDragSource,
-  clearDragSource,
-  setOverTrash,
-  isOverTrash,
-  type DragSource,
-} from './dragSource'
 import { useToast } from './toast'
 import { TrashQueue, type TrashItem } from './trashQueue'
 
 // The React layer over the deferred-execution TrashQueue (lib/trashQueue). It is
 // the single controller both delete triggers funnel through — tree right-click
-// "Delete…" and drag-to-trash — so no surface sends DELETE_FILE itself; they call
-// enqueuePath (or enqueueFromDrag), which captures the file's CURRENT etag with a
-// fresh read (the if_match the deferred delete will carry) and reserves it.
+// "Delete…" and drag-to-trash (the trash box's react-dnd drop, Shell ShellRail) —
+// so no surface sends DELETE_FILE itself; they call enqueuePath, which captures the
+// file's CURRENT etag with a fresh read (the if_match the deferred delete will
+// carry) and reserves it.
 //
 // It owns the trash-pane open state and, when a deferred delete actually fires,
 // relocates caches and follows the deletion for the issuing client (which is
@@ -55,21 +48,12 @@ export interface TrashControllerApi {
   closePane: () => void
   cancel: (id: string) => void
   executeNow: (id: string) => void
-  /** Trigger 1 (right-click Delete…): capture the current etag, then reserve. */
+  /**
+   * Capture the file's current etag, then reserve it (deferred-grace delete). Both
+   * delete triggers funnel through this: tree right-click "Delete…" and the trash
+   * box's react-dnd drop (Shell ShellRail's useDrop reads the dropped node's path).
+   */
   enqueuePath: (args: EnqueuePathArgs) => Promise<void>
-  /** Trigger 2 (drag-to-trash): reserve the file recorded at drag-start. */
-  enqueueFromDrag: () => void
-  // --- Drag-to-trash lifecycle (B-31 fix F) — the file-tree row and the rail
-  // delegate their drag handlers here so the bridge logic stays unit-testable
-  // (react-arborist rows cannot render in jsdom). ---
-  /** Row dragstart: record the dragged file. */
-  onRowDragStart: (src: DragSource) => void
-  /** Row dragend: if the drag was released over the trash box, enqueue; else reset. */
-  onRowDragEnd: () => void
-  /** Rail dragenter: the drag is now over the trash box. */
-  onTrashDragEnter: () => void
-  /** Rail dragleave: the drag left the trash box. */
-  onTrashDragLeave: () => void
 }
 
 const Ctx = createContext<TrashControllerApi | null>(null)
@@ -173,30 +157,6 @@ export function TrashProvider({
     [queue, addToast],
   )
 
-  const enqueueFromDrag = useCallback(() => {
-    const src = getDragSource()
-    if (!src) return
-    // Consume the drag source immediately so the two drop paths (the rail's native
-    // `drop` and the row's dragend fallback) can never double-enqueue the same file:
-    // whichever fires first wins, the other reads null and no-ops.
-    clearDragSource()
-    void enqueuePath(src)
-  }, [enqueuePath])
-
-  // Drag-to-trash lifecycle (B-31 fix F). react-arborist drives the row drag through
-  // react-dnd's HTML5Backend, whose window-level dragover resets dropEffect over the
-  // rail (a non-dnd target) so the browser CANCELS the native drop — the rail's
-  // `onDrop` never fires. The robust fallback: track over-trash from the rail's
-  // dragenter/dragleave, and on the source row's dragend (which always fires, even on
-  // a cancelled drop) enqueue iff the release was over the trash box.
-  const onRowDragStart = useCallback((src: DragSource) => setDragSource(src), [])
-  const onTrashDragEnter = useCallback(() => setOverTrash(true), [])
-  const onTrashDragLeave = useCallback(() => setOverTrash(false), [])
-  const onRowDragEnd = useCallback(() => {
-    if (isOverTrash()) enqueueFromDrag()
-    else clearDragSource()
-  }, [enqueueFromDrag])
-
   const cancel = useCallback((id: string) => queue.cancel(id), [queue])
   const executeNow = useCallback((id: string) => queue.executeNow(id), [queue])
   const togglePane = useCallback(() => setPaneOpen((o) => !o), [])
@@ -214,11 +174,6 @@ export function TrashProvider({
       cancel,
       executeNow,
       enqueuePath,
-      enqueueFromDrag,
-      onRowDragStart,
-      onRowDragEnd,
-      onTrashDragEnter,
-      onTrashDragLeave,
     }),
     [
       items,
@@ -230,11 +185,6 @@ export function TrashProvider({
       cancel,
       executeNow,
       enqueuePath,
-      enqueueFromDrag,
-      onRowDragStart,
-      onRowDragEnd,
-      onTrashDragEnter,
-      onTrashDragLeave,
     ],
   )
 

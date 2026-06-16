@@ -53,9 +53,8 @@ export function ActivityRail({
   trashCount = 0,
   trashActive = false,
   onTrashClick,
-  onTrashDrop,
-  onTrashDragEnter,
-  onTrashDragLeave,
+  trashDropRef,
+  trashIsOver = false,
 }: {
   active: RailView
   onSelect: (v: RailView) => void
@@ -71,12 +70,13 @@ export function ActivityRail({
   trashCount?: number
   trashActive?: boolean
   onTrashClick?: () => void
-  onTrashDrop?: () => void
-  // Drag-to-trash hover tracking (B-31 fix F): dragenter/dragleave fire regardless
-  // of dropEffect, so they let the source row's dragend know the drag was released
-  // over the trash box even when react-dnd suppresses the rail's native `drop`.
-  onTrashDragEnter?: () => void
-  onTrashDragLeave?: () => void
+  // Drag-to-trash (B-31 RE-OPEN fix F): the trash box is a react-dnd drop target.
+  // trashDropRef is react-dnd's drop connector (attached to the trash button so
+  // react-dnd delivers a dropped tree node here); trashIsOver drives the drop
+  // affordance while a valid drag hovers. Both are optional so the rail still
+  // renders standalone (no DnD context) in unit tests.
+  trashDropRef?: (el: HTMLButtonElement | null) => void
+  trashIsOver?: boolean
 }) {
   return (
     <div className={styles.rail}>
@@ -104,29 +104,15 @@ export function ActivityRail({
 
       <div className={styles.bottom}>
         <button
+          ref={trashDropRef}
           type="button"
           className={styles.trash}
           data-active={trashActive}
+          data-drop-active={trashIsOver}
           aria-label="Trash"
           aria-pressed={trashActive}
           title="Trash — files pending deletion (drop a file here to delete)"
           onClick={() => onTrashClick?.()}
-          // Drop target for a dragged tree row (drag-to-trash). preventDefault on
-          // dragover marks the box as a valid drop zone; the drop reads the file
-          // recorded at drag-start (lib/dragSource) and reserves it.
-          onDragEnter={(e) => {
-            e.preventDefault()
-            onTrashDragEnter?.()
-          }}
-          onDragLeave={() => onTrashDragLeave?.()}
-          onDragOver={(e) => {
-            e.preventDefault()
-            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-          }}
-          onDrop={(e) => {
-            e.preventDefault()
-            onTrashDrop?.()
-          }}
         >
           <TrashIcon />
           {trashCount > 0 && (

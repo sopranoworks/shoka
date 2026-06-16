@@ -143,19 +143,25 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       'server:',
       '  http:',
       `    listen: ":${PORT}"`,
+      // B-50 schema: the MCP endpoint has two transports selected by config
+      // presence — `plain` (unauthenticated here) and `oauth`. The OAuth transport
+      // is configured so the server opens the connection store and serves the admin
+      // OAUTH_LIST/OAUTH_REVOKE management requests (B-39 (c)); enforcement is
+      // MCP-path only, so /ws/ui (the web UI these E2Es drive) is unaffected. A
+      // trusted-domain allowlist is given so the store opens (the server only warns
+      // on the empty consent credential — we seed the store directly below rather
+      // than run a real OAuth flow).
       '  mcp:',
-      `    listen: ":${MCP_PORT}"`,
+      '    plain:',
+      `      listen: ":${MCP_PORT}"`,
+      '    oauth:',
+      `      listen: ":${MCP_PORT - 1}"`,
+      '      trusted_client_metadata_domains:',
+      '        - "example.com"',
       '  log:',
       '    level: "warn"',
       '  auth:',
       '    enabled: false',
-      // OAuth is enabled so the server opens the connection store and serves the
-      // admin OAUTH_LIST/OAUTH_REVOKE management requests (B-39 (c)). Enforcement
-      // is MCP-path only, so /ws/ui (the web UI) is unaffected. The trusted-domain
-      // allowlist / consent credential are left empty (the server only warns) —
-      // we seed the store directly below rather than running a real OAuth flow.
-      '    oauth:',
-      '      enabled: true',
       'storage:',
       `  base_dir: "${join(dataDir, 'data')}"`,
       '  drift_scan:',

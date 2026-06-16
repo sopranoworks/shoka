@@ -6,6 +6,7 @@ import {
   type NodeRendererProps,
   type TreeApi,
 } from 'react-arborist'
+import { useDragDropManager } from 'react-dnd'
 import { toTreeNodes, ancestorDirs } from '../lib/tree'
 import {
   useMoveController,
@@ -57,9 +58,14 @@ export function FileTree({
 }) {
   const navigate = useNavigate()
   const { requestMove, executeMove } = useMoveController()
-  const { enqueuePath, onRowDragStart, onRowDragEnd, items: trashItems } =
-    useTrashController()
+  const { enqueuePath, items: trashItems } = useTrashController()
   const { add: addToast } = useToast()
+  // The shared react-dnd manager from Shell's DndProvider: passing it to <Tree
+  // dndManager> makes react-arborist use the SAME manager the trash box's useDrop
+  // uses, so a row dragged onto the trash box is delivered by react-dnd (B-31
+  // RE-OPEN fix F). Without this, arborist would spin up its own HTML5 backend and
+  // the trash box could never receive an arborist drag.
+  const dndManager = useDragDropManager()
   const data = useMemo(() => toTreeNodes(nodes), [nodes])
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
 
@@ -166,6 +172,7 @@ export function FileTree({
     <div ref={wrapRef} className={styles.wrap}>
       <Tree<TreeNode>
         ref={treeRef}
+        dndManager={dndManager}
         data={data}
         idAccessor="id"
         childrenAccessor="children"
@@ -192,11 +199,7 @@ export function FileTree({
           <Row
             {...props}
             activePath={activePath}
-            namespace={namespace}
-            project={project}
             isReserved={props.node.data.isFile && reserved.has(props.node.data.path)}
-            onRowDragStart={onRowDragStart}
-            onRowDragEnd={onRowDragEnd}
             onContext={(e, node) => {
               if (!node.isFile) return
               e.preventDefault()
@@ -306,19 +309,11 @@ function Row({
   style,
   dragHandle,
   activePath,
-  namespace,
-  project,
   isReserved,
-  onRowDragStart,
-  onRowDragEnd,
   onContext,
 }: NodeRendererProps<TreeNode> & {
   activePath: string | null
-  namespace: string
-  project: string
   isReserved: boolean
-  onRowDragStart: (src: { namespace: string; project: string; path: string }) => void
-  onRowDragEnd: () => void
   onContext: (e: React.MouseEvent, node: TreeNode) => void
 }) {
   const isActive = node.data.isFile && node.data.path === activePath
@@ -329,17 +324,10 @@ function Row({
       className={styles.row}
       data-active={isActive}
       data-reserved={isReserved}
-      // Record the dragged file so the activity-rail trash box (a drop target
-      // OUTSIDE this Tree) can learn which file was dropped — react-arborist's own
-      // drag still drives in-tree moves; this is additive (the trash controller's
-      // drag bridge, lib/dragSource). onRowDragEnd is the robust fallback: if the
-      // drag was released over the trash box it enqueues, even when react-dnd
-      // suppresses the rail's native drop (B-31 fix F).
-      onDragStart={() => {
-        if (node.data.isFile)
-          onRowDragStart({ namespace, project, path: node.data.path })
-      }}
-      onDragEnd={() => onRowDragEnd()}
+      // The drag is driven entirely by react-arborist's react-dnd useDrag (via the
+      // dragHandle ref). Dropping a row on the trash box is delivered by react-dnd to
+      // ShellRail's useDrop, which reads the node id (a file path) — no out-of-band
+      // drag bridge (B-31 RE-OPEN fix F).
       onClick={(e) => {
         e.stopPropagation()
         if (node.data.isFile) {

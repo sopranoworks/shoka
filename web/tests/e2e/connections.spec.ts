@@ -28,8 +28,14 @@ test('lists the seeded connection by client domain + principal, with no secret o
   await expect(page.getByText('Op Erator')).toBeVisible()
   await expect(page.getByText('op@example.test')).toBeVisible()
 
-  // No secret on screen: no token text anywhere in the rendered page.
-  const body = (await page.locator('body').textContent()) ?? ''
+  // No secret on screen: no token VALUE anywhere in the rendered page. The
+  // "Generate CLI token" admin affordance (B-46b "token to self") is a BUTTON LABEL,
+  // not a secret — strip it so this no-secret assertion stays precise (the actual
+  // access/refresh-token guard is the frame check below).
+  const body = ((await page.locator('body').textContent()) ?? '').replace(
+    /Generate CLI token/g,
+    '',
+  )
   expect(body).not.toMatch(/token/i)
 
   // No secret in the wire frames either: the OAUTH_LIST response arrived, and no

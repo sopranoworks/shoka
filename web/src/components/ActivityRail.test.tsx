@@ -92,18 +92,40 @@ describe('ActivityRail trash box (B-31)', () => {
     expect(onTrashClick).toHaveBeenCalledTimes(1)
   })
 
-  it('is the drag-to-trash drop target (fires onTrashDrop on drop)', () => {
-    const onTrashDrop = vi.fn()
+  // Drag-to-trash is now a react-dnd drop target (B-31 RE-OPEN): the rail attaches
+  // react-dnd's drop connector via trashDropRef and reflects the drag-over state via
+  // trashIsOver (the drop affordance). The end-to-end drop→enqueue is proven by the
+  // real-browser E2E (tests/e2e/trash-dnd.spec.ts), not a jsdom synthetic event.
+  it('attaches the react-dnd drop connector to the trash box', () => {
+    const trashDropRef = vi.fn()
     render(
       <ActivityRail
         active="explorer"
         onSelect={() => {}}
-        onTrashDrop={onTrashDrop}
+        trashDropRef={trashDropRef}
       />,
     )
-    const trash = screen.getByRole('button', { name: 'Trash' })
-    fireEvent.dragOver(trash) // marks a valid drop zone (preventDefault)
-    fireEvent.drop(trash)
-    expect(onTrashDrop).toHaveBeenCalledTimes(1)
+    // React calls the ref callback with the trash button node on mount.
+    expect(trashDropRef).toHaveBeenCalled()
+    const node = trashDropRef.mock.calls[0][0] as HTMLElement | null
+    expect(node).not.toBeNull()
+    expect(node).toHaveAttribute('aria-label', 'Trash')
+  })
+
+  it('reflects the drop affordance via data-drop-active', () => {
+    const { rerender } = render(
+      <ActivityRail active="explorer" onSelect={() => {}} trashIsOver={false} />,
+    )
+    expect(screen.getByRole('button', { name: 'Trash' })).toHaveAttribute(
+      'data-drop-active',
+      'false',
+    )
+    rerender(
+      <ActivityRail active="explorer" onSelect={() => {}} trashIsOver={true} />,
+    )
+    expect(screen.getByRole('button', { name: 'Trash' })).toHaveAttribute(
+      'data-drop-active',
+      'true',
+    )
   })
 })
