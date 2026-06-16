@@ -19,9 +19,11 @@ import (
 // cycle over a real ws connection with a fake issuer and the same admin/store
 // gating as List/Revoke.
 
-// newOAuthIssueSelfManager wires both an OAuthConnectionStore (so adminGate passes
-// its oauth!=nil check) and a self-issuer, returning a live ws connection.
-func newOAuthIssueSelfManager(t *testing.T, admin AdminAuthorizer, store OAuthConnectionStore, issuer OAuthSelfIssuer) *websocket.Conn {
+// newOAuthIssueSelfManager wires an OAuthConnectionStore (so the oauth!=nil capability
+// check passes) and a self-issuer, connecting a /ws/ui client at the given session
+// scope (B-28 stage 4: admin authorization is the dispatch authzGate; "" = empty-store
+// super-user, a non-super-user scope is denied by the gate).
+func newOAuthIssueSelfManager(t *testing.T, scope string, store OAuthConnectionStore, issuer OAuthSelfIssuer) *websocket.Conn {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := storage.NewFSGitStorageWithOptions(dir, storage.Options{
@@ -43,9 +45,12 @@ func newOAuthIssueSelfManager(t *testing.T, admin AdminAuthorizer, store OAuthCo
 	if issuer != nil {
 		m.SetOAuthSelfIssuer(issuer)
 	}
-	m.SetAdminAuthorizer(admin)
+	var h http.Handler = m
+	if scope != "" {
+		h = withScope(scope, m)
+	}
 
-	server := httptest.NewServer(m)
+	server := httptest.NewServer(h)
 	t.Cleanup(server.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -65,7 +70,7 @@ func TestWSUI_OAuthIssueSelfReturnsToken(t *testing.T) {
 		gotReq = r != nil // the request must reach the issuer (for resource derivation)
 		return want, exp, nil
 	})
-	conn := newOAuthIssueSelfManager(t, nil, &fakeOAuthStore{}, issuer)
+	conn := newOAuthIssueSelfManager(t, "", &fakeOAuthStore{}, issuer)
 
 	resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{}`)
 	if resp.Type != MsgOAuthIssueSelf {
@@ -92,13 +97,13 @@ func TestWSUI_OAuthIssueSelfRefusedForNonAdmin(t *testing.T) {
 		called = true
 		return "should-not-be-minted", time.Time{}, nil
 	})
-	conn := newOAuthIssueSelfManager(t, denyAdmin{}, &fakeOAuthStore{}, issuer)
+	conn := newOAuthIssueSelfManager(t, "namespace:foo:r", &fakeOAuthStore{}, issuer)
 
-	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthIssueSelf, `{}`))
-	if denied.Reason != "forbidden" {
-		t.Fatalf("reason = %q, want forbidden", denied.Reason)
+	resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{}`)
+	if resp.Type != MsgPermissionDenied {
+		t.Fatalf("type = %s, want PERMISSION_DENIED (the dispatch authz gate)", resp.Type)
 	}
-	// The authoritative gate refuses BEFORE minting.
+	// The gate refuses BEFORE minting.
 	if called {
 		t.Fatal("non-admin reached the issuer; it must be gated before minting")
 	}
@@ -107,7 +112,7 @@ func TestWSUI_OAuthIssueSelfRefusedForNonAdmin(t *testing.T) {
 func TestWSUI_OAuthIssueSelfRefusedWhenDisabled(t *testing.T) {
 	// No store and no issuer wired (OAuth off) but admin is the default single-user
 	// (true), so the refusal must be "oauth_disabled", not "forbidden".
-	conn := newOAuthIssueSelfManager(t, nil, nil, nil)
+	conn := newOAuthIssueSelfManager(t, "", nil, nil)
 
 	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthIssueSelf, `{}`))
 	if denied.Reason != "oauth_disabled" {
@@ -116,9 +121,9 @@ func TestWSUI_OAuthIssueSelfRefusedWhenDisabled(t *testing.T) {
 }
 
 func TestWSUI_OAuthIssueSelfDeniedWhenIssuerMissing(t *testing.T) {
-	// A store is wired (adminGate passes) but no issuer — a defensive path: the
+	// A store is wired (the capability check passes) but no issuer — a defensive path: the
 	// action reports oauth_disabled rather than nil-panicking.
-	conn := newOAuthIssueSelfManager(t, nil, &fakeOAuthStore{}, nil)
+	conn := newOAuthIssueSelfManager(t, "", &fakeOAuthStore{}, nil)
 
 	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthIssueSelf, `{}`))
 	if denied.Reason != "oauth_disabled" {

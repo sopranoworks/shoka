@@ -94,14 +94,14 @@ const (
 	// Both requests are ADMINISTRATOR-ONLY, gated server-side (the authoritative
 	// gate): a non-admin caller receives MsgOAuthDenied, not data — hiding the UI
 	// is not sufficient. They are also refused (MsgOAuthDenied) when OAuth is not
-	// enabled (no store). See AdminAuthorizer and the §2.1a seam below.
+	// enabled (no store) — the capability check in the OAUTH_* handlers.
 	MsgOAuthList   MessageType = "OAUTH_LIST"
 	MsgOAuthRevoke MessageType = "OAUTH_REVOKE"
 	// MsgOAuthIssueSelf mints a fresh access token for the current-mode operator
 	// (the "token to self" path, B-46b §2.2) and returns it ONCE in the response.
 	// This is the single deliberate exception to "no secret crosses /ws/ui": the
 	// operator copies the displayed token into their CLI client config. It is
-	// admin-gated (the same adminGate as List/Revoke) and the token is never logged
+	// admin-gated by the dispatch authz gate (like List/Revoke) and the token is never logged
 	// or persisted anywhere on the server beyond the normal token store.
 	MsgOAuthIssueSelf MessageType = "OAUTH_ISSUE_SELF"
 	// MsgOAuthDenied is the typed refusal frame for the admin-only OAuth requests:
@@ -455,31 +455,11 @@ type UserAdminStore interface {
 	RevokeInvite(codeHash string) error
 }
 
-// AdminAuthorizer is the administrator-only authorization seam for the OAuth
-// management requests (the 2026-06-03 MCP OAuth (c) directive §2.1a). It gates
-// OAUTH_LIST/OAUTH_REVOKE on the SERVER side — the authoritative gate — because
-// those requests can cut off other users' MCP connections, a privileged
-// operation (unlike file move/list, which any project user may do). Hiding the
-// UI is not enough: the request itself must refuse a non-admin caller.
-//
-// B-28 ATTACH POINT: Shoka has no admin/role concept today, and /ws/ui carries
-// NO authenticated identity (a connection has only a "ws-<seq>" sender id, not a
-// user). So the single-user implementation (singleUserAdmin) returns true — the
-// sole operator IS the administrator, and the screen works normally today. When
-// the Web-auth / multi-user leg (B-28) lands, the connection will carry a real
-// identity; a real admin-role check drops into this seam additively, and the
-// method's signature widens to take that identity. This is the seam, NOT an RBAC
-// system — do not build roles here.
-type AdminAuthorizer interface {
-	IsAdmin() bool
-}
-
-// singleUserAdmin is the default AdminAuthorizer for single-user mode: the sole
-// user is the administrator, so it is trivially true. Replaced via
-// SetAdminAuthorizer when a real role check exists (B-28).
-type singleUserAdmin struct{}
-
-func (singleUserAdmin) IsAdmin() bool { return true }
+// Administrator authorization for the OAUTH_* management requests is enforced by the
+// single stage-2 dispatch authzGate (OAUTH_* are admin-level in wsLevels) — there is
+// no separate admin seam. The former singleUserAdmin/AdminAuthorizer/adminGate
+// (a redundant always-true seam, "config-admin") was retired in stage 4 once the DB
+// super-user + the empty-store first-run wizard became the only admin paths (B-28).
 
 type Manager struct {
 	storage       storage.StorageService
@@ -497,9 +477,6 @@ type Manager struct {
 	// is disabled (wired via SetOAuthSelfIssuer in the oauth-enabled startup path),
 	// in which case OAUTH_ISSUE_SELF returns MsgOAuthDenied ("oauth_disabled").
 	selfIssuer OAuthSelfIssuer
-	// admin gates the administrator-only OAuth requests (§2.1a). Never nil:
-	// NewManager defaults it to singleUserAdmin (trivially true).
-	admin AdminAuthorizer
 	// users backs the super-user-only user-management ops (B-28 stage 3). nil when no
 	// user store is wired (the ADMIN_* handlers then report it unavailable).
 	users UserAdminStore
@@ -515,7 +492,6 @@ func NewManager(s storage.StorageService, d *drafts.Manager, notifyCenter *notif
 		storage: s,
 		drafts:  d,
 		notify:  notifyCenter,
-		admin:   singleUserAdmin{},
 	}
 	m.upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -553,16 +529,6 @@ func (m *Manager) SetOAuthSelfIssuer(i OAuthSelfIssuer) {
 // capability unavailable.
 func (m *Manager) SetUserStore(u UserAdminStore) {
 	m.users = u
-}
-
-// SetAdminAuthorizer overrides the administrator-only authorization seam for the
-// OAuth management requests (§2.1a). The default is singleUserAdmin (trivially
-// true). This is the B-28 attach point: a real admin-role check replaces the
-// default once /ws/ui carries an authenticated identity.
-func (m *Manager) SetAdminAuthorizer(a AdminAuthorizer) {
-	if a != nil {
-		m.admin = a
-	}
 }
 
 // NotifyDrops reports how many notify events were dropped because a client's
@@ -1099,21 +1065,12 @@ func (m *Manager) handleRecoverProject(client *wsClient, payload json.RawMessage
 	client.sendResponse(MsgRecoverAck, ack)
 }
 
-// adminGate enforces the §2.1a administrator-only authorization on the OAuth
-// management requests and that OAuth is enabled at all. It is the AUTHORITATIVE
-// server-side gate: it returns false and sends an OAUTH_DENIED frame when the
-// caller is not an administrator (reason "forbidden") or when OAuth is disabled
-// so there is no store (reason "oauth_disabled"). Authorization is checked
-// before capability, so a non-admin never learns whether OAuth is enabled. A
-// true return guarantees m.oauth is non-nil, so handlers never nil-panic.
-func (m *Manager) adminGate(client *wsClient) bool {
-	if !m.admin.IsAdmin() {
-		client.sendResponse(MsgOAuthDenied, OAuthDeniedPayload{
-			Reason:  "forbidden",
-			Message: "OAuth connection management is administrator-only",
-		})
-		return false
-	}
+// oauthAvailable is the OAUTH_* CAPABILITY check: it returns false (sending an
+// OAUTH_DENIED "oauth_disabled" frame) when OAuth is off so there is no store, so the
+// handlers never nil-panic. Administrator AUTHORIZATION is NOT checked here — it is
+// enforced upstream by the single stage-2 dispatch authzGate (OAUTH_* are admin-level
+// in wsLevels). This replaced the retired adminGate/singleUserAdmin seam (stage 4).
+func (m *Manager) oauthAvailable(client *wsClient) bool {
 	if m.oauth == nil {
 		client.sendResponse(MsgOAuthDenied, OAuthDeniedPayload{
 			Reason:  "oauth_disabled",
@@ -1125,12 +1082,12 @@ func (m *Manager) adminGate(client *wsClient) bool {
 }
 
 // handleOAuthList returns the live OAuth/MCP connections as no-secret summaries
-// (oauthstore.SeriesInfo). Administrator-only (adminGate). Read-only — no commit,
+// (oauthstore.SeriesInfo). Administrator-only (the dispatch authz gate). Read-only — no commit,
 // no NOTIFY — so, like handleSearchFiles, it carries no identity or sender
 // context. The Connections slice is always non-nil so the wire shape is always
 // {"connections": [...]} (the empty-state client renders [] as "no connections").
 func (m *Manager) handleOAuthList(client *wsClient) {
-	if !m.adminGate(client) {
+	if !m.oauthAvailable(client) {
 		return
 	}
 	infos, err := m.oauth.List()
@@ -1157,13 +1114,13 @@ func (m *Manager) handleOAuthList(client *wsClient) {
 }
 
 // handleOAuthRevoke revokes one connection by series id (oauthstore.Revoke).
-// Administrator-only (adminGate). Revoking one series leaves every other intact
+// Administrator-only (the dispatch authz gate). Revoking one series leaves every other intact
 // (the store guarantees it). An absent series_id is a typed error rather than a
 // silent no-op; a well-formed but already-revoked id succeeds idempotently (the
 // store's Revoke is idempotent — the right behaviour when two admins race or the
 // row is already gone).
 func (m *Manager) handleOAuthRevoke(client *wsClient, payload json.RawMessage) {
-	if !m.adminGate(client) {
+	if !m.oauthAvailable(client) {
 		return
 	}
 	var p OAuthRevokeRequest
@@ -1187,10 +1144,10 @@ func (m *Manager) handleOAuthRevoke(client *wsClient, payload json.RawMessage) {
 // only place a secret token crosses /ws/ui — a deliberate, admin-gated exception
 // so the operator can paste the token into their CLI client config. The token is
 // NOT logged (no log statement carries it) and is persisted only in the normal
-// token store. Administrator-only via the same adminGate as List/Revoke; the
+// token store. Administrator-only via the dispatch authz gate, like List/Revoke; the
 // issuer being nil (OAuth disabled) is reported as oauth_disabled.
 func (m *Manager) handleOAuthIssueSelf(client *wsClient) {
-	if !m.adminGate(client) {
+	if !m.oauthAvailable(client) {
 		return
 	}
 	if m.selfIssuer == nil {

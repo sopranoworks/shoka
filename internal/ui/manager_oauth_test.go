@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -66,11 +67,6 @@ func (f *fakeOAuthStore) revokedIDs() []string {
 	return out
 }
 
-// denyAdmin is a non-admin AdminAuthorizer for exercising the server-side gate.
-type denyAdmin struct{}
-
-func (denyAdmin) IsAdmin() bool { return false }
-
 // seedConnections returns two placeholder connections. The client_id values are
 // RFC 2606 example domains (NOT a real client metadata domain — §0(b)).
 func seedConnections() []oauthstore.SeriesInfo {
@@ -95,7 +91,13 @@ func seedConnections() []oauthstore.SeriesInfo {
 	}
 }
 
-func newOAuthManager(t *testing.T, admin AdminAuthorizer, store OAuthConnectionStore) *websocket.Conn {
+// newOAuthManager wires a manager with an optional OAuth store and connects a /ws/ui
+// client carrying the given session scope (B-28 stage 4: admin authorization for
+// OAUTH_* is the stage-2 dispatch authzGate, not a removed admin seam). An empty scope
+// = no session principal = the empty-store super-user pass-through (an admin-equivalent
+// connection); a non-super-user scope (e.g. "namespace:foo:r") is denied OAUTH_* by the
+// gate with a PERMISSION_DENIED frame.
+func newOAuthManager(t *testing.T, scope string, store OAuthConnectionStore) *websocket.Conn {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := storage.NewFSGitStorageWithOptions(dir, storage.Options{
@@ -114,9 +116,12 @@ func newOAuthManager(t *testing.T, admin AdminAuthorizer, store OAuthConnectionS
 	if store != nil {
 		m.SetOAuthStore(store)
 	}
-	m.SetAdminAuthorizer(admin) // nil is ignored (keeps the single-user default)
+	var h http.Handler = m
+	if scope != "" {
+		h = withScope(scope, m)
+	}
 
-	server := httptest.NewServer(m)
+	server := httptest.NewServer(h)
 	t.Cleanup(server.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -154,7 +159,7 @@ func decodeOAuthDenied(t *testing.T, resp WSMessage) OAuthDeniedPayload {
 
 func TestWSUI_OAuthListReturnsSummaries(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
-	conn := newOAuthManager(t, nil, store) // default single-user admin
+	conn := newOAuthManager(t, "", store) // default single-user admin
 
 	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
 	out := decodeOAuthList(t, resp)
@@ -193,7 +198,7 @@ func TestWSUI_OAuthListSortedNewestFirstAndCarriesScope(t *testing.T) {
 			IssuedAt:  base.Add(2 * time.Hour), AccessExpiry: base.Add(3 * time.Hour), Scope: "namespace:foo",
 		},
 	}}
-	conn := newOAuthManager(t, nil, store)
+	conn := newOAuthManager(t, "", store)
 
 	out := decodeOAuthList(t, roundTrip(t, conn, MsgOAuthList, `{}`))
 	if len(out.Connections) != 2 {
@@ -213,7 +218,7 @@ func TestWSUI_OAuthListSortedNewestFirstAndCarriesScope(t *testing.T) {
 
 func TestWSUI_OAuthListEmptyReturnsEmptySlice(t *testing.T) {
 	store := &fakeOAuthStore{} // no connections
-	conn := newOAuthManager(t, nil, store)
+	conn := newOAuthManager(t, "", store)
 
 	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
 	out := decodeOAuthList(t, resp)
@@ -232,7 +237,7 @@ func TestWSUI_OAuthListEmptyReturnsEmptySlice(t *testing.T) {
 // reintroducing one (e.g. a future widening that leaks a field).
 func TestWSUI_OAuthListCarriesNoSecretFields(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
-	conn := newOAuthManager(t, nil, store)
+	conn := newOAuthManager(t, "", store)
 
 	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
 	wire := string(resp.Payload)
@@ -245,7 +250,7 @@ func TestWSUI_OAuthListCarriesNoSecretFields(t *testing.T) {
 
 func TestWSUI_OAuthRevokeTargetsOneSeries(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
-	conn := newOAuthManager(t, nil, store)
+	conn := newOAuthManager(t, "", store)
 
 	target := "series-aaaa-0000-1111-2222-333344445555"
 	resp := roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":"`+target+`"}`)
@@ -271,7 +276,7 @@ func TestWSUI_OAuthRevokeTargetsOneSeries(t *testing.T) {
 
 func TestWSUI_OAuthRevokeEmptyIDIsError(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
-	conn := newOAuthManager(t, nil, store)
+	conn := newOAuthManager(t, "", store)
 
 	resp := roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":""}`)
 	if resp.Type != Error {
@@ -282,26 +287,29 @@ func TestWSUI_OAuthRevokeEmptyIDIsError(t *testing.T) {
 	}
 }
 
+// A non-super-user session is denied OAUTH_* by the SOLE admin gate now — the stage-2
+// dispatch authzGate — with a PERMISSION_DENIED frame, BEFORE the handler runs (the
+// retired adminGate/singleUserAdmin seam's OAUTH_DENIED "forbidden" is gone).
 func TestWSUI_OAuthListRefusedForNonAdmin(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
-	conn := newOAuthManager(t, denyAdmin{}, store)
+	conn := newOAuthManager(t, "namespace:foo:r", store)
 
-	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthList, `{}`))
-	if denied.Reason != "forbidden" {
-		t.Fatalf("reason = %q, want forbidden", denied.Reason)
+	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
+	if resp.Type != MsgPermissionDenied {
+		t.Fatalf("type = %s, want PERMISSION_DENIED (the dispatch authz gate)", resp.Type)
 	}
 }
 
 func TestWSUI_OAuthRevokeRefusedForNonAdmin(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
-	conn := newOAuthManager(t, denyAdmin{}, store)
+	conn := newOAuthManager(t, "namespace:foo:r", store)
 
 	target := "series-aaaa-0000-1111-2222-333344445555"
-	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":"`+target+`"}`))
-	if denied.Reason != "forbidden" {
-		t.Fatalf("reason = %q, want forbidden", denied.Reason)
+	resp := roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":"`+target+`"}`)
+	if resp.Type != MsgPermissionDenied {
+		t.Fatalf("type = %s, want PERMISSION_DENIED", resp.Type)
 	}
-	// The authoritative gate refuses BEFORE touching the store: nothing revoked.
+	// The gate refuses BEFORE the handler: nothing revoked.
 	if len(store.revokedIDs()) != 0 {
 		t.Fatalf("non-admin revoke must not reach the store; revoked=%v", store.revokedIDs())
 	}
@@ -310,7 +318,7 @@ func TestWSUI_OAuthRevokeRefusedForNonAdmin(t *testing.T) {
 func TestWSUI_OAuthRefusedWhenOAuthDisabled(t *testing.T) {
 	// No store wired (OAuth off) but admin is the default single-user (true), so the
 	// refusal must be the distinct "oauth_disabled" reason, not "forbidden".
-	conn := newOAuthManager(t, nil, nil)
+	conn := newOAuthManager(t, "", nil)
 
 	list := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthList, `{}`))
 	if list.Reason != "oauth_disabled" {
@@ -322,13 +330,14 @@ func TestWSUI_OAuthRefusedWhenOAuthDisabled(t *testing.T) {
 	}
 }
 
-// Authorization is checked before capability: a non-admin gets "forbidden" even
-// when OAuth is also disabled, so a non-admin never learns the OAuth state.
+// Authorization is checked before capability: a non-admin is PERMISSION_DENIED by the
+// dispatch gate even when OAuth is also disabled, so a non-admin never learns the OAuth
+// state (the capability check never runs).
 func TestWSUI_OAuthNonAdminTakesPrecedenceOverDisabled(t *testing.T) {
-	conn := newOAuthManager(t, denyAdmin{}, nil) // non-admin AND no store
+	conn := newOAuthManager(t, "namespace:foo:r", nil) // non-admin AND no store
 
-	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthList, `{}`))
-	if denied.Reason != "forbidden" {
-		t.Fatalf("reason = %q, want forbidden (authz before capability)", denied.Reason)
+	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
+	if resp.Type != MsgPermissionDenied {
+		t.Fatalf("type = %s, want PERMISSION_DENIED (authz before capability)", resp.Type)
 	}
 }
