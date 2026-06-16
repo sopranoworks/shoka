@@ -3,33 +3,28 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/authz"
 )
 
 // AuthzMiddleware is the single authorization choke point for MCP tool calls (the
-// 2026-06-15 authz foundation). It is installed once via Server.AddReceivingMiddleware
-// — mirroring CoreFirstToolsMiddleware — so EVERY current and future tool flows
-// through it without per-handler wiring (the operator's anti-scatter requirement).
+// B-28 stage-2 enforcement flip; originally the dormant 2026-06-15 foundation). It is
+// installed once via Server.AddReceivingMiddleware — mirroring CoreFirstToolsMiddleware
+// — so EVERY current and future tool flows through it without per-handler wiring.
 //
 // It no-ops for every method other than "tools/call". On a tools/call it reads the
-// authenticated principal from the request context (already propagated there by the
-// auth middleware — internal/auth.WithPrincipal at the HTTP layer) and the target
-// namespace/project from the call arguments, and applies authorize().
+// authenticated principal from the request context (propagated by the auth middleware,
+// internal/auth.WithPrincipal) and the target namespace/project from the call
+// arguments, looks up the tool's required level from toolLevels, and applies the
+// shared authz.Authorize — the SAME decision function the WebUI /ws/ui gate calls.
 //
-// Today the gate is *-pass: every DCR token carries Scope "*", and an
-// unauthenticated/plain-transport call carries no principal (Scope ""), both of
-// which authorize() allows — so behaviour is unchanged. The else-branch (a non-"*"
-// scope, e.g. a future pre-issued "namespace:foo" token) is DORMANT but fully
-// implemented and tested, so enforcement becomes automatic the moment a scoped
-// token exists, with no further change to the gate.
-//
-// A denied call returns an IsError CallToolResult (Shoka's tool-error convention,
-// matching LoggedTool's panic path) rather than a transport error, so the client
-// sees an ordinary tool failure.
+// Today every production principal is super-user (DCR + self-issued tokens carry "*",
+// the stage-1 first admin "*:admin"), so all current tools still pass; a scoped token
+// (a later stage) is enforced by level. A denied call returns an IsError CallToolResult
+// (Shoka's tool-error convention, matching LoggedTool's panic path), not a transport
+// error.
 func AuthzMiddleware() mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -37,8 +32,8 @@ func AuthzMiddleware() mcp.Middleware {
 				return next(ctx, method, req)
 			}
 			name, namespace, project := callTarget(req)
-			p, _ := auth.PrincipalFrom(ctx) // absent → zero Principal (Scope ""), allowed
-			if err := authorize(p, namespace, project, actionFor(name)); err != nil {
+			p, _ := auth.PrincipalFrom(ctx) // absent → zero Principal (Scope "") → super-user
+			if err := authz.Authorize(p.Scope, namespace, project, toolLevel(name)); err != nil {
 				return &mcp.CallToolResult{
 					IsError: true,
 					Content: []mcp.Content{&mcp.TextContent{Text: "unauthorized: " + err.Error()}},
@@ -51,10 +46,9 @@ func AuthzMiddleware() mcp.Middleware {
 
 // callTarget extracts the tool name and the target namespace/project from a
 // tools/call request. The arguments are the raw wire JSON (not yet unmarshaled into
-// the tool's typed input), so it decodes only the two routing fields by their
-// uniform names (every tool input uses `namespace`/`project_name`; see
-// metadataAttrs). A malformed/absent argument yields empty strings, which
-// authorize() treats conservatively.
+// the tool's typed input), so it decodes only the two routing fields by their uniform
+// names (every tool input uses `namespace`/`project_name`; see metadataAttrs). A
+// malformed/absent argument yields empty strings, which authz treats as a global op.
 func callTarget(req mcp.Request) (name, namespace, project string) {
 	ctr, ok := req.(*mcp.CallToolRequest)
 	if !ok || ctr.Params == nil {
@@ -71,75 +65,43 @@ func callTarget(req mcp.Request) (name, namespace, project string) {
 	return name, args.Namespace, args.ProjectName
 }
 
-// mutatingTools is the set of tools that change project content. actionFor maps a
-// tool name to "write" for these and "read" otherwise. The action is carried into
-// authorize() so a future finer policy can distinguish read from write grants; the
-// current namespace-scope check does not branch on it.
-var mutatingTools = map[string]bool{
-	"create_project": true,
-	"write_file":     true,
-	"delete_file":    true,
-	"append_to_file": true,
-	"patch_file":     true,
-	"move_file":      true,
-	"translate_file": true,
+// toolLevels is the single registry mapping each MCP tool to the authorization level
+// it requires. Read tools need read; content-mutating tools need write; the
+// near-destructive recover_project needs admin (it was a latent gap — previously
+// unclassified, so it mapped to read). A tool absent from this map fails CLOSED at
+// admin, so a newly-added tool must be classified here before a non-super-user can
+// reach it.
+var toolLevels = map[string]authz.Level{
+	// read
+	"read_file":            authz.LevelRead,
+	"read_summary":         authz.LevelRead,
+	"read_file_at_version": authz.LevelRead,
+	"list_files":           authz.LevelRead,
+	"list_files_since":     authz.LevelRead,
+	"list_projects":        authz.LevelRead, // global (no target namespace)
+	"get_history":          authz.LevelRead,
+	"get_diff":             authz.LevelRead,
+	"get_server_info":      authz.LevelRead, // global
+	"search_files":         authz.LevelRead,
+	"subscribe":            authz.LevelRead,
+	"unsubscribe":          authz.LevelRead,
+	// write (the former mutatingTools set)
+	"write_file":     authz.LevelWrite,
+	"patch_file":     authz.LevelWrite,
+	"append_to_file": authz.LevelWrite,
+	"move_file":      authz.LevelWrite,
+	"delete_file":    authz.LevelWrite,
+	"create_project": authz.LevelWrite,
+	"translate_file": authz.LevelWrite,
+	// admin
+	"recover_project": authz.LevelAdmin,
 }
 
-func actionFor(toolName string) string {
-	if mutatingTools[toolName] {
-		return "write"
+// toolLevel returns the required level for a tool, defaulting to admin (fail-closed)
+// for any unregistered tool so a new tool cannot be silently world-reachable.
+func toolLevel(name string) authz.Level {
+	if l, ok := toolLevels[name]; ok {
+		return l
 	}
-	return "read"
-}
-
-// authorize is the authz decision for one tool call. It is REAL logic, not a
-// no-op:
-//
-//   - Scope "*" or "" (the DCR all-access token, and the no-principal/plain-transport
-//     case) ⇒ ALLOW. This is every token today, so behaviour is unchanged.
-//   - A non-"*" scope ⇒ the request's namespace must match one of the scope's grants.
-//     A grant is "*", "namespace:<ns>" (any project in that namespace), or
-//     "namespace:<ns>/<project>" (that project only); grants are comma-separated.
-//     A non-"*" scope with an EMPTY request namespace is denied (a scoped token only
-//     grants the namespaces it names; refining the default-namespace case belongs to
-//     the deferred per-namespace-enforcement leg).
-//
-// action is reserved for future read/write-grained policy; the current check is
-// namespace-based and does not branch on it.
-func authorize(p auth.Principal, namespace, project, action string) error {
-	scope := strings.TrimSpace(p.Scope)
-	if scope == "" || scope == "*" {
-		return nil
-	}
-	if namespaceAllowed(scope, namespace, project) {
-		return nil
-	}
-	return fmt.Errorf("token scope %q does not permit %s access to namespace %q", scope, action, namespace)
-}
-
-// namespaceAllowed reports whether any comma-separated grant in scope permits the
-// (namespace, project) target. An empty namespace never matches a namespace grant.
-func namespaceAllowed(scope, namespace, project string) bool {
-	if namespace == "" {
-		return false
-	}
-	for _, raw := range strings.Split(scope, ",") {
-		grant := strings.TrimSpace(raw)
-		switch {
-		case grant == "*":
-			return true
-		case strings.HasPrefix(grant, "namespace:"):
-			ns, proj, hasProj := strings.Cut(strings.TrimPrefix(grant, "namespace:"), "/")
-			if ns != namespace {
-				continue
-			}
-			if !hasProj || proj == "" {
-				return true // namespace-wide grant
-			}
-			if proj == project {
-				return true // project-scoped grant
-			}
-		}
-	}
-	return false
+	return authz.LevelAdmin
 }

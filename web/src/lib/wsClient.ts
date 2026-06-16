@@ -80,6 +80,7 @@ export class WsRequestClient {
   private readonly outbox: string[] = []
   private readonly pending: Pending[] = []
   private notifyHandler: ((payload: unknown) => void) | null = null
+  private denyHandler: ((payload: unknown) => void) | null = null
 
   private readonly factory: WsFactory
   private readonly now: () => number
@@ -132,6 +133,17 @@ export class WsRequestClient {
   /** Route inbound NOTIFY payloads to this handler (set by the app layer). */
   setNotifyHandler(fn: (payload: unknown) => void): void {
     this.notifyHandler = fn
+  }
+
+  /**
+   * Route inbound PERMISSION_DENIED payloads to this handler (set by the app layer
+   * to surface a non-fatal toast). PERMISSION_DENIED is the authz refusal frame (the
+   * B-28 stage-2 flip): it is a RESPONSE to the request that was refused, so it also
+   * rejects that request's promise — but it is surfaced globally here too so any op
+   * (whichever caller sent it) shows the user a clear "no permission" message.
+   */
+  setDenyHandler(fn: (payload: unknown) => void): void {
+    this.denyHandler = fn
   }
 
   // --- lifecycle -----------------------------------------------------------
@@ -269,7 +281,23 @@ export class WsRequestClient {
     }
 
     const entry = this.pending.shift()
-    if (!entry) return // stray response with no pending request
+    if (!entry) {
+      // A refusal with no pending request: still surface the toast.
+      if (type === 'PERMISSION_DENIED') this.denyHandler?.(msg.payload)
+      return
+    }
+
+    // PERMISSION_DENIED (authz refusal, B-28 stage-2): surface a global toast AND
+    // reject the originating request so the caller is not left hanging.
+    if (type === 'PERMISSION_DENIED') {
+      this.denyHandler?.(msg.payload)
+      const message =
+        msg.payload && typeof msg.payload === 'object'
+          ? (msg.payload as { message?: string }).message
+          : undefined
+      entry.reject(new Error(message ?? 'permission denied'))
+      return
+    }
 
     if (type === 'ERROR') {
       const message =

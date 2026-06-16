@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/authz"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/notify"
@@ -114,6 +115,12 @@ const (
 	// switch on type are unaffected.
 	MsgNotify MessageType = "NOTIFY"
 	Error     MessageType = "ERROR"
+	// MsgPermissionDenied is the authorization-refusal frame for the /ws/ui dispatch
+	// gate (the B-28 stage-2 enforcement flip): a session principal whose scope lacks
+	// the level the requested operation requires gets this instead of the handler
+	// running. Distinct from ERROR so the client can surface a clear, non-fatal "you
+	// do not have permission" toast (a read-only user attempting a write).
+	MsgPermissionDenied MessageType = "PERMISSION_DENIED"
 )
 
 type WSMessage struct {
@@ -513,6 +520,95 @@ func (m *Manager) SetAdminAuthorizer(a AdminAuthorizer) {
 // send buffer was full (observability; used by tests).
 func (m *Manager) NotifyDrops() int64 { return m.notifyDrops.Load() }
 
+// PermissionDeniedPayload is the body of a PERMISSION_DENIED frame: which operation
+// was refused, the target namespace, the level it required, and a human reason.
+type PermissionDeniedPayload struct {
+	Op        string `json:"op"`
+	Namespace string `json:"namespace,omitempty"`
+	Required  string `json:"required"`
+	Message   string `json:"message"`
+}
+
+// wsOp is a /ws/ui message's authorization requirement: the level it needs, and
+// whether it is a GLOBAL op (no target namespace — its target is the whole server, so
+// the gate ignores any payload namespace and uses the principal's max level anywhere).
+type wsOp struct {
+	level  authz.Level
+	global bool
+}
+
+// wsLevels is the single registry mapping each /ws/ui message to its required level —
+// the WebUI counterpart of the MCP toolLevels table, feeding the SAME authz.Authorize.
+// Reads need read; content mutations need write; project recovery and the OAuth
+// connection-management ops need admin. A message absent from this table fails CLOSED
+// at admin (global), so a newly-added message must be classified before a
+// non-super-user can reach it.
+var wsLevels = map[MessageType]wsOp{
+	GetProjects:    {authz.LevelRead, true}, // global: lists every namespace
+	GetTree:        {authz.LevelRead, false},
+	ReadFile:       {authz.LevelRead, false},
+	MsgSearchFiles: {authz.LevelRead, false},
+	MsgGetHistory:  {authz.LevelRead, false},
+	MsgGetFileAt:   {authz.LevelRead, false},
+	MsgGetDiff:     {authz.LevelRead, false},
+
+	WriteDraft:       {authz.LevelWrite, false},
+	SaveFile:         {authz.LevelWrite, false},
+	MsgMoveFile:      {authz.LevelWrite, false},
+	MsgDeleteFile:    {authz.LevelWrite, false},
+	MsgCreateProject: {authz.LevelWrite, false},
+
+	MsgRecoverProject: {authz.LevelAdmin, false},
+	MsgOAuthList:      {authz.LevelAdmin, true},
+	MsgOAuthRevoke:    {authz.LevelAdmin, true},
+	MsgOAuthIssueSelf: {authz.LevelAdmin, true},
+}
+
+// authzGate applies the shared authz decision to one /ws/ui message before its
+// handler runs. It returns true to PROCEED and false when the message was refused
+// (a PERMISSION_DENIED frame has been sent). The principal is the connection's session
+// principal (stage 1); when absent — the no-lockout empty-store / single-operator path
+// that RequireSession let through — the connection is treated as super-user. This is
+// the ONE /ws/ui enforcement site (not per-handler), calling the same authz.Authorize
+// the MCP middleware uses.
+func (m *Manager) authzGate(client *wsClient, msgType MessageType, payload json.RawMessage) bool {
+	op, known := wsLevels[msgType]
+	if !known {
+		op = wsOp{level: authz.LevelAdmin, global: true} // fail closed
+	}
+	scope := "*" // no session principal ⇒ super-user (no-lockout / single-operator)
+	if client.hasPrincipal {
+		scope = client.principal.Scope
+	}
+	var ns, proj string
+	if !op.global {
+		ns, proj = wsTarget(payload)
+	}
+	if err := authz.Authorize(scope, ns, proj, op.level); err != nil {
+		client.sendResponse(MsgPermissionDenied, PermissionDeniedPayload{
+			Op:        string(msgType),
+			Namespace: ns,
+			Required:  op.level.String(),
+			Message:   "permission denied: " + err.Error(),
+		})
+		return false
+	}
+	return true
+}
+
+// wsTarget decodes the target namespace/project from a /ws/ui message payload (the
+// uniform `namespace`/`projectName` keys every namespaced payload carries).
+func wsTarget(payload json.RawMessage) (namespace, project string) {
+	var t struct {
+		Namespace   string `json:"namespace"`
+		ProjectName string `json:"projectName"`
+	}
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &t)
+	}
+	return t.Namespace, t.ProjectName
+}
+
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn, err := m.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -570,6 +666,14 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var wsMsg WSMessage
 		if err := json.Unmarshal(message, &wsMsg); err != nil {
 			client.sendError("Invalid message format")
+			continue
+		}
+
+		// The single /ws/ui authorization gate (B-28 stage-2 flip): every message is
+		// checked here, before its handler, through the shared authz.Authorize — not
+		// scattered into the handlers. A refusal sends PERMISSION_DENIED and skips the
+		// handler.
+		if !m.authzGate(client, wsMsg.Type, wsMsg.Payload) {
 			continue
 		}
 

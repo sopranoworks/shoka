@@ -63,6 +63,17 @@ export function NotifyBridge() {
     return () => wsClient().setNotifyHandler(() => {})
   }, [queryClient, showBanner, addToast, setEditSignal, clearEditSignal, navigate])
 
+  // Route PERMISSION_DENIED (the B-28 stage-2 authz refusal) into a non-fatal toast:
+  // a user whose scope lacks the required level (e.g. a read-only user attempting a
+  // write) sees a clear reason; the app keeps running.
+  useEffect(() => {
+    wsClient().setDenyHandler((payload) => {
+      const p = (payload ?? {}) as { message?: string; op?: string }
+      addToast({ level: 'warn', text: p.message || `You do not have permission for ${p.op ?? 'this action'}.` })
+    })
+    return () => wsClient().setDenyHandler(() => {})
+  }, [addToast])
+
   // Reconnect → stale-while-revalidate. Only after a real disconnect (not the
   // initial connect): track whether a disconnect happened since last connected.
   useEffect(() => {
