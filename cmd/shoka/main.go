@@ -773,6 +773,16 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	}, tools.LoggedTool(logger, "delete_namespace", tools.DeleteNamespaceHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "namespace_health",
+		Description: "Report managed-namespace health: for every namespace you administer (a super-user sees all), each managed project's state (healthy/corrupted/dangerous/missing), plus orphaned catalog/index DBs and untracked-foreign dirs (flagged adoptable). Read-only diagnostic — nothing is changed.",
+	}, tools.LoggedTool(logger, "namespace_health", tools.NamespaceHealthHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "namespace_recover",
+		Description: "Run one explicit, non-destructive-by-default recovery action on the managed set: action 'drop_missing' (remove a registry record whose on-disk target is confirmed gone — for corrupted projects use recover_project instead), 'clean_orphaned' (remove a stray catalog/index DB with no project dir), or 'adopt' (bring a valid untracked namespace/project under management). Project-level actions need admin on the namespace; whole-namespace actions (omit project_name) need a super-user.",
+	}, tools.LoggedTool(logger, "namespace_recover", tools.NamespaceRecoverHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "subscribe",
 		Description: "Subscribe to scoped file-change notifications. Pass a pattern '<namespace>/<project>/<path>' where namespace and project are required and literal (no wildcards) and the path part is a prefix (e.g. 'directives/') or a single-segment glob (e.g. 'directives/2026-*'); recursive '**' is not supported. The session then receives a notifications/message for each external file.write/file.move/file.delete under a matching pattern — never its own writes. Additive: call again to watch more patterns (Redis SUBSCRIBE semantics). Requires the client to issue logging/setLevel to receive the messages",
 	}, tools.LoggedTool(logger, "subscribe", subMgr.SubscribeHandler()))

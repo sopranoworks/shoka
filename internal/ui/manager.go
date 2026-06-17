@@ -46,6 +46,10 @@ const (
 	MsgDeleteProject   MessageType = "DELETE_PROJECT"
 	MsgCreateNamespace MessageType = "CREATE_NAMESPACE"
 	MsgDeleteNamespace MessageType = "DELETE_NAMESPACE"
+	// B-28 stage B: managed-namespace health (read, admin-filtered) + the recovery
+	// actions (drop_missing / clean_orphaned / adopt).
+	MsgNamespaceHealth  MessageType = "NAMESPACE_HEALTH"
+	MsgNamespaceRecover MessageType = "NAMESPACE_RECOVER"
 	// MsgSearchFiles requests a project-scoped full-text/filename search and
 	// MsgSearchResult carries the matches back. Search is read-only and
 	// project-scoped: it wires the existing storage.SearchFiles capability (the
@@ -596,6 +600,12 @@ var wsLevels = map[MessageType]wsOp{
 	MsgAdminCreateInvite: {authz.LevelAdmin, true},
 	MsgAdminListInvites:  {authz.LevelAdmin, true},
 	MsgAdminRevokeInvite: {authz.LevelAdmin, true},
+
+	// Health read = admin-somewhere (global admin target; the handler filters to the
+	// principal's admin namespaces). Recovery = admin on the target namespace (the handler
+	// tightens whole-namespace actions to super-user).
+	MsgNamespaceHealth:  {authz.LevelAdmin, true},
+	MsgNamespaceRecover: {authz.LevelAdmin, false},
 }
 
 // wsSuperUserOps are the /ws/ui messages that require a SUPER-USER (wildcard admin), not
@@ -754,6 +764,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleCreateNamespace(client, wsMsg.Payload)
 		case MsgDeleteNamespace:
 			m.handleDeleteNamespace(client, wsMsg.Payload)
+		case MsgNamespaceHealth:
+			m.handleNamespaceHealth(client)
+		case MsgNamespaceRecover:
+			m.handleNamespaceRecover(client, wsMsg.Payload)
 		case MsgSearchFiles:
 			m.handleSearchFiles(client, wsMsg.Payload)
 		case MsgGetHistory:
@@ -831,6 +845,19 @@ type projectDeleter interface {
 type namespaceManager interface {
 	CreateNamespace(namespace string) error
 	DeleteNamespace(ctx context.Context, namespace string) error
+}
+
+// namespaceHealthReader / namespaceRecoverer are the optional storage capabilities behind
+// the B-28 stage-B health + recovery ops, type-asserted like the others.
+type namespaceHealthReader interface {
+	CheckAllHealth() storage.HealthReport
+}
+
+type namespaceRecoverer interface {
+	DropMissingNamespace(namespace string) error
+	DropMissingProject(namespace, projectName string) error
+	CleanOrphanedSibling(namespace, name string) error
+	AdoptForeign(namespace, projectName string) error
 }
 
 // handleGetProjects returns one entry per project across every namespace, each
@@ -950,6 +977,110 @@ func (m *Manager) handleDeleteNamespace(client *wsClient, payload json.RawMessag
 		return
 	}
 	client.sendResponse(MsgDeleteNamespace, map[string]string{"status": "ok"})
+}
+
+// NamespaceRecoverPayload is the /ws/ui recovery request. ProjectName empty ⇒ a
+// whole-namespace action (super-user only). Keys match wsTarget (namespace/projectName).
+type NamespaceRecoverPayload struct {
+	Action      string `json:"action"`
+	Namespace   string `json:"namespace"`
+	ProjectName string `json:"projectName"`
+}
+
+func (m *Manager) handleNamespaceHealth(client *wsClient) {
+	hr, ok := m.storage.(namespaceHealthReader)
+	if !ok {
+		client.sendError("namespace health is not available on this server")
+		return
+	}
+	// The gate authorized admin-somewhere; filter the picture to the principal's admin
+	// namespaces (a super-user sees all, incl. base-level foreign namespaces).
+	client.sendResponse(MsgNamespaceHealth, filterHealthByAdminScope(hr.CheckAllHealth(), client.scope()))
+}
+
+// filterHealthByAdminScope narrows a health report to what the principal may see: a
+// super-user keeps everything; a namespace-admin keeps only the namespaces it administers
+// and the base-level foreign-namespace listing is dropped (super-user-only view).
+func filterHealthByAdminScope(report storage.HealthReport, scope string) storage.HealthReport {
+	adminNs, superUser := authz.AdminNamespaces(scope)
+	if superUser {
+		return report
+	}
+	allow := make(map[string]bool, len(adminNs))
+	for _, ns := range adminNs {
+		allow[ns] = true
+	}
+	out := storage.HealthReport{}
+	for _, nh := range report.Namespaces {
+		if allow[nh.Name] {
+			out.Namespaces = append(out.Namespaces, nh)
+		}
+	}
+	return out
+}
+
+func (m *Manager) handleNamespaceRecover(client *wsClient, payload json.RawMessage) {
+	var p NamespaceRecoverPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for NAMESPACE_RECOVER")
+		return
+	}
+	nr, ok := m.storage.(namespaceRecoverer)
+	if !ok {
+		client.sendError("namespace recovery is not available on this server")
+		return
+	}
+	if p.Namespace == "" {
+		p.Namespace = "default"
+	}
+	nsLevel := p.ProjectName == "" // a whole-namespace action
+
+	// Whole-namespace actions are super-user only: the dispatch gate authorized only
+	// admin-on-the-namespace (which a namespace-admin satisfies for its own namespace), so
+	// tighten here — mirroring the MCP handler / the create/delete-namespace ops.
+	denyNamespaceLevel := func() bool {
+		if nsLevel && !authz.IsSuperUser(client.scope()) {
+			client.sendResponse(MsgPermissionDenied, PermissionDeniedPayload{
+				Op:       string(MsgNamespaceRecover),
+				Required: "super-user",
+				Message:  "permission denied: a whole-namespace recovery action requires a super-user",
+			})
+			return true
+		}
+		return false
+	}
+
+	var err error
+	switch p.Action {
+	case "drop_missing":
+		if denyNamespaceLevel() {
+			return
+		}
+		if nsLevel {
+			err = nr.DropMissingNamespace(p.Namespace)
+		} else {
+			err = nr.DropMissingProject(p.Namespace, p.ProjectName)
+		}
+	case "clean_orphaned":
+		if nsLevel {
+			client.sendError("clean_orphaned requires projectName (the stray's base name)")
+			return
+		}
+		err = nr.CleanOrphanedSibling(p.Namespace, p.ProjectName)
+	case "adopt":
+		if denyNamespaceLevel() {
+			return
+		}
+		err = nr.AdoptForeign(p.Namespace, p.ProjectName)
+	default:
+		client.sendError("invalid action: must be drop_missing | clean_orphaned | adopt")
+		return
+	}
+	if err != nil {
+		client.sendError(fmt.Sprintf("namespace recovery failed: %v", err))
+		return
+	}
+	client.sendResponse(MsgNamespaceRecover, map[string]string{"status": "ok"})
 }
 
 func (m *Manager) handleGetTree(client *wsClient, payload json.RawMessage) {

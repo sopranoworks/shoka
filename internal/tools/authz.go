@@ -104,6 +104,11 @@ var toolLevels = map[string]authz.Level{
 	"delete_project":   authz.LevelAdmin,
 	"create_namespace": authz.LevelAdmin,
 	"delete_namespace": authz.LevelAdmin,
+	// B-28 stage B: namespace health (read, global target ⇒ admin-somewhere; the handler
+	// filters to the principal's admin namespaces) + recovery (admin on the target
+	// namespace via callTarget; namespace-level actions tighten to super-user in the handler).
+	"namespace_health":  authz.LevelAdmin,
+	"namespace_recover": authz.LevelAdmin,
 }
 
 // toolLevel returns the required level for a tool, defaulting to admin (fail-closed)
