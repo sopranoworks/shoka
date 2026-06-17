@@ -39,6 +39,12 @@ func TestToolLevel_Registry(t *testing.T) {
 	if got := toolLevel("some_future_tool"); got != authz.LevelAdmin {
 		t.Errorf("unregistered tool must fail closed to admin, got %v", got)
 	}
+	// translate_file was RETIRED (B-28): it is no longer in the level registry, so
+	// it now falls through to the fail-closed admin default rather than its former
+	// write level — a positive check that the retired tool is gone from the surface.
+	if got := toolLevel("translate_file"); got != authz.LevelAdmin {
+		t.Errorf("retired translate_file must fall through to fail-closed admin, got %v", got)
+	}
 }
 
 func callToolReq(name, argsJSON string) *mcp.CallToolRequest {

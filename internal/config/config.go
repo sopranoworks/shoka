@@ -435,11 +435,6 @@ type Config struct {
 		Backup       BackupConfig       `yaml:"backup"`
 		OAuthCleaner OAuthCleanerConfig `yaml:"oauth_cleaner"`
 	} `yaml:"storage"`
-	Services struct {
-		GoogleCloud struct {
-			ProjectID string `yaml:"project_id"`
-		} `yaml:"google_cloud"`
-	} `yaml:"services"`
 	FileLock  FileLockConfig  `yaml:"filelock"`
 	WAL       WALConfig       `yaml:"wal"`
 	WALWorker WALWorkerConfig `yaml:"wal_worker"`

@@ -25,9 +25,6 @@ server:
       external_url: "http://localhost:8081"
 storage:
   base_dir: "/tmp/shoka"
-services:
-  google_cloud:
-    project_id: "my-project"
 `
 	tmpFile, err := os.CreateTemp("", "config*.yaml")
 	require.NoError(t, err)
@@ -51,7 +48,6 @@ services:
 	assert.Equal(t, "http://localhost:8081", cfg.Server.MCP.Plain.ExternalURL)
 
 	assert.Equal(t, "/tmp/shoka", cfg.Storage.BaseDir)
-	assert.Equal(t, "my-project", cfg.Services.GoogleCloud.ProjectID)
 }
 
 func TestLoad_Auth(t *testing.T) {

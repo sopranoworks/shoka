@@ -125,9 +125,6 @@ storage:
   index:
     enabled: true
     interval: "5m"
-services:
-  google_cloud:
-    project_id: ""
 filelock:
   max_lease_duration: "5m"
   reaper_interval: "1s"

@@ -113,9 +113,6 @@ func writeLiveConfig(t *testing.T, baseDir string, httpPort, mcpPort int, level 
     format: "text"
 storage:
   base_dir: %q
-services:
-  google_cloud:
-    project_id: ""
 `, httpPort, httpPort, mcpPort, mcpPort, authEnabled, authEnabled, tokensYAML, level, baseDir)
 
 	path := filepath.Join(t.TempDir(), "shoka.yaml")

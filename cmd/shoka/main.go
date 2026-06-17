@@ -42,7 +42,6 @@ import (
 	"github.com/sopranoworks/shoka/internal/storage/userstore"
 	"github.com/sopranoworks/shoka/internal/storage/walworker"
 	"github.com/sopranoworks/shoka/internal/tools"
-	"github.com/sopranoworks/shoka/internal/translation"
 	"github.com/sopranoworks/shoka/internal/ui"
 	"github.com/sopranoworks/shoka/internal/webhooks"
 	"github.com/sopranoworks/shoka/server"
@@ -407,18 +406,7 @@ func main() {
 		startMetricsServer(ctx, cfg.Metrics.Addr, s, logger, extras...)
 	}
 
-	var ts translation.TranslationService
-	if cfg.Services.GoogleCloud.ProjectID != "" {
-		var err error
-		ts, err = translation.NewGoogleTranslationService(context.Background(), cfg.Services.GoogleCloud.ProjectID)
-		if err != nil {
-			logger.Warn("google translation unavailable; translate_file disabled", "error", err)
-		} else {
-			defer ts.Close()
-		}
-	}
-
-	mcpServer := setupMCPServer(ctx, cfg, s, ts, logger, notifyCenter)
+	mcpServer := setupMCPServer(ctx, cfg, s, logger, notifyCenter)
 
 	// WebUI multi-user login (B-28 stage 1): a server-level user/session store
 	// (go-git-free bbolt sibling of oauth.db) backing the /auth/* login surface. It
@@ -634,7 +622,7 @@ func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
 	return out
 }
 
-func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitStorage, ts translation.TranslationService, logger *slog.Logger, notifyCenter *notify.Center) *mcp.Server {
+func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitStorage, logger *slog.Logger, notifyCenter *notify.Center) *mcp.Server {
 	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "shoka",
@@ -744,13 +732,6 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 		Name:        "search_files",
 		Description: "Search a project's files by filename, content, or both (case-insensitive substring), returning matches with context snippets",
 	}, tools.LoggedTool(logger, "search_files", tools.SearchFilesHandler(s)))
-
-	if ts != nil {
-		mcp.AddTool(mcpServer, &mcp.Tool{
-			Name:        "translate_file",
-			Description: "Translate a Markdown file to a target language (Japanese to English by default)",
-		}, tools.LoggedTool(logger, "translate_file", tools.TranslateFileHandler(s, ts)))
-	}
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "recover_project",

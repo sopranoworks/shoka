@@ -38,7 +38,5 @@ cp shoka.example.yaml shoka.yaml   # then edit
 ```
 
 ## Notes
-- Translation (`translate_file`) is enabled only when `services.google_cloud.project_id`
-  is set and Google credentials are available; otherwise the server runs without it.
 - Node.js is intentionally **not** installed: it is only needed to rebuild the web
   frontend, and the built assets are already committed under `server/dist`.

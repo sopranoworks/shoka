@@ -305,12 +305,6 @@ authentication here. (Source: `internal/config/config.go:193-210`.)
 
 On-demand: `shoka snapshot [--scope …]` triggers a snapshot cycle on the **running** server via the admin API (it never opens a second storage instance on the live data dir).
 
-### `services` — optional integrations
-
-| Key | Type | Required | Default | Meaning |
-|-----|------|----------|---------|---------|
-| `services.google_cloud.project_id` | string | no | "" | When set, registers `translate_file` (uses Application Default Credentials). |
-
 ### `filelock`, `wal`, `wal_worker`, `notify` — write pipeline tunables
 
 | Key | Type | Required | Default | Meaning |
@@ -644,7 +638,6 @@ upgrade compatibility policy.
 | HTTP **403** `invalid Host header` on the MCP endpoint | DNS-rebinding protection: a non-loopback `Host` reached a loopback-bound Shoka (often a reverse proxy forwarding the original `Host`). Fix the proxy `Host`, or start with `MCPGODEBUG=disablelocalhostprotection=1`. (Contract § 2.) |
 | WebSocket upgrade **401** | Auth on, no token. Pass the token via `?token=` (allowed on `/ws/ui`, `/drafts/`) or the header. |
 | WebSocket upgrade **403** | Auth on and the request `Origin` is not in `allowed_origins` (empty Origin is rejected). |
-| `translate_file` tool missing | `services.google_cloud.project_id` is unset, so the tool is not registered. |
 | `write_file`/`delete_file` returns a conflict | Another writer changed the file since you read it. Re-read to get the current `etag` (the content-SHA-256 token), pass it as `if_match`, then retry (contract § 5). |
 | Webhook never arrives | Check the hook's `events` includes the event, the `url` is reachable, and server logs (delivery is best-effort: 2 attempts, then logged failure). |
 | Port already in use on startup | Another process holds `server.http.listen` or an `server.mcp.*.listen`; change the port or stop the other process. |

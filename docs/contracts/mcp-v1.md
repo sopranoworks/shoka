@@ -222,15 +222,14 @@ of being handed a static one.
 
 ## 4. Tool catalog
 
-v1 exposes **19 tools**. Eighteen are always registered; `translate_file` is
-registered **only** when `services.google_cloud.project_id` is set. (Source:
-`cmd/shoka/main.go`.)
+v1 exposes **18 tools**, all always registered. (Source: `cmd/shoka/main.go`.)
+The former conditional `translate_file` tool was **retired** (see §4.17).
 
 ```
 get_server_info  list_projects  create_project  list_files  read_file
 read_file_at_version  write_file  delete_file  append_to_file  patch_file
 move_file  get_history  read_summary  list_files_since  search_files
-recover_project  subscribe  unsubscribe  translate_file*  (*conditional)
+recover_project  subscribe  unsubscribe
 ```
 
 `subscribe` / `unsubscribe` register scoped file-change notifications delivered as
@@ -588,16 +587,17 @@ Apply to every tool unless noted:
   `internal/storage/recovery.go` `ResyncToHead`; `internal/storage/drift.go`
   `DetectDrift`.)
 
-### 4.17 `translate_file` (conditional)
-- **Availability:** registered **only** when `services.google_cloud.project_id`
-  is configured. (Source: `cmd/shoka/main.go:75-83,200-205`.)
-- **Purpose:** translate a Markdown file and write the result as a sibling file.
-- **Input:** `namespace` (opt), `project_name` (**required**), `path`
-  (**required**), `target_lang` (string, opt, default `"en"`).
-- **Output:** `output_path` (string — `<base>.<target_lang><ext>`), `message`.
-- **Side effects:** reads the source, calls Google Cloud Translation, then
-  `write_file`-equivalent commit of the output → emits a **`file_written`**
-  webhook for the output path. (Source: `internal/tools/translation.go:15-86`.)
+### 4.17 `translate_file` — RETIRED
+- **Status:** **removed** (2026-06-17, B-28). The tool registration and handler
+  were deleted, along with the `services.google_cloud` config item.
+- **Why:** it was translate-to-WRITE only (it committed a `<base>.<lang><ext>`
+  sibling into the repo). Once external file drag-and-drop ADD landed
+  (`8495ecc`), on-Shoka editing became the emergency-only path, so authoring —
+  including any translation — happens externally and the dropped file is added
+  directly. An on-server translate-to-write tool is therefore vestigial. No
+  translate-to-read replacement was added (the browser's own translation
+  suffices). The `internal/translation/` package code is retained on disk but
+  un-wired (dormant), pending a possible future revisit.
 
 ---
 

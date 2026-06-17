@@ -74,9 +74,6 @@ func writeTwoTransportConfig(t *testing.T, baseDir string, httpPort, plainPort i
     format: "text"
 storage:
   base_dir: %q
-services:
-  google_cloud:
-    project_id: ""
 `, httpPort, httpPort, mcpBlock, len(authTokens) > 0, tokensYAML, baseDir)
 
 	path := filepath.Join(t.TempDir(), "shoka.yaml")

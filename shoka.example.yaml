@@ -271,13 +271,6 @@ metrics:
 # invalidating the config schema.
 catalog: {}
 
-services:
-  google_cloud:
-    # Leave empty to run without translation. When set, the translate_file tool
-    # is registered and uses Application Default Credentials
-    # (e.g. the GOOGLE_APPLICATION_CREDENTIALS environment variable).
-    project_id: ""
-
 # Optional outbound webhooks. After each successful write/delete/project creation,
 # Shoka POSTs a JSON body {event, namespace, project, path?, commit_hash?, timestamp}
 # to every subscribed URL (best-effort, async, with one retry). If 'secret' is set,

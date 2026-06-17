@@ -91,7 +91,6 @@ var toolLevels = map[string]authz.Level{
 	"append_to_file": authz.LevelWrite,
 	"move_file":      authz.LevelWrite,
 	"delete_file":    authz.LevelWrite,
-	"translate_file": authz.LevelWrite,
 	// admin
 	"recover_project": authz.LevelAdmin,
 	// admin on the target namespace (B-28 ns/proj management part 1): project
