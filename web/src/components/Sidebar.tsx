@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import type { RailView } from './ActivityRail'
 import { FileTree, type TreeOpenMode } from './FileTree'
+import { FileDropzone } from './FileDropzone'
 import { SettingsItemList } from './SettingsItemList'
 import { useTreeQuery } from '../lib/queries'
 import { dirOf } from '../lib/moveController'
@@ -114,21 +115,27 @@ function ProjectTree({
         )}
       </SectionHeader>
       <div className={styles.treeWrap}>
-        {isError ? (
-          <div className={styles.empty}>Could not load files.</div>
-        ) : !tree ? (
-          <div className={styles.empty}>Loading…</div>
-        ) : tree.length === 0 ? (
-          <div className={styles.empty}>No files.</div>
-        ) : (
-          <FileTree
-            namespace={ns}
-            project={proj}
-            nodes={tree}
-            activePath={activePath}
-            openMode={openMode}
-          />
-        )}
+        {/* Native external-file dropzone (B-28): wraps the whole tree pane so a
+            drop anywhere — onto a folder row (→ that folder) or the empty area
+            (→ project root) — adds the file. Distinct from the internal-node
+            trash/move DnD; covers the empty/loading states too. */}
+        <FileDropzone namespace={ns} project={proj}>
+          {isError ? (
+            <div className={styles.empty}>Could not load files.</div>
+          ) : !tree ? (
+            <div className={styles.empty}>Loading…</div>
+          ) : tree.length === 0 ? (
+            <div className={styles.empty}>No files.</div>
+          ) : (
+            <FileTree
+              namespace={ns}
+              project={proj}
+              nodes={tree}
+              activePath={activePath}
+              openMode={openMode}
+            />
+          )}
+        </FileDropzone>
       </div>
     </div>
   )

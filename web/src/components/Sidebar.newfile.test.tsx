@@ -14,6 +14,11 @@ import {
 vi.mock('../lib/queries', () => ({
   useTreeQuery: () => ({ data: [], isError: false }),
 }))
+// Stub the orthogonal native-file-drop wrapper (own QueryClient/Toast/DnD deps);
+// this test probes the new-file button, not the dropzone (covered elsewhere).
+vi.mock('./FileDropzone', () => ({
+  FileDropzone: (props: { children?: unknown }) => <>{props.children as never}</>,
+}))
 
 import { Sidebar } from './Sidebar'
 

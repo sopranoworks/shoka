@@ -1,0 +1,33 @@
+/* The native file dropzone wrapping the explorer tree. It fills the tree pane so a
+   drop anywhere in it (including the empty area below the last row → project root)
+   is captured. */
+.zone {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+
+/* The drag-over affordance: a dashed outline + a hint, shown only while a valid OS
+   file hovers. pointer-events:none so it never shadows the folder rows underneath
+   (resolveDestDir's document.elementFromPoint must reach the row). */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--c-accent, #4a90d9);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--c-accent, #4a90d9) 10%, transparent);
+}
+
+.hint {
+  font-size: var(--fs-sm, 0.8rem);
+  font-weight: 600;
+  color: var(--c-text, inherit);
+  background: var(--c-bg, #fff);
+  padding: 2px 8px;
+  border-radius: 4px;
+}

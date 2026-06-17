@@ -32,6 +32,12 @@ vi.mock('./FileTree', () => ({
     />
   ),
 }))
+// Stub the orthogonal native-file-drop wrapper (own QueryClient/Toast/DnD deps);
+// these tests probe History-mode rail/tree behaviour, not the dropzone (covered
+// by fileAdd.test.ts + the real-browser E2E).
+vi.mock('./FileDropzone', () => ({
+  FileDropzone: (props: { children?: unknown }) => <>{props.children as never}</>,
+}))
 
 import { Sidebar } from './Sidebar'
 

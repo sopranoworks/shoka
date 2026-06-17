@@ -19,6 +19,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/authz"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/ingest"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
@@ -188,6 +189,14 @@ type SaveFilePayload struct {
 	// returned. Omitted by callers that have not adopted versioning — those writes
 	// take the unchecked path, preserving the pre-versioning behaviour.
 	IfMatch string `json:"if_match,omitempty"`
+	// ContentEncoding selects how Content is interpreted, identical to the MCP
+	// write_file tool: empty/"utf8" is literal text (the existing editor/create
+	// behaviour, unchanged); "base64" decodes Content from base64 to raw bytes via
+	// the shared ingest helper, enforcing the closed markdown/json/yaml allowlist.
+	// The base64 path is the external file drag-and-drop ADD route (B-28): a
+	// dropped file is byte-faithful and a name collision is refused, not silently
+	// overwritten (see handleSaveFile).
+	ContentEncoding string `json:"content_encoding,omitempty"`
 }
 
 // ConflictPayload is the CONFLICT frame's body: the path that conflicted and the
@@ -1593,6 +1602,18 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	// file.write NOTIFY must not be echoed back to it (2026-06-01 directive).
 	ctx = notify.WithSender(ctx, client.id)
 
+	// Resolve Content per content_encoding through the SAME shared helper the MCP
+	// write_file tool uses (no duplicate allowlist): empty/"utf8" is literal text
+	// (the existing editor/create behaviour); "base64" decodes byte-faithfully and
+	// enforces the closed markdown/json/yaml allowlist. This is the external file
+	// drag-and-drop ADD path (B-28). A rejection (disallowed format / malformed
+	// base64) is surfaced as an ERROR frame and nothing is written.
+	content, msg, _, ok := ingest.DecodeContent(p.Path, p.Content, p.ContentEncoding)
+	if !ok {
+		client.sendError(msg)
+		return
+	}
+
 	// if_match present → optimistic concurrency; absent → unchecked write (nil),
 	// preserving the pre-versioning behaviour for callers that have not adopted it.
 	var ifMatch *string
@@ -1600,7 +1621,26 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 		ifMatch = &p.IfMatch
 	}
 
-	etag, err := m.storage.Write(ctx, "", p.Namespace, p.ProjectName, p.Path, p.Content, ifMatch)
+	// No-silent-overwrite on the base64 ingest (drag-and-drop ADD) path (B-28,
+	// operator decision ②). A dropped file landing on an existing name must be
+	// REFUSED rather than silently clobbered — mirroring move_file's policy
+	// (storage.Move: a target that exists with no ifMatch is refused). The guard is
+	// scoped to the base64 path so the existing utf8 create/editor flow is
+	// unchanged: the client re-sends with the current etag as if_match to confirm an
+	// intentional overwrite. The check is server-authoritative (a client cannot
+	// bypass it); the etag carried back lets the client confirm-then-overwrite.
+	if p.ContentEncoding == "base64" && ifMatch == nil {
+		if _, curETag, rerr := m.storage.ReadFileWithETag(p.Namespace, p.ProjectName, p.Path); rerr == nil {
+			client.sendResponse(MsgConflict, ConflictPayload{
+				Path:        p.Path,
+				CurrentETag: curETag,
+				Message:     "A file already exists at this path; confirm to overwrite it",
+			})
+			return
+		}
+	}
+
+	etag, err := m.storage.Write(ctx, "", p.Namespace, p.ProjectName, p.Path, content, ifMatch)
 	if err != nil {
 		var conflict *storage.VersionConflictError
 		if errors.As(err, &conflict) {

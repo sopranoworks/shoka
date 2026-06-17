@@ -324,6 +324,10 @@ function Row({
       className={styles.row}
       data-active={isActive}
       data-reserved={isReserved}
+      // Folder rows carry their path so the external-file dropzone (FileDropzone)
+      // can resolve a drop onto this folder to that destination prefix (B-28); file
+      // rows have none, so a drop on a file falls through to the project root.
+      data-dir-path={!node.data.isFile ? node.data.path : undefined}
       // The drag is driven entirely by react-arborist's react-dnd useDrag (via the
       // dragHandle ref). Dropping a row on the trash box is delivered by react-dnd to
       // ShellRail's useDrop, which reads the node id (a file path) — no out-of-band

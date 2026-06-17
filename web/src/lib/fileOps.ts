@@ -28,6 +28,12 @@ export interface SaveArgs {
   // precondition) — used for "Save as" to a new path and "Save mine as new
   // file" after an external delete.
   ifMatch?: string | null
+  // When 'base64', `content` is base64-encoded raw bytes; the server decodes it
+  // byte-faithfully through the shared ingest allowlist (markdown/json/yaml only).
+  // This is the external file drag-and-drop ADD path (B-28): on this path a name
+  // collision sent with no ifMatch comes back as CONFLICT (no silent overwrite).
+  // Omitted (default) => literal utf8 text, the editor/create behaviour.
+  contentEncoding?: 'base64'
 }
 
 export async function saveFile(args: SaveArgs): Promise<SaveResult> {
@@ -38,6 +44,7 @@ export async function saveFile(args: SaveArgs): Promise<SaveResult> {
     content: args.content,
   }
   if (args.ifMatch != null) payload.if_match = args.ifMatch
+  if (args.contentEncoding) payload.content_encoding = args.contentEncoding
 
   const frame = await wsClient().requestFrame('SAVE_FILE', payload)
   if (frame.type === 'CONFLICT') {

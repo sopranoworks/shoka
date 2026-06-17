@@ -27,6 +27,13 @@ vi.mock('./FileTree', () => ({
     <div data-testid="filetree" data-openmode={openMode} />
   ),
 }))
+// FileDropzone is an orthogonal native-file-drop wrapper (its own deps:
+// QueryClient/Toast/DnD providers); these tests probe Sidebar's tree/rail logic,
+// not the dropzone (covered by fileAdd.test.ts + the real-browser E2E). Stub it to
+// a pass-through, mirroring the FileTree mock above.
+vi.mock('./FileDropzone', () => ({
+  FileDropzone: (props: { children?: unknown }) => <>{props.children as never}</>,
+}))
 
 import { Sidebar } from './Sidebar'
 

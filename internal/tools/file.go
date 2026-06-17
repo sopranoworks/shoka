@@ -2,16 +2,15 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sopranoworks/shoka/internal/auth"
 	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/ingest"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/internal/utils"
@@ -134,57 +133,10 @@ type WriteFileInput struct {
 	ContentEncoding string `json:"content_encoding,omitempty" jsonschema:"optional, the encoding of 'content': 'utf8' (default) is literal text; 'base64' decodes content from base64 to raw bytes before writing (byte-faithful ingest). When 'base64', the path must be a markdown/json/yaml file (.md/.markdown/.json/.yaml/.yml)."`
 }
 
-// ingestAllowedExts is the CLOSED set of file extensions accepted on the base64
-// ingest path (content_encoding="base64"). It admits only the formats a coding
-// agent can actually consume — markdown / json / yaml — and rejects everything
-// else, including extensionless paths, so a binary "foreign object" an agent
-// cannot use is refused at the boundary. Extension-based and case-insensitive; no
-// content sniffing (predictable, no guessing). The restriction is scoped to the
-// ingest path only — a plain (utf8) write_file is unaffected (operator-confirmed
-// 2026-06-05, B-46c).
-var ingestAllowedExts = map[string]bool{
-	".md":       true,
-	".markdown": true,
-	".json":     true,
-	".yaml":     true,
-	".yml":      true,
-}
-
-// allowedIngestFormats is the human-facing list for error messages, in a stable
-// order (derived once from ingestAllowedExts' intent, kept in sync by hand — the
-// set is tiny and closed).
-const allowedIngestFormats = ".md, .markdown, .json, .yaml, .yml"
-
-// isAllowedIngestFormat reports whether path carries an extension in the closed
-// ingest allowlist (case-insensitive). An extensionless path returns false.
-func isAllowedIngestFormat(path string) bool {
-	return ingestAllowedExts[strings.ToLower(filepath.Ext(path))]
-}
-
-// decodeWriteContent resolves WriteFileInput.Content to the raw bytes to store,
-// honouring ContentEncoding. For the base64 ingest path it first enforces the
-// format allowlist (so the restriction binds every client server-side), then
-// decodes. It returns the bytes to write, or a user-facing message + structured
-// reason when the input is rejected (caller turns these into an IsError result).
-// ok is false on rejection.
-func decodeWriteContent(path, content, encoding string) (out string, msg, reason string, ok bool) {
-	switch encoding {
-	case "", "utf8":
-		// Literal text — today's behaviour, unchanged.
-		return content, "", "", true
-	case "base64":
-		if !isAllowedIngestFormat(path) {
-			return "", fmt.Sprintf("unsupported file format for ingest: %q; allowed formats are %s", path, allowedIngestFormats), "format_rejected", false
-		}
-		decoded, err := base64.StdEncoding.DecodeString(content)
-		if err != nil {
-			return "", fmt.Sprintf("invalid base64 content: %v", err), "invalid_encoding", false
-		}
-		return string(decoded), "", "", true
-	default:
-		return "", fmt.Sprintf("unsupported content_encoding %q; use \"utf8\" or \"base64\"", encoding), "invalid_encoding", false
-	}
-}
+// The base64 decode + closed markdown/json/yaml allowlist used on the ingest
+// path lives in the shared internal/ingest package, so the MCP write_file tool
+// and the WebUI /ws/ui SAVE_FILE handler enforce ONE implementation (no duplicate
+// allowlist) — see ingest.DecodeContent.
 
 type WriteFileOutput struct {
 	Message string `json:"message,omitempty"`
@@ -221,7 +173,7 @@ func WriteFileHandler(s storage.StorageService) func(context.Context, *mcp.CallT
 			}, WriteFileOutput{}, nil
 		}
 
-		content, msg, reason, ok := decodeWriteContent(input.Path, input.Content, input.ContentEncoding)
+		content, msg, reason, ok := ingest.DecodeContent(input.Path, input.Content, input.ContentEncoding)
 		if !ok {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: msg}},
