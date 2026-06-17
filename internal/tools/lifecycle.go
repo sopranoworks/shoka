@@ -28,6 +28,11 @@ type namespaceManager interface {
 	DeleteNamespace(ctx context.Context, namespace string) error
 }
 
+// projectMover is the storage capability behind move_project (B-28 project move).
+type projectMover interface {
+	MoveProject(ctx context.Context, oldNamespace, projectName, newNamespace string) error
+}
+
 // requireSuperUser returns an IsError result (and false) unless the request's principal
 // is a super-user (wildcard admin). It is the authoritative super-user gate for the
 // namespace ops — the AuthzMiddleware only verifies admin on the named namespace, which a
@@ -130,6 +135,42 @@ func DeleteNamespaceHandler(s namespaceManager) func(context.Context, *mcp.CallT
 			return lifecycleErr(fmt.Sprintf("failed to delete namespace: %v", err)), DeleteNamespaceOutput{}, nil
 		}
 		return nil, DeleteNamespaceOutput{Message: fmt.Sprintf("Namespace %s deleted", input.Namespace)}, nil
+	}
+}
+
+type MoveProjectInput struct {
+	Namespace    string `json:"namespace,omitempty" jsonschema:"optional, the SOURCE namespace (defaults to 'default')"`
+	ProjectName  string `json:"project_name" jsonschema:"required, the project to move"`
+	NewNamespace string `json:"new_namespace" jsonschema:"required, the TARGET namespace (must already exist)"`
+}
+
+type MoveProjectOutput struct {
+	Message string `json:"message"`
+}
+
+// MoveProjectHandler relocates a project from one namespace to another (B-28 project move).
+// authz: SUPER-USER only in this first cut (verified here). A future relaxation would replace
+// requireSuperUser with the handler dual-check Authorize(scope, oldNs, project, LevelAdmin)
+// AND Authorize(scope, newNs, "", LevelAdmin) — admin on both — with no authz model change.
+func MoveProjectHandler(s projectMover) func(context.Context, *mcp.CallToolRequest, MoveProjectInput) (*mcp.CallToolResult, MoveProjectOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input MoveProjectInput) (*mcp.CallToolResult, MoveProjectOutput, error) {
+		if input.ProjectName == "" || input.NewNamespace == "" {
+			return lifecycleErr("project_name and new_namespace are required"), MoveProjectOutput{}, nil
+		}
+		if input.Namespace == "" {
+			input.Namespace = "default"
+		}
+		if !utils.IsValidName(input.Namespace) || !utils.IsValidName(input.ProjectName) || !utils.IsValidName(input.NewNamespace) {
+			return lifecycleErr("invalid namespace or project_name: only alphanumeric, hyphen, and underscore are allowed"), MoveProjectOutput{}, nil
+		}
+		if denied, ok := requireSuperUser(ctx); !ok {
+			return denied, MoveProjectOutput{}, nil
+		}
+		ctx = notify.WithSender(ctx, mcpSender(req))
+		if err := s.MoveProject(ctx, input.Namespace, input.ProjectName, input.NewNamespace); err != nil {
+			return lifecycleErr(fmt.Sprintf("failed to move project: %v", err)), MoveProjectOutput{}, nil
+		}
+		return nil, MoveProjectOutput{Message: fmt.Sprintf("Moved project %s → %s/%s", input.Namespace+"/"+input.ProjectName, input.NewNamespace, input.ProjectName)}, nil
 	}
 }
 

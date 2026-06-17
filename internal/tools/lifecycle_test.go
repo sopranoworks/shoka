@@ -36,6 +36,48 @@ func TestProjectOps_AuthzOnTargetNamespace(t *testing.T) {
 	}
 }
 
+// fakeProjectMover records whether the underlying move ran.
+type fakeProjectMover struct {
+	moved bool
+	args  [3]string
+}
+
+func (f *fakeProjectMover) MoveProject(_ context.Context, oldNs, proj, newNs string) error {
+	f.moved = true
+	f.args = [3]string{oldNs, proj, newNs}
+	return nil
+}
+
+// #6 (MCP, project MOVE = SUPER-USER only in this first cut). The handler's requireSuperUser
+// is authoritative: a namespace-admin — even on BOTH the source and target — is refused and
+// the move never runs; a super-user succeeds.
+func TestMoveProject_SuperUserOnly(t *testing.T) {
+	scopedCtx := func(scope string) context.Context {
+		return auth.WithPrincipal(context.Background(), auth.Principal{Scope: scope})
+	}
+	in := MoveProjectInput{Namespace: "src", ProjectName: "proj", NewNamespace: "dst"}
+
+	// admin on both src and dst → still REFUSED (super-user only), op not run.
+	f := &fakeProjectMover{}
+	res, _, _ := MoveProjectHandler(f)(scopedCtx("namespace:src:admin,namespace:dst:admin"), nil, in)
+	if res == nil || !res.IsError {
+		t.Error("admin-on-both move_project must be refused (super-user only)")
+	}
+	if f.moved {
+		t.Error("refused move_project must NOT run the op")
+	}
+
+	// super-user → allowed, op runs with the right args.
+	f = &fakeProjectMover{}
+	res, _, _ = MoveProjectHandler(f)(scopedCtx("*"), nil, in)
+	if res != nil && res.IsError {
+		t.Fatal("super-user move_project must succeed")
+	}
+	if !f.moved || f.args != [3]string{"src", "proj", "dst"} {
+		t.Errorf("super-user move_project did not run with the right args: %+v", f)
+	}
+}
+
 // fakeNamespaceManager records whether the underlying op ran.
 type fakeNamespaceManager struct {
 	createdNS string

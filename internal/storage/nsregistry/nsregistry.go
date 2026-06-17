@@ -37,7 +37,24 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-const namespacesBucket = "namespaces"
+const (
+	namespacesBucket = "namespaces"
+	// journalBucket holds the single-entry move-journal (B-28 project move): an
+	// in-progress MoveProject records its intent here so an interrupted move can be
+	// AUTOMATICALLY resumed or rolled back at startup, with no operator action. Only one
+	// move runs at a time (storage serialises via moveMu), so a single key suffices.
+	journalBucket = "move_journal"
+	journalKey    = "current"
+)
+
+// MoveJournal records an in-progress project move so it can be auto-recovered at startup.
+// Phase is an opaque string the storage layer advances; nsregistry only persists it.
+type MoveJournal struct {
+	OldNamespace string `json:"old_namespace"`
+	Project      string `json:"project"`
+	NewNamespace string `json:"new_namespace"`
+	Phase        string `json:"phase"`
+}
 
 // Record is one managed namespace: its name, when Shoka took it under management, and the
 // set of managed project names within it (bare names, unique within the namespace).
@@ -65,11 +82,15 @@ func Open(path string) (*Registry, error) {
 		return nil, fmt.Errorf("nsregistry: open %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists([]byte(namespacesBucket))
-		return e
+		for _, b := range []string{namespacesBucket, journalBucket} {
+			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
+				return e
+			}
+		}
+		return nil
 	}); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("nsregistry: init bucket: %w", err)
+		return nil, fmt.Errorf("nsregistry: init buckets: %w", err)
 	}
 	return &Registry{db: db, path: path}, nil
 }
@@ -221,4 +242,112 @@ func putRecord(b *bolt.Bucket, rec Record) error {
 		return fmt.Errorf("nsregistry: encode record: %w", err)
 	}
 	return b.Put([]byte(rec.Name), val)
+}
+
+func loadRecord(b *bolt.Bucket, ns string) (Record, bool, error) {
+	v := b.Get([]byte(ns))
+	if v == nil {
+		return Record{}, false, nil
+	}
+	var rec Record
+	if err := json.Unmarshal(v, &rec); err != nil {
+		return Record{}, false, fmt.Errorf("nsregistry: decode record: %w", err)
+	}
+	return rec, true, nil
+}
+
+// MoveProject atomically re-keys proj from oldNs to newNs in the managed set (B-28 project
+// move). In ONE bbolt transaction it: refuses if newNs already has a project of that name
+// (the GitHub-repository-transfer no-overwrite rule); removes proj from oldNs's record; and
+// adds it to newNs's record (creating newNs's record if absent — though callers require the
+// target namespace to pre-exist and be managed). Idempotent-safe for recovery: if oldNs no
+// longer has proj but newNs already does, it is a no-op success (a prior partial move already
+// swapped the registry). The bare-name-within-namespace keying makes this a clean re-key.
+func (r *Registry) MoveProject(oldNs, proj, newNs string) error {
+	return r.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(namespacesBucket))
+
+		newRec, newFound, err := loadRecord(b, newNs)
+		if err != nil {
+			return err
+		}
+		newHas := false
+		for _, p := range newRec.Projects {
+			if p == proj {
+				newHas = true
+				break
+			}
+		}
+
+		oldRec, _, err := loadRecord(b, oldNs)
+		if err != nil {
+			return err
+		}
+		oldHas := false
+		kept := oldRec.Projects[:0:0]
+		for _, p := range oldRec.Projects {
+			if p == proj {
+				oldHas = true
+				continue
+			}
+			kept = append(kept, p)
+		}
+
+		// Idempotent recovery: registry already swapped (new has it, old doesn't).
+		if newHas && !oldHas {
+			return nil
+		}
+		// No-overwrite: target already has a DIFFERENT project of this name (and the source
+		// still has it too) — a genuine collision, refuse.
+		if newHas && oldHas {
+			return fmt.Errorf("nsregistry: project %q already exists in namespace %q", proj, newNs)
+		}
+
+		// Remove from old (if present).
+		if oldHas {
+			oldRec.Projects = kept
+			if err := putRecord(b, oldRec); err != nil {
+				return err
+			}
+		}
+		// Add to new (ensure the record exists).
+		if !newFound {
+			newRec = Record{Name: newNs, CreatedAt: time.Now().UTC()}
+		}
+		newRec.Projects = append(newRec.Projects, proj)
+		sort.Strings(newRec.Projects)
+		return putRecord(b, newRec)
+	})
+}
+
+// SetMoveJournal records (or overwrites) the single in-progress move-journal entry.
+func (r *Registry) SetMoveJournal(j MoveJournal) error {
+	return r.db.Update(func(tx *bolt.Tx) error {
+		val, err := json.Marshal(&j)
+		if err != nil {
+			return fmt.Errorf("nsregistry: encode move journal: %w", err)
+		}
+		return tx.Bucket([]byte(journalBucket)).Put([]byte(journalKey), val)
+	})
+}
+
+// GetMoveJournal returns the in-progress move-journal entry; found is false when none.
+func (r *Registry) GetMoveJournal() (j MoveJournal, found bool, err error) {
+	err = r.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket([]byte(journalBucket)).Get([]byte(journalKey))
+		if v == nil {
+			return nil
+		}
+		found = true
+		return json.Unmarshal(v, &j)
+	})
+	return j, found, err
+}
+
+// ClearMoveJournal removes the move-journal entry (idempotent) — the move completed or was
+// fully rolled back.
+func (r *Registry) ClearMoveJournal() error {
+	return r.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(journalBucket)).Delete([]byte(journalKey))
+	})
 }

@@ -60,6 +60,17 @@ func (c *Cleaner) PurgeProject(ns, proj string) error {
 	})
 }
 
+// RewriteProject re-homes every grant referencing the project oldNs/proj to newNs/proj
+// (namespace:<oldNs>/<proj>[:perm] → namespace:<newNs>/<proj>[:perm]) across every persisted
+// scope — the project-move mirror of PurgeProject. Namespace-wide and wildcard grants are
+// left intact (a move re-homes only the project-specific grant).
+func (c *Cleaner) RewriteProject(oldNs, proj, newNs string) error {
+	return c.rewrite(func(scope string) string {
+		out, _ := authz.RewriteProjectGrants(scope, oldNs, proj, newNs)
+		return out
+	})
+}
+
 func (c *Cleaner) rewrite(fn func(scope string) string) error {
 	if c == nil {
 		return nil

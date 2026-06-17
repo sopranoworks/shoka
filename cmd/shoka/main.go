@@ -783,6 +783,11 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	}, tools.LoggedTool(logger, "namespace_recover", tools.NamespaceRecoverHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "move_project",
+		Description: "Move an ENTIRE project from one namespace to another, preserving its name and full git history. The target namespace must already exist; refuses if a project of that name is already there (no overwrite). Distinct from delete — nothing is destroyed. Requires a super-user.",
+	}, tools.LoggedTool(logger, "move_project", tools.MoveProjectHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "subscribe",
 		Description: "Subscribe to scoped file-change notifications. Pass a pattern '<namespace>/<project>/<path>' where namespace and project are required and literal (no wildcards) and the path part is a prefix (e.g. 'directives/') or a single-segment glob (e.g. 'directives/2026-*'); recursive '**' is not supported. The session then receives a notifications/message for each external file.write/file.move/file.delete under a matching pattern — never its own writes. Additive: call again to watch more patterns (Redis SUBSCRIBE semantics). Requires the client to issue logging/setLevel to receive the messages",
 	}, tools.LoggedTool(logger, "subscribe", subMgr.SubscribeHandler()))

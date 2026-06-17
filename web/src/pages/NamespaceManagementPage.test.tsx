@@ -6,19 +6,20 @@ import type { ReactNode } from 'react'
 import { ToastProvider } from '../lib/toast'
 
 // Mock the ws ops + the super-user hook (vi.hoisted so the mock factory can reference them).
-const { namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, namespaceRecover, isSuperUser } =
+const { namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, moveProject, namespaceRecover, isSuperUser } =
   vi.hoisted(() => ({
     namespaceHealth: vi.fn(),
     createNamespace: vi.fn(),
     deleteNamespace: vi.fn(),
     createProject: vi.fn(),
     deleteProject: vi.fn(),
+    moveProject: vi.fn(),
     namespaceRecover: vi.fn(),
     isSuperUser: vi.fn(),
   }))
 vi.mock('../lib/nsManageOps', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/nsManageOps')>()
-  return { ...actual, namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, namespaceRecover }
+  return { ...actual, namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, moveProject, namespaceRecover }
 })
 vi.mock('../lib/authStatus', () => ({ useIsSuperUser: isSuperUser }))
 
@@ -60,6 +61,7 @@ describe('NamespaceManagementPage', () => {
     deleteNamespace.mockReset()
     createProject.mockReset()
     deleteProject.mockReset()
+    moveProject.mockReset()
     namespaceRecover.mockReset()
     isSuperUser.mockReset()
     namespaceHealth.mockResolvedValue(report)
@@ -154,16 +156,40 @@ describe('NamespaceManagementPage', () => {
     await waitFor(() => expect(deleteNamespace).toHaveBeenCalledWith('empty'))
   })
 
-  // #6 — future-move room: each project row has a dedicated move slot distinct from Delete.
-  it('leaves a distinct move-action slot on each project row, separate from delete', async () => {
+  // #7 (move flow DISTINCT from delete) — the move control lives in its own slot, opens a
+  // pick-target-namespace dropdown (NOT a type-name dialog), and calls move_project.
+  it('move opens a pick-target dropdown distinct from delete and calls move_project', async () => {
+    const user = userEvent.setup()
+    moveProject.mockResolvedValue({ status: 'ok' })
     renderPage(true)
     const foo = await screen.findByTestId('ns-foo')
     const alphaRow = within(foo).getByTestId('proj-foo-alpha')
+
+    // The Move control is in the dedicated move-slot, separate from the Delete control.
     const moveSlot = within(alphaRow).getByTestId('move-slot-foo-alpha')
-    expect(moveSlot).toBeInTheDocument()
-    // The slot is a separate element from the Delete control (never confusable).
+    const moveBtn = within(moveSlot).getByRole('button', { name: 'Move…' })
     const del = within(alphaRow).getByRole('button', { name: 'Delete' })
-    expect(moveSlot).not.toBe(del)
     expect(moveSlot.contains(del)).toBe(false)
+
+    await user.click(moveBtn)
+    const dialog = screen.getByRole('dialog', { name: /move project alpha/i })
+    // It is a PICK-target dropdown, NOT a type-name-to-destroy dialog.
+    const select = within(dialog).getByLabelText('target namespace')
+    expect(within(dialog).queryByLabelText('confirm name')).toBeNull()
+
+    // Confirm is disabled until a target is chosen; "empty" is the only other namespace.
+    const confirm = within(dialog).getByRole('button', { name: 'Move' })
+    expect(confirm).toBeDisabled()
+    await user.selectOptions(select, 'empty')
+    expect(confirm).toBeEnabled()
+    await user.click(confirm)
+    await waitFor(() => expect(moveProject).toHaveBeenCalledWith('foo', 'alpha', 'empty'))
+  })
+
+  it('hides the Move control from a non-super-user', async () => {
+    renderPage(false)
+    const foo = await screen.findByTestId('ns-foo')
+    const moveSlot = within(foo).getByTestId('move-slot-foo-alpha')
+    expect(within(moveSlot).queryByRole('button', { name: 'Move…' })).toBeNull()
   })
 })

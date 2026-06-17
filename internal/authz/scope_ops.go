@@ -72,6 +72,46 @@ func PruneProjectGrants(scope, ns, proj string) (newScope string, removed int) {
 	})
 }
 
+// RewriteProjectGrants re-homes every grant that references the project ns/proj BY NAME —
+// namespace:<oldNs>/<proj>[:perm] → namespace:<newNs>/<proj>[:perm], the perm preserved —
+// and returns the rewritten scope plus the count rewritten. It is the project-move mirror of
+// PruneProjectGrants: every OTHER grant (the namespace-wide namespace:<oldNs>, wildcards,
+// other projects) is preserved VERBATIM, because a move re-homes only the project-specific
+// grant, not namespace-wide authority (a user with admin on oldNs does not follow the
+// project to newNs). Surviving tokens keep their exact text (legacy level-less grants are
+// not silently rewritten).
+func RewriteProjectGrants(scope, oldNs, proj, newNs string) (newScope string, rewritten int) {
+	var out []string
+	for _, raw := range strings.Split(scope, ",") {
+		tok := strings.TrimSpace(raw)
+		if tok == "" {
+			continue
+		}
+		if g := parseGrant(tok); !g.Wildcard && g.Namespace == oldNs && g.Project == proj {
+			out = append(out, "namespace:"+newNs+"/"+proj+projectGrantSuffix(tok))
+			rewritten++
+			continue
+		}
+		out = append(out, tok)
+	}
+	if rewritten == 0 {
+		return scope, 0
+	}
+	return strings.Join(out, ","), rewritten
+}
+
+// projectGrantSuffix returns the trailing permission suffix of a grant token (":admin" /
+// ":rw" / ":r") or "" for a legacy level-less grant — so a rewrite preserves the exact
+// perm form (including the legacy no-suffix form).
+func projectGrantSuffix(tok string) string {
+	for _, s := range []string{":admin", ":rw", ":r"} {
+		if strings.HasSuffix(tok, s) {
+			return s
+		}
+	}
+	return ""
+}
+
 // pruneScope removes every comma-separated grant token for which drop(parsed) is true,
 // preserving the SURVIVING tokens verbatim (no re-serialization, so a legacy level-less
 // grant is not silently rewritten). It returns the new scope and the number removed. If

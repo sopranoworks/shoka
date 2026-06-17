@@ -109,6 +109,9 @@ var toolLevels = map[string]authz.Level{
 	// namespace via callTarget; namespace-level actions tighten to super-user in the handler).
 	"namespace_health":  authz.LevelAdmin,
 	"namespace_recover": authz.LevelAdmin,
+	// project move = admin on the target (the gate floor); the handler tightens to
+	// super-user (admin-on-both is the designed-for future relaxation).
+	"move_project": authz.LevelAdmin,
 }
 
 // toolLevel returns the required level for a tool, defaulting to admin (fail-closed)

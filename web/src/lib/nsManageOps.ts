@@ -63,6 +63,17 @@ export function deleteProject(namespace: string, name: string): Promise<{ status
   return wsClient().request('DELETE_PROJECT', { namespace, projectName: name })
 }
 
+// Move a project to another namespace (B-28 project move) — super-user only. The target
+// namespace must already exist; the server refuses a name collision. Distinct from delete:
+// nothing is destroyed.
+export function moveProject(
+  namespace: string,
+  projectName: string,
+  newNamespace: string,
+): Promise<{ status: string }> {
+  return wsClient().request('MOVE_PROJECT', { namespace, projectName, newNamespace })
+}
+
 // The stage-B per-divergence recovery actions. Whole-namespace actions (empty projectName)
 // are super-user only; project-level actions need admin on the namespace.
 export type RecoverAction = 'drop_missing' | 'clean_orphaned' | 'adopt'

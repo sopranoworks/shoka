@@ -96,6 +96,66 @@ func TestRegistry_ProjectLifecycle(t *testing.T) {
 	}
 }
 
+func TestRegistry_MoveProject(t *testing.T) {
+	r := open(t)
+	if err := r.AddProject("src", "proj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.EnsureNamespace("dst"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.MoveProject("src", "proj", "dst"); err != nil {
+		t.Fatalf("MoveProject: %v", err)
+	}
+	if has, _ := r.HasProject("src", "proj"); has {
+		t.Error("proj must be gone from src after move")
+	}
+	if has, _ := r.HasProject("dst", "proj"); !has {
+		t.Error("proj must be in dst after move")
+	}
+
+	// Idempotent recovery: re-running the (already-applied) move is a no-op success.
+	if err := r.MoveProject("src", "proj", "dst"); err != nil {
+		t.Fatalf("MoveProject (idempotent re-run) must not error: %v", err)
+	}
+
+	// No-overwrite: a genuine collision (both src and dst hold the name) is refused.
+	if err := r.AddProject("a", "dup"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AddProject("b", "dup"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.MoveProject("a", "dup", "b"); err == nil {
+		t.Fatal("MoveProject must refuse when the target already has a project of that name")
+	}
+	if has, _ := r.HasProject("a", "dup"); !has {
+		t.Error("a refused move must leave the source untouched")
+	}
+}
+
+func TestRegistry_MoveJournal(t *testing.T) {
+	r := open(t)
+	if _, found, _ := r.GetMoveJournal(); found {
+		t.Fatal("a fresh registry must have no move journal")
+	}
+	j := MoveJournal{OldNamespace: "src", Project: "proj", NewNamespace: "dst", Phase: "dir_moved"}
+	if err := r.SetMoveJournal(j); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := r.GetMoveJournal()
+	if err != nil || !found || got != j {
+		t.Fatalf("GetMoveJournal = (%+v, %v, %v), want %+v", got, found, err, j)
+	}
+	if err := r.ClearMoveJournal(); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := r.GetMoveJournal(); found {
+		t.Fatal("ClearMoveJournal must remove the entry")
+	}
+}
+
 // TestRegistry_MoveReadiness proves the move seam (decision 6): a project can be moved
 // from one namespace record to another with no global immutable identity blocking it, and
 // the bare-name-within-namespace keying gives the exact target-collision check a future

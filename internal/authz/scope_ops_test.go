@@ -100,6 +100,36 @@ func TestPruneProjectGrants(t *testing.T) {
 	}
 }
 
+func TestRewriteProjectGrants(t *testing.T) {
+	cases := []struct {
+		name              string
+		scope, ns, p, dst string
+		wantScope         string
+		wantRewritten     int
+	}{
+		{"re-homes the project grant, perm preserved, others verbatim",
+			"namespace:foo/p1:rw,namespace:bar:rw", "foo", "p1", "baz",
+			"namespace:baz/p1:rw,namespace:bar:rw", 1},
+		{"namespace-wide grant is NOT re-homed by a project move",
+			"namespace:foo:admin", "foo", "p1", "baz", "namespace:foo:admin", 0},
+		{"wildcard untouched",
+			"*:admin", "foo", "p1", "baz", "*:admin", 0},
+		{"a different project under the source is untouched",
+			"namespace:foo/p2:rw", "foo", "p1", "baz", "namespace:foo/p2:rw", 0},
+		{"legacy level-less project grant keeps its form",
+			"namespace:foo/p1", "foo", "p1", "baz", "namespace:baz/p1", 1},
+		{"admin perm preserved",
+			"namespace:foo/p1:admin", "foo", "p1", "baz", "namespace:baz/p1:admin", 1},
+	}
+	for _, c := range cases {
+		got, n := RewriteProjectGrants(c.scope, c.ns, c.p, c.dst)
+		if got != c.wantScope || n != c.wantRewritten {
+			t.Errorf("%s: RewriteProjectGrants(%q,%q,%q,%q) = (%q,%d), want (%q,%d)",
+				c.name, c.scope, c.ns, c.p, c.dst, got, n, c.wantScope, c.wantRewritten)
+		}
+	}
+}
+
 // TestNoAccessScope_DeniesEverything proves the cascade-cleanup substitute really grants
 // nothing — the whole point of using it instead of "" (which would read as super-user).
 func TestNoAccessScope_DeniesEverything(t *testing.T) {

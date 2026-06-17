@@ -50,6 +50,8 @@ const (
 	// actions (drop_missing / clean_orphaned / adopt).
 	MsgNamespaceHealth  MessageType = "NAMESPACE_HEALTH"
 	MsgNamespaceRecover MessageType = "NAMESPACE_RECOVER"
+	// MsgMoveProject moves a project between namespaces (B-28 project move) — super-user only.
+	MsgMoveProject MessageType = "MOVE_PROJECT"
 	// MsgSearchFiles requests a project-scoped full-text/filename search and
 	// MsgSearchResult carries the matches back. Search is read-only and
 	// project-scoped: it wires the existing storage.SearchFiles capability (the
@@ -616,6 +618,7 @@ var wsLevels = map[MessageType]wsOp{
 var wsSuperUserOps = map[MessageType]bool{
 	MsgCreateNamespace: true,
 	MsgDeleteNamespace: true,
+	MsgMoveProject:     true,
 }
 
 // authzGate applies the shared authz decision to one /ws/ui message before its
@@ -768,6 +771,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleNamespaceHealth(client)
 		case MsgNamespaceRecover:
 			m.handleNamespaceRecover(client, wsMsg.Payload)
+		case MsgMoveProject:
+			m.handleMoveProject(client, wsMsg.Payload)
 		case MsgSearchFiles:
 			m.handleSearchFiles(client, wsMsg.Payload)
 		case MsgGetHistory:
@@ -845,6 +850,11 @@ type projectDeleter interface {
 type namespaceManager interface {
 	CreateNamespace(namespace string) error
 	DeleteNamespace(ctx context.Context, namespace string) error
+}
+
+// projectMover is the optional storage capability behind MOVE_PROJECT (B-28 project move).
+type projectMover interface {
+	MoveProject(ctx context.Context, oldNamespace, projectName, newNamespace string) error
 }
 
 // namespaceHealthReader / namespaceRecoverer are the optional storage capabilities behind
@@ -977,6 +987,33 @@ func (m *Manager) handleDeleteNamespace(client *wsClient, payload json.RawMessag
 		return
 	}
 	client.sendResponse(MsgDeleteNamespace, map[string]string{"status": "ok"})
+}
+
+// MoveProjectPayload is the /ws/ui project-move request (B-28). namespace is the SOURCE;
+// newNamespace the TARGET (must pre-exist). super-user-gated (wsSuperUserOps).
+type MoveProjectPayload struct {
+	Namespace    string `json:"namespace"`
+	ProjectName  string `json:"projectName"`
+	NewNamespace string `json:"newNamespace"`
+}
+
+func (m *Manager) handleMoveProject(client *wsClient, payload json.RawMessage) {
+	var p MoveProjectPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for MOVE_PROJECT")
+		return
+	}
+	mv, ok := m.storage.(projectMover)
+	if !ok {
+		client.sendError("project move is not available on this server")
+		return
+	}
+	ctx := notify.WithSender(context.Background(), client.id)
+	if err := mv.MoveProject(ctx, p.Namespace, p.ProjectName, p.NewNamespace); err != nil {
+		client.sendError(fmt.Sprintf("Failed to move project: %v", err))
+		return
+	}
+	client.sendResponse(MsgMoveProject, map[string]string{"status": "ok"})
 }
 
 // NamespaceRecoverPayload is the /ws/ui recovery request. ProjectName empty ⇒ a

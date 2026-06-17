@@ -168,6 +168,17 @@ type FSGitStorage struct {
 	// CreateNamespace / DeleteNamespace / Create-/DeleteProject all maintain it.
 	nsReg *nsregistry.Registry
 
+	// moveMu serializes project moves (B-28 project move). A move is a SPECIAL op for which
+	// coarse locking is acceptable for safety, so only one move runs at a time — no
+	// move-vs-move interleaving can occur. moving is the set of "<ns>/<project>" keys
+	// currently being moved (both the source and target keys for the duration), which
+	// checkWritable consults to refuse writes to a moving project with the retriable
+	// ErrProjectMoving; reads take no lock and are not fenced (the dir rename is atomic and
+	// handles are evicted first, so a racing read sees the old location or not-found).
+	moveMu   sync.Mutex
+	movingMu sync.Mutex
+	moving   map[string]bool
+
 	// identityDefaults is the configured single-user identity + agent fallback
 	// used to author commits (the 2026-06-01 identity-config directive). The
 	// per-request agent declaration arrives on the write's context; this is the
@@ -209,12 +220,16 @@ type Options struct {
 // ChangeEvent describes a successful mutation, delivered to a registered handler
 // after the background git commit lands.
 type ChangeEvent struct {
-	Event      string // file_written | file_deleted | project_created | project_deleted
+	Event      string // file_written | file_deleted | project_created | project_deleted | project_moved
 	Namespace  string
 	Project    string
 	Path       string
 	CommitHash string
 	Timestamp  time.Time
+	// OldNamespace/OldProject are set only for project_moved (B-28 project move): the
+	// source the project moved FROM (Namespace/Project hold the new location).
+	OldNamespace string
+	OldProject   string
 }
 
 // ChangeHandler receives ChangeEvents after a successful mutation. It must not
@@ -236,6 +251,10 @@ var (
 	ErrProjectCorrupted = errors.New("project is in corrupted state: working tree has uncommitted drift")
 	// ErrWriteDisabled means the WAL has backed up past its threshold.
 	ErrWriteDisabled = errors.New("writes are disabled: write-ahead log is full")
+	// ErrProjectMoving means the project is being moved between namespaces right now
+	// (B-28 project move). It is transient and RETRIABLE: the move is a brief, serialized
+	// special op, after which the project is writable again at its new location.
+	ErrProjectMoving = errors.New("project is being moved between namespaces; retry shortly")
 )
 
 // VersionConflictError is returned by writes/deletes when the caller's expected
@@ -324,6 +343,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		fixLinksKicks:    make(chan fixLinksKick, fixLinksKickBuffer),
 		notify:           opts.NotifyCenter,
 		nsReg:            nsReg,
+		moving:           make(map[string]bool),
 		identityDefaults: withIdentityFallback(opts.Identity),
 	}
 	s.pool = walworker.NewPool(w, s.commitEntry, s.quarantineEntry, opts.WALWorker)
@@ -790,6 +810,11 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 // checkWritable rejects writes when the project is corrupted/dangerous or the
 // WAL is full.
 func (s *FSGitStorage) checkWritable(namespace, projectName string) error {
+	// A project being moved between namespaces is briefly fenced (B-28 project move): refuse
+	// writes with a retriable error for the move's (short, serialized) duration.
+	if s.isMoving(namespace, projectName) {
+		return ErrProjectMoving
+	}
 	switch s.State(namespace, projectName) {
 	case StateDangerous:
 		return ErrProjectDangerous
