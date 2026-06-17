@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/internal/authz"
 	"github.com/sopranoworks/shoka/internal/storage/userstore"
 )
 
@@ -128,6 +129,12 @@ type statusResponse struct {
 	FirstRunAllowed bool       `json:"first_run_allowed"`
 	PasskeyEnabled  bool       `json:"passkey_enabled"`
 	Principal       *principal `json:"principal,omitempty"`
+	// ManagesAnyNamespace is the server-derived predicate the B-28 part-2 "Namespace /
+	// project management" Settings item is shown for (super-user OR a namespace-admin of ≥1
+	// namespace). It is authoritative for the authenticated case; the no-lockout empty-store
+	// operator is handled client-side (useIsSuperUser via !users_exist), so the item's full
+	// visibility predicate is useIsSuperUser() || manages_any_namespace.
+	ManagesAnyNamespace bool `json:"manages_any_namespace"`
 }
 
 type principal struct {
@@ -198,6 +205,10 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if u := h.currentUser(r); u != nil {
 		resp.Authenticated = true
 		resp.Principal = &principal{Email: u.Email, DisplayName: u.DisplayName, IsAdmin: u.IsAdmin()}
+		// "Manages any namespace": super-user, or a namespace-admin of ≥1 namespace (B-28
+		// part 2 — the ns/proj-management item's visibility, beyond the super-user-only items).
+		adminNs, superUser := authz.AdminNamespaces(u.Scope)
+		resp.ManagesAnyNamespace = superUser || len(adminNs) > 0
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

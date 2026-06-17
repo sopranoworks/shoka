@@ -25,3 +25,14 @@ export function useIsSuperUser(): boolean {
   if (!data) return false
   return !data.users_exist || !!data.principal?.is_admin
 }
+
+// useManagesAnyNamespace reports whether the viewer manages at least one namespace — a
+// super-user OR a namespace-admin of ≥1 namespace (B-28 part 2). It is the UI gate for the
+// "Namespace / project management" item (NOT super-user-only). It unions the server-derived
+// manages_any_namespace flag with useIsSuperUser (which also covers the no-lockout
+// empty-store operator). Returns false until /auth/status has loaded.
+export function useManagesAnyNamespace(): boolean {
+  const { data } = useAuthStatus()
+  if (!data) return false
+  return !data.users_exist || !!data.principal?.is_admin || !!data.manages_any_namespace
+}

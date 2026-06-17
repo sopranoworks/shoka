@@ -1,27 +1,44 @@
-// The Settings view's item registry (B-28 stage 3). Settings is an EXTENSIBLE
-// framework: future items (own profile, password change, TOTP/passkey management)
-// are added here. Items are permission-filtered — `superUserOnly` items appear only
-// for a super-user (a wildcard-admin principal). Stage 3 ships the framework + the
-// one super-user-only item, "User management". The Settings view (the gear) itself is
-// always present for every user; only this item list is filtered.
+// The Settings view's item registry (B-28 stage 3, extended in part 2). Settings is an
+// EXTENSIBLE framework: future items (own profile, password change, TOTP/passkey
+// management) are added here. Items are permission-filtered by a visibility predicate over
+// the viewer's auth state. The Settings view (the gear) itself is always present for every
+// user; only this item list is filtered.
+
+// SettingsVisibility is the viewer's auth state the visibility predicates read.
+export interface SettingsVisibility {
+  // isSuperUser: a wildcard-admin principal (admin over all namespaces), or the no-lockout
+  // empty-store single operator.
+  isSuperUser: boolean
+  // managesAnyNamespace: super-user OR a namespace-admin of ≥1 namespace (server-derived,
+  // /auth/status manages_any_namespace) — the predicate the ns/proj-management item uses.
+  managesAnyNamespace: boolean
+}
 
 export interface SettingsItem {
   id: string
   label: string
-  // superUserOnly items appear only for a super-user (admin over all namespaces).
-  // Future self-service items will set this false so every user sees them.
-  superUserOnly: boolean
+  // visible decides whether this item appears for the given viewer.
+  visible: (v: SettingsVisibility) => boolean
 }
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
-  { id: 'users', label: 'User management', superUserOnly: true },
-  // The OAuth/MCP connection management screen — its real home now (it was reachable
-  // only via the command palette before). Super-user-only, like user management; the
-  // OAUTH_* ops are admin-gated server-side (stages 2/4), so this filter is the UI half.
-  { id: 'oauth', label: 'OAuth connections', superUserOnly: true },
+  // User management + OAuth connections are SUPER-USER-ONLY.
+  { id: 'users', label: 'User management', visible: (v) => v.isSuperUser },
+  // The OAuth/MCP connection management screen — its real home now. The OAUTH_* ops are
+  // admin-gated server-side (stages 2/4), so this filter is the UI half.
+  { id: 'oauth', label: 'OAuth connections', visible: (v) => v.isSuperUser },
+  // Namespace / project management (B-28 part 2) — visible to a super-user OR ANY
+  // namespace-admin (NOT super-user-only), the server-derived manages-any-namespace
+  // predicate. The screen's per-op controls are further gated (namespace add/delete =
+  // super-user; project add/delete = admin-on-ns), and the server is authoritative.
+  {
+    id: 'namespaces',
+    label: 'Namespace / project management',
+    visible: (v) => v.isSuperUser || v.managesAnyNamespace,
+  },
 ]
 
-// visibleSettingsItems returns the items the current principal may access.
-export function visibleSettingsItems(isSuperUser: boolean): SettingsItem[] {
-  return SETTINGS_ITEMS.filter((it) => !it.superUserOnly || isSuperUser)
+// visibleSettingsItems returns the items the current viewer may access.
+export function visibleSettingsItems(v: SettingsVisibility): SettingsItem[] {
+  return SETTINGS_ITEMS.filter((it) => it.visible(v))
 }

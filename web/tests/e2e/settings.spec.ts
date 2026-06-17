@@ -145,6 +145,15 @@ test('Settings rail mode: gear present, user-management visible, no tree collaps
   await page.getByRole('link', { name: 'OAuth connections' }).click()
   await expect(page.getByRole('button', { name: 'Refresh connections' })).toBeVisible()
 
+  // The third item — Namespace / project management (B-28 part 2) — is visible to the
+  // super-user admin and renders the managed namespace→projects listing (the real
+  // NAMESPACE_HEALTH path) with the seeded demo/docs project.
+  await page.getByRole('link', { name: 'Namespace / project management' }).click()
+  await expect(page.getByRole('heading', { name: 'Namespace / project management' })).toBeVisible()
+  const demoBlock = page.getByTestId('ns-demo')
+  await expect(demoBlock).toBeVisible()
+  await expect(demoBlock.getByText('docs', { exact: true })).toBeVisible()
+
   // Back to Explorer: the tree did NOT collapse — "intro.md" is still visible
   // (the ProjectTree stayed mounted while hidden in Settings; 74a7c8c intact).
   await page.getByRole('button', { name: 'Explorer' }).click()

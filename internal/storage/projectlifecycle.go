@@ -164,12 +164,12 @@ func (s *FSGitStorage) DeleteProject(ctx context.Context, namespace, projectName
 	return nil
 }
 
-// DeleteNamespace removes an entire namespace: it deletes every project under it (each
-// via DeleteProject — atomic, sibling-safe, with its own cascade cleanup), then
-// cascade-cleans any remaining namespace-wide grants and removes the (now-empty)
-// namespace directory and any residual namespace-level state. super-user-only at the call
-// sites. A mid-fan-out failure leaves a consistent state — the projects deleted so far
-// stay deleted, no sibling is stranded — and the error is returned.
+// DeleteNamespace removes a managed namespace, but ONLY WHEN IT IS EMPTY (B-28 part 2): it
+// refuses a namespace that still holds any project — the operator must delete the projects
+// one at a time first (each its own high-friction confirm). It then cascade-cleans any
+// namespace-wide grants, removes the empty namespace directory, and deregisters it.
+// super-user-only at the call sites; the `default` namespace is delete-protected. ctx is
+// retained for signature symmetry with the project ops (no fan-out runs under it now).
 func (s *FSGitStorage) DeleteNamespace(ctx context.Context, namespace string) error {
 	if namespace == "" {
 		namespace = "default"
@@ -182,17 +182,18 @@ func (s *FSGitStorage) DeleteNamespace(ctx context.Context, namespace string) er
 	if namespace == DefaultNamespace {
 		return fmt.Errorf("the %q namespace cannot be deleted (it is the default entry point)", DefaultNamespace)
 	}
+	// EMPTY-ONLY (B-28 part 2): an irreversible namespace delete must be deliberate, so it
+	// refuses a non-empty namespace — the operator deletes each project one at a time first
+	// (each its own high-friction confirm). This replaces part 1's fan-out mass delete. The
+	// server refusal is the authoritative guard; the UI's disabled control is only UX.
 	projects, err := s.ListProjects(namespace)
 	if err != nil {
 		return fmt.Errorf("list projects for namespace delete: %w", err)
 	}
-	for _, p := range projects {
-		if derr := s.DeleteProject(ctx, namespace, p); derr != nil {
-			return fmt.Errorf("delete project %s/%s during namespace delete: %w", namespace, p, derr)
-		}
+	if len(projects) > 0 {
+		return fmt.Errorf("namespace %s is not empty (%d project(s)); delete its projects first", namespace, len(projects))
 	}
-	// Cascade-clean namespace-wide grants (namespace:<ns> and any residual
-	// namespace:<ns>/*) before removing the directory.
+	// Cascade-clean any namespace-wide grants (namespace:<ns>) before removing the dir.
 	if s.scopeCleaner != nil {
 		if cerr := s.scopeCleaner.PurgeNamespace(namespace); cerr != nil {
 			return fmt.Errorf("cascade-clean namespace grants for %s: %w", namespace, cerr)

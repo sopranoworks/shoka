@@ -1,7 +1,8 @@
 import { useRouterState } from '@tanstack/react-router'
 import { UserManagementPage } from './UserManagementPage'
 import { ConnectionsPage } from './ConnectionsPage'
-import { useIsSuperUser } from '../lib/authStatus'
+import { NamespaceManagementPage } from './NamespaceManagementPage'
+import { useIsSuperUser, useManagesAnyNamespace } from '../lib/authStatus'
 import styles from './SettingsPage.module.css'
 
 // SettingsPage is the right-pane content of the Settings rail mode (B-28 stage 3). It
@@ -12,6 +13,7 @@ import styles from './SettingsPage.module.css'
 export function SettingsPage() {
   const item = useRouterState({ select: (s) => (s.location.search as { item?: string }).item })
   const isSuperUser = useIsSuperUser()
+  const managesAnyNamespace = useManagesAnyNamespace()
 
   if (!item) {
     return (
@@ -44,6 +46,18 @@ export function SettingsPage() {
       )
     }
     return <ConnectionsPage />
+  }
+
+  if (item === 'namespaces') {
+    if (!managesAnyNamespace) {
+      return (
+        <div className={styles.placeholder}>
+          <h1 className={styles.title}>Namespace / project management</h1>
+          <p>You do not have permission to manage namespaces or projects.</p>
+        </div>
+      )
+    }
+    return <NamespaceManagementPage />
   }
 
   return (

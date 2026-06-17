@@ -16,6 +16,9 @@ export interface AuthStatus {
   first_run_allowed: boolean
   passkey_enabled: boolean
   principal?: AuthPrincipal
+  // manages_any_namespace: server-derived (super-user OR namespace-admin of ≥1 namespace),
+  // the B-28 part-2 ns/proj-management Settings item's visibility predicate.
+  manages_any_namespace?: boolean
 }
 
 async function asJSON<T>(res: Response): Promise<T> {

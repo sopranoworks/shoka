@@ -141,37 +141,48 @@ func TestDeleteProject_SiblingSafe(t *testing.T) {
 	}
 }
 
-// #3 — DeleteNamespace fans out over every project and removes the namespace dir.
-func TestDeleteNamespace_Fanout(t *testing.T) {
+// #1 (part 2, RED→GREEN core) — DeleteNamespace is EMPTY-ONLY: it REFUSES a non-empty
+// namespace (no fan-out; projects untouched), succeeds once the projects are deleted one at
+// a time, and keeps `default` delete-protected. RED on part 1's fan-out behaviour.
+func TestDeleteNamespace_EmptyOnly(t *testing.T) {
 	s := newEmptyStorage(t)
 	ctx := context.Background()
 	for _, p := range []string{"p1", "p2", "p3"} {
 		if err := s.CreateProject("ns", p); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Write(ctx, "", "ns", p, "a.md", "x", nil); err != nil {
+	}
+
+	// Non-empty → refused; the projects are NOT deleted.
+	if err := s.DeleteNamespace(ctx, "ns"); err == nil {
+		t.Fatal("DeleteNamespace must REFUSE a non-empty namespace (no fan-out)")
+	}
+	if _, err := os.Stat(filepath.Join(s.baseDir, "ns", "p1")); err != nil {
+		t.Fatalf("a refused namespace delete must leave projects untouched: %v", err)
+	}
+	if nss, _ := s.ListNamespaces(); !contains(nss, "ns") {
+		t.Fatalf("a refused namespace delete must keep the namespace managed: %v", nss)
+	}
+
+	// Delete the projects one at a time, then the (now-empty) namespace succeeds.
+	for _, p := range []string{"p1", "p2", "p3"} {
+		if err := s.DeleteProject(ctx, "ns", p); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s.WaitForWAL(10 * time.Second)
-
 	if err := s.DeleteNamespace(ctx, "ns"); err != nil {
-		t.Fatalf("DeleteNamespace: %v", err)
+		t.Fatalf("DeleteNamespace on an empty namespace must succeed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(s.baseDir, "ns")); !os.IsNotExist(err) {
-		t.Fatalf("namespace dir must be gone: %v", err)
-	}
-	// No stranded sibling catalog/index DBs for any project.
-	for _, p := range []string{"p1", "p2", "p3"} {
-		if _, err := os.Stat(s.catalogPath("ns", p)); !os.IsNotExist(err) {
-			t.Errorf("catalog for ns/%s must be gone", p)
-		}
-		if _, err := os.Stat(s.indexPath("ns", p)); !os.IsNotExist(err) {
-			t.Errorf("index for ns/%s must be gone", p)
-		}
+		t.Fatalf("empty namespace dir must be gone after delete: %v", err)
 	}
 	if nss, _ := s.ListNamespaces(); contains(nss, "ns") {
 		t.Errorf("namespace ns must not be enumerated after delete: %v", nss)
+	}
+
+	// `default` stays delete-protected regardless of emptiness.
+	if err := s.DeleteNamespace(ctx, "default"); err == nil {
+		t.Error("DeleteNamespace(default) must be refused")
 	}
 }
 
@@ -241,6 +252,12 @@ func TestCascadeCleanup_NamespaceDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.CreateProject("foo", "p1"); err != nil {
+		t.Fatal(err)
+	}
+	// Empty-only delete (B-28 part 2): remove the project first, then the namespace. The
+	// per-project DeleteProject cascade-cleans foo/p1 grants; DeleteNamespace cleans the
+	// namespace-wide foo grants.
+	if err := s.DeleteProject(ctx, "foo", "p1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteNamespace(ctx, "foo"); err != nil {
