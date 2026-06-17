@@ -24,6 +24,7 @@
     "@tanstack/react-router": "^1.95.0",
     "@uiw/react-codemirror": "^4.25.10",
     "cmdk": "^1.0.4",
+    "mermaid": "^11.15.0",
     "react": "^19.0.0",
     "react-arborist": "^3.4.0",
     "react-dnd": "^14.0.5",
