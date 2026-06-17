@@ -29,6 +29,21 @@ type ScopeCleaner interface {
 	PurgeProject(ns, proj string) error
 }
 
+// registerManagedProject records proj under namespace in the managed registry, auto-
+// registering the parent namespace if absent (the CreateProject safety-net path, decision
+// 5). It returns an error so CreateProject fails if the project cannot be brought under
+// management — a project on disk but absent from the managed set is exactly the
+// inconsistency the registry exists to prevent.
+func (s *FSGitStorage) registerManagedProject(namespace, projectName string) error {
+	if s.nsReg == nil {
+		return nil
+	}
+	if err := s.nsReg.AddProject(namespace, projectName); err != nil {
+		return fmt.Errorf("register managed project %s/%s: %w", namespace, projectName, err)
+	}
+	return nil
+}
+
 // SetScopeCleaner installs the cascade-cleanup hook DeleteProject/DeleteNamespace call
 // after a delete. Passing nil disables cascade cleanup (the delete then performs only the
 // on-disk removal) — the default for storage built without the auth stores (tests).
@@ -51,8 +66,21 @@ func (s *FSGitStorage) CreateNamespace(namespace string) error {
 	if err := os.MkdirAll(filepath.Join(s.baseDir, namespace), 0o755); err != nil {
 		return fmt.Errorf("failed to create namespace directory: %w", err)
 	}
+	// Register it in the managed set (B-28 stage A) — this, not the bare dir, is what makes
+	// the namespace appear in ListNamespaces. Idempotent.
+	if s.nsReg != nil {
+		if err := s.nsReg.EnsureNamespace(namespace); err != nil {
+			return fmt.Errorf("register managed namespace %s: %w", namespace, err)
+		}
+	}
 	return nil
 }
+
+// DefaultNamespace is the namespace-omitted entry point ("create a project without
+// thinking about namespaces"; every MCP tool defaults `namespace` to it). It is ALWAYS
+// managed (ensured at startup) and is delete-protected — DeleteNamespace refuses it — so
+// the default entry point can never vanish from the managed set.
+const DefaultNamespace = "default"
 
 // DeleteProject permanently removes an entire project — its working tree + git repo AND
 // both sibling derivative DBs (the catalog <proj>.db and the index <proj>.index.db) — and
@@ -73,6 +101,9 @@ func (s *FSGitStorage) CreateNamespace(namespace string) error {
 // removal happens LAST, so such a read either completes against the still-present files or
 // sees not-found. A write in progress IS fenced (refuse-while-locked).
 func (s *FSGitStorage) DeleteProject(ctx context.Context, namespace, projectName string) error {
+	if namespace == "" {
+		namespace = DefaultNamespace
+	}
 	projectPath, err := s.getProjectPath(namespace, projectName) // validates names
 	if err != nil {
 		return err
@@ -120,6 +151,16 @@ func (s *FSGitStorage) DeleteProject(ctx context.Context, namespace, projectName
 		Project:   projectName,
 		Timestamp: time.Now(),
 	})
+	// Deregister the project from the managed set (B-28 stage A). The namespace record
+	// itself stays (a namespace survives the deletion of its last project). Best-effort
+	// after the on-disk removal: the project IS gone, so a registry hiccup must not fail
+	// the delete; stage B's health check reconciles any residual drift.
+	if s.nsReg != nil {
+		if err := s.nsReg.RemoveProject(namespace, projectName); err != nil {
+			s.log().Warn("deregister managed project failed",
+				"namespace", namespace, "project", projectName, "err", err)
+		}
+	}
 	return nil
 }
 
@@ -135,6 +176,11 @@ func (s *FSGitStorage) DeleteNamespace(ctx context.Context, namespace string) er
 	}
 	if !utils.IsValidName(namespace) {
 		return fmt.Errorf("invalid namespace: %s", namespace)
+	}
+	// The `default` namespace is the namespace-omitted entry point and is delete-protected
+	// (decision 3): refuse to remove it so it can never vanish from the managed set.
+	if namespace == DefaultNamespace {
+		return fmt.Errorf("the %q namespace cannot be deleted (it is the default entry point)", DefaultNamespace)
 	}
 	projects, err := s.ListProjects(namespace)
 	if err != nil {
@@ -154,6 +200,13 @@ func (s *FSGitStorage) DeleteNamespace(ctx context.Context, namespace string) er
 	}
 	if rerr := os.RemoveAll(filepath.Join(s.baseDir, namespace)); rerr != nil {
 		return fmt.Errorf("remove namespace dir: %w", rerr)
+	}
+	// Deregister the namespace from the managed set (B-28 stage A). Best-effort after the
+	// on-disk removal (the data is gone; stage B reconciles any residual drift).
+	if s.nsReg != nil {
+		if err := s.nsReg.RemoveNamespace(namespace); err != nil {
+			s.log().Warn("deregister managed namespace failed", "namespace", namespace, "err", err)
+		}
 	}
 	return nil
 }

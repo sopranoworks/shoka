@@ -254,6 +254,10 @@ func TestStore_WALRecoveryOnRestart(t *testing.T) {
 	require.Equal(t, 5, s1.WALPending())
 	s1.locks.Stop()
 	_ = s1.wal.Close()
+	// A real crash is a process exit, which the OS uses to release every file lock the
+	// process held; simulate that for the eagerly-opened namespace registry (a bbolt store)
+	// so the second in-process instance below does not block on s1's still-held lock.
+	_ = s1.nsReg.Close()
 
 	// Second instance over the same base dir: the WAL should drain into git.
 	s2, err := NewFSGitStorageWithOptions(dir, Options{})

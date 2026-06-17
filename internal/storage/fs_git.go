@@ -22,6 +22,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/storage/catalog"
 	"github.com/sopranoworks/shoka/internal/storage/filelock"
 	"github.com/sopranoworks/shoka/internal/storage/index"
+	"github.com/sopranoworks/shoka/internal/storage/nsregistry"
 	"github.com/sopranoworks/shoka/internal/storage/wal"
 	"github.com/sopranoworks/shoka/internal/storage/walworker"
 	"github.com/sopranoworks/shoka/internal/utils"
@@ -158,6 +159,15 @@ type FSGitStorage struct {
 	// then perform only the on-disk removal.
 	scopeCleaner ScopeCleaner
 
+	// nsReg is the managed-namespace registry (B-28 ns/proj-management stage A): the
+	// EXPLICIT set of namespaces Shoka manages + their managed project names, at
+	// <base>/namespaces.db. It is "what should be" — the record that outlives a directory's
+	// disappearance, which ListNamespaces returns (the managed set, NOT every subdir) and
+	// which stage B's health check compares against on-disk/git reality. Storage-owned
+	// (opened here, not injected like userstore/oauthstore) because ListNamespaces /
+	// CreateNamespace / DeleteNamespace / Create-/DeleteProject all maintain it.
+	nsReg *nsregistry.Registry
+
 	// identityDefaults is the configured single-user identity + agent fallback
 	// used to author commits (the 2026-06-01 identity-config directive). The
 	// per-request agent declaration arrives on the write's context; this is the
@@ -289,6 +299,15 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		return nil, fmt.Errorf("failed to open WAL: %w", err)
 	}
 
+	// Managed-namespace registry (stage A): a storage-owned sibling bbolt store at
+	// <base>/namespaces.db. Opened here so ListNamespaces/Create/Delete can consult the
+	// MANAGED set from the moment storage exists; the one-time rescue-adopt + the always-
+	// managed `default` are seeded in StartupInit (which captures registry-emptiness first).
+	nsReg, err := nsregistry.Open(filepath.Join(absBaseDir, "namespaces.db"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open namespace registry: %w", err)
+	}
+
 	maxWAL := opts.WALMaxEntries
 	if maxWAL <= 0 {
 		maxWAL = 1000
@@ -304,6 +323,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		indexes:          make(map[string]*index.Index),
 		fixLinksKicks:    make(chan fixLinksKick, fixLinksKickBuffer),
 		notify:           opts.NotifyCenter,
+		nsReg:            nsReg,
 		identityDefaults: withIdentityFallback(opts.Identity),
 	}
 	s.pool = walworker.NewPool(w, s.commitEntry, s.quarantineEntry, opts.WALWorker)
@@ -363,6 +383,11 @@ func (s *FSGitStorage) Close() error {
 		delete(s.indexes, key)
 	}
 	s.idxMu.Unlock()
+	if s.nsReg != nil {
+		if err := s.nsReg.Close(); err != nil {
+			s.log().Warn("namespace registry close failed", "err", err)
+		}
+	}
 	return nil
 }
 
@@ -412,6 +437,12 @@ func (s *FSGitStorage) CreateProject(namespace, projectName string) error {
 // sender-exclusion directive). A context with no sender (the CreateProject
 // wrapper) dispatches to all subscribers, preserving prior behaviour.
 func (s *FSGitStorage) CreateProjectCtx(ctx context.Context, namespace, projectName string) error {
+	// Normalize the namespace-omitted entry point to the default namespace up front, so the
+	// path, catalog, managed registry, and notification all agree on "default" (the registry
+	// key must be non-empty; getProjectPath already normalizes the path the same way).
+	if namespace == "" {
+		namespace = DefaultNamespace
+	}
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return err
@@ -422,7 +453,10 @@ func (s *FSGitStorage) CreateProjectCtx(ctx context.Context, namespace, projectN
 	_, err = git.PlainInit(projectPath, false)
 	if err != nil {
 		if err == git.ErrRepositoryAlreadyExists {
-			return nil
+			// Re-creating an existing project is not a user-visible mutation, but the
+			// managed record must still be consistent (B-28 stage A): ensure the project
+			// (and its parent namespace) are registered as managed even on this path.
+			return s.registerManagedProject(namespace, projectName)
 		}
 		return fmt.Errorf("failed to initialize git repository: %w", err)
 	}
@@ -435,6 +469,14 @@ func (s *FSGitStorage) CreateProjectCtx(ctx context.Context, namespace, projectN
 		s.log().Error("catalog create failed for new project",
 			"namespace", namespace, "project", projectName, "err", cerr)
 		return fmt.Errorf("create catalog: %w", cerr)
+	}
+	// Managed registry (B-28 stage A): record the project under its namespace, auto-
+	// registering the parent namespace if absent (decision 5 — the safety-net path; the
+	// primary route is explicit CreateNamespace via the management UI). Like the catalog
+	// above this is part of bringing the project under management, so a failure fails the
+	// create (the project would otherwise exist on disk but not in the managed set).
+	if rerr := s.registerManagedProject(namespace, projectName); rerr != nil {
+		return rerr
 	}
 	// Notification center: a genuine new project was created. The early
 	// ErrRepositoryAlreadyExists return above is intentionally NOT published —

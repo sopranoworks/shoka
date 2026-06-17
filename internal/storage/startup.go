@@ -119,6 +119,12 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 	s.WaitForWAL(2 * time.Minute)
 
 	projects, leftovers := s.discoverProjects()
+
+	// Managed-namespace registry (B-28 stage A): the one-time rescue-adopt (only when the
+	// registry has no managed info yet) + the always-managed `default`. Done before the
+	// per-project init so the managed set is established for the rest of startup.
+	s.reconcileManagedRegistry(projects)
+
 	var wg sync.WaitGroup
 	for _, p := range projects {
 		wg.Add(1)
@@ -204,6 +210,44 @@ func (s *FSGitStorage) relocateLeftovers(leftovers []leftover, now time.Time) {
 			"namespace", lf.namespace, "project", lf.name,
 			"tree", lf.treePath, "db", lf.dbPath, "dest", dest)
 		s.notifyQuarantined(lf.namespace, lf.name, lf.name)
+	}
+}
+
+// reconcileManagedRegistry seeds the managed-namespace registry at startup. The one-time
+// RESCUE-ADOPT runs ONLY when the registry is empty (no managed info yet — a deployment
+// upgrading into the managed model, where real namespaces/projects exist on disk under the
+// old "dir exists" model): every discovered .git project + its namespace is adopted as
+// managed, so nothing real is stranded. It is idempotent — once the registry is non-empty
+// it never re-runs (a later valid untracked dir is stage B's operator-driven manual adopt,
+// not an automatic absorption). The adopt predicate is exactly discovery's: a dir is an
+// adoptable project iff it has a .git repo (projects here are already classified entryProject
+// by discoverProjects); repo-less leftovers and empty dirs are NOT adopted. The `default`
+// namespace is then always ensured present (decision 3).
+func (s *FSGitStorage) reconcileManagedRegistry(projects []projectRef) {
+	if s.nsReg == nil {
+		return
+	}
+	wasEmpty, err := s.nsReg.IsEmpty()
+	if err != nil {
+		s.log().Error("managed registry: emptiness check failed", "err", err)
+	} else if wasEmpty {
+		nsSet := make(map[string]bool)
+		adopted := 0
+		for _, p := range projects {
+			if aerr := s.nsReg.AddProject(p.namespace, p.name); aerr != nil {
+				s.log().Warn("managed registry: rescue-adopt failed",
+					"namespace", p.namespace, "project", p.name, "err", aerr)
+				continue
+			}
+			nsSet[p.namespace] = true
+			adopted++
+		}
+		s.log().Info("managed registry: one-time rescue-adopt complete",
+			"namespaces", len(nsSet), "projects", adopted)
+	}
+	// `default` is always managed (the namespace-omitted entry point), on every startup.
+	if eerr := s.nsReg.EnsureNamespace(DefaultNamespace); eerr != nil {
+		s.log().Error("managed registry: ensure default namespace failed", "err", eerr)
 	}
 }
 
