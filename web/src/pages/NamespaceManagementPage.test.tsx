@@ -6,7 +6,7 @@ import type { ReactNode } from 'react'
 import { ToastProvider } from '../lib/toast'
 
 // Mock the ws ops + the super-user hook (vi.hoisted so the mock factory can reference them).
-const { namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, moveProject, namespaceRecover, isSuperUser } =
+const { namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, moveProject, renameProject, renameNamespace, namespaceRecover, isSuperUser } =
   vi.hoisted(() => ({
     namespaceHealth: vi.fn(),
     createNamespace: vi.fn(),
@@ -14,12 +14,14 @@ const { namespaceHealth, createNamespace, deleteNamespace, createProject, delete
     createProject: vi.fn(),
     deleteProject: vi.fn(),
     moveProject: vi.fn(),
+    renameProject: vi.fn(),
+    renameNamespace: vi.fn(),
     namespaceRecover: vi.fn(),
     isSuperUser: vi.fn(),
   }))
 vi.mock('../lib/nsManageOps', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/nsManageOps')>()
-  return { ...actual, namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, moveProject, namespaceRecover }
+  return { ...actual, namespaceHealth, createNamespace, deleteNamespace, createProject, deleteProject, moveProject, renameProject, renameNamespace, namespaceRecover }
 })
 vi.mock('../lib/authStatus', () => ({ useIsSuperUser: isSuperUser }))
 
@@ -39,6 +41,9 @@ const report: HealthReport = {
       ],
     },
     { name: 'empty', present: true, healthy: true, projects: [] },
+    // `default` is rename-protected: it must show NO namespace rename affordance, but a
+    // project inside it renames normally.
+    { name: 'default', present: true, healthy: true, projects: [{ name: 'home', state: 'healthy' }] },
   ],
   foreign_namespaces: [{ name: 'stray', adoptable: true }],
 }
@@ -62,6 +67,8 @@ describe('NamespaceManagementPage', () => {
     createProject.mockReset()
     deleteProject.mockReset()
     moveProject.mockReset()
+    renameProject.mockReset()
+    renameNamespace.mockReset()
     namespaceRecover.mockReset()
     isSuperUser.mockReset()
     namespaceHealth.mockResolvedValue(report)
@@ -191,5 +198,78 @@ describe('NamespaceManagementPage', () => {
     const foo = await screen.findByTestId('ns-foo')
     const moveSlot = within(foo).getByTestId('move-slot-foo-alpha')
     expect(within(moveSlot).queryByRole('button', { name: 'Move…' })).toBeNull()
+  })
+
+  // #9 (rename UI DISTINCT from move AND delete) — the project Rename control lives in its
+  // own slot, opens a LOW-FRICTION edit-the-name dialog (NOT a type-to-destroy dialog, NOT a
+  // pick-target dropdown), keeps Confirm disabled until the name is valid, changed, and
+  // non-empty, and calls renameProject.
+  it('project rename opens an edit-the-name dialog distinct from move and delete', async () => {
+    const user = userEvent.setup()
+    renameProject.mockResolvedValue({ status: 'ok' })
+    renderPage(true)
+    const foo = await screen.findByTestId('ns-foo')
+    const alphaRow = within(foo).getByTestId('proj-foo-alpha')
+
+    // The Rename control is in its own dedicated slot, separate from the move slot and Delete.
+    const renameSlot = within(alphaRow).getByTestId('rename-slot-foo-alpha')
+    const renameBtn = within(renameSlot).getByRole('button', { name: 'Rename…' })
+    const moveSlot = within(alphaRow).getByTestId('move-slot-foo-alpha')
+    expect(renameSlot.contains(moveSlot)).toBe(false)
+
+    await user.click(renameBtn)
+    const dialog = screen.getByRole('dialog', { name: /rename project alpha/i })
+    // NOT a type-to-destroy dialog, NOT a pick-target dropdown.
+    expect(within(dialog).queryByLabelText('confirm name')).toBeNull()
+    expect(within(dialog).queryByLabelText('target namespace')).toBeNull()
+
+    const input = within(dialog).getByLabelText('New project name')
+    const confirm = within(dialog).getByRole('button', { name: 'Rename' })
+    // Pre-filled with the current name ⇒ unchanged ⇒ Confirm disabled.
+    expect(input).toHaveValue('alpha')
+    expect(confirm).toBeDisabled()
+    // An invalid name keeps it disabled.
+    await user.clear(input)
+    await user.type(input, 'bad/name')
+    expect(confirm).toBeDisabled()
+    // A valid, changed name enables it.
+    await user.clear(input)
+    await user.type(input, 'alpha2')
+    expect(confirm).toBeEnabled()
+    await user.click(confirm)
+    await waitFor(() => expect(renameProject).toHaveBeenCalledWith('foo', 'alpha', 'alpha2'))
+  })
+
+  // #9 — namespace rename is super-user only and absent for the protected `default` namespace.
+  it('namespace rename: super-user only, and never for default', async () => {
+    const user = userEvent.setup()
+    renameNamespace.mockResolvedValue({ status: 'ok' })
+    renderPage(true)
+    await screen.findByTestId('ns-foo')
+
+    // `default` shows NO namespace rename affordance.
+    expect(screen.queryByTestId('ns-rename-default')).toBeNull()
+    // …but a project INSIDE default still renames (admin-on-ns).
+    const def = screen.getByTestId('ns-default')
+    expect(within(def).getByTestId('rename-slot-default-home')).toBeInTheDocument()
+
+    // A normal namespace exposes Rename… for a super-user; it opens the edit-the-name dialog.
+    const fooRename = screen.getByTestId('ns-rename-foo')
+    await user.click(fooRename)
+    const dialog = screen.getByRole('dialog', { name: /rename namespace foo/i })
+    await user.clear(within(dialog).getByLabelText('New namespace name'))
+    await user.type(within(dialog).getByLabelText('New namespace name'), 'foo2')
+    await user.click(within(dialog).getByRole('button', { name: 'Rename' }))
+    await waitFor(() => expect(renameNamespace).toHaveBeenCalledWith('foo', 'foo2'))
+  })
+
+  it('namespace rename control is hidden from a non-super-user; project rename is shown', async () => {
+    renderPage(false) // a namespace-admin
+    const foo = await screen.findByTestId('ns-foo')
+    // No namespace-level rename control for a non-super-user.
+    expect(screen.queryByTestId('ns-rename-foo')).toBeNull()
+    // Project rename IS available (admin-on-ns — every listed namespace is administerable).
+    const alphaRow = within(foo).getByTestId('proj-foo-alpha')
+    expect(within(alphaRow).getByRole('button', { name: 'Rename…' })).toBeInTheDocument()
   })
 })

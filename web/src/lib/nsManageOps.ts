@@ -74,6 +74,24 @@ export function moveProject(
   return wsClient().request('MOVE_PROJECT', { namespace, projectName, newNamespace })
 }
 
+// Rename a project within its namespace (B-28 ns/proj rename) — admin on the namespace. The
+// server refuses a name collision. Distinct from move (which changes the namespace) and
+// delete (which destroys).
+export function renameProject(
+  namespace: string,
+  projectName: string,
+  newProjectName: string,
+): Promise<{ status: string }> {
+  return wsClient().request('RENAME_PROJECT', { namespace, projectName, newProjectName })
+}
+
+// Rename (relabel) a whole namespace (B-28 ns/proj rename) — super-user only. Carries every
+// project + re-homes every grant. Allowed even when non-empty (a relabel, not a delete); the
+// server refuses a collision and refuses renaming the `default` namespace.
+export function renameNamespace(namespace: string, newNamespace: string): Promise<{ status: string }> {
+  return wsClient().request('RENAME_NAMESPACE', { namespace, newNamespace })
+}
+
 // The stage-B per-divergence recovery actions. Whole-namespace actions (empty projectName)
 // are super-user only; project-level actions need admin on the namespace.
 export type RecoverAction = 'drop_missing' | 'clean_orphaned' | 'adopt'

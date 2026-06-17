@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sopranoworks/shoka/internal/storage/nsregistry"
 	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
 	"github.com/sopranoworks/shoka/internal/storage/userstore"
 )
@@ -157,7 +158,9 @@ func TestMoveProject_AutoRecovery_ForwardOnRestart(t *testing.T) {
 	}
 	// Simulate a crash mid-move: journal at dir_moved, the dir already renamed to dst, but
 	// the registry NOT yet swapped (src still lists it) and the .dbs still at src.
-	s1.setMoveJournal("src", "proj", "dst", movePhaseDirMoved)
+	s1.setOpJournal(nsregistry.OpJournal{
+		Op: opMove, OldNamespace: "src", OldProject: "proj", NewNamespace: "dst", NewProject: "proj", Project: "proj", Phase: movePhaseDirMoved,
+	})
 	s1.evictProjectHandles("src", "proj")
 	if rerr := os.Rename(filepath.Join(dir, "src", "proj"), filepath.Join(dir, "dst", "proj")); rerr != nil {
 		t.Fatal(rerr)
@@ -180,7 +183,7 @@ func TestMoveProject_AutoRecovery_ForwardOnRestart(t *testing.T) {
 	if has, _ := s2.nsReg.HasProject("src", "proj"); has {
 		t.Error("auto-recovery must remove the project from src")
 	}
-	if _, found, _ := s2.nsReg.GetMoveJournal(); found {
+	if _, found, _ := s2.nsReg.GetOpJournal(); found {
 		t.Error("auto-recovery must clear the move journal")
 	}
 	if _, err := os.Stat(s2.catalogPath("dst", "proj")); err != nil {
@@ -195,11 +198,13 @@ func TestMoveProject_AutoRecovery_RollbackBeforeRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Simulate a crash BEFORE the rename: journal at started, dir still at src.
-	s.setMoveJournal("src", "proj", "dst", movePhaseStarted)
+	s.setOpJournal(nsregistry.OpJournal{
+		Op: opMove, OldNamespace: "src", OldProject: "proj", NewNamespace: "dst", NewProject: "proj", Project: "proj", Phase: movePhaseStarted,
+	})
 
-	s.recoverInterruptedMove()
+	s.recoverInterruptedOp()
 
-	if _, found, _ := s.nsReg.GetMoveJournal(); found {
+	if _, found, _ := s.nsReg.GetOpJournal(); found {
 		t.Error("rollback must clear the journal")
 	}
 	if has, _ := s.nsReg.HasProject("src", "proj"); !has {

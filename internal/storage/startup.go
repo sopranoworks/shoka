@@ -118,10 +118,10 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 	// pending-but-uncommitted write. See the completion report.)
 	s.WaitForWAL(2 * time.Minute)
 
-	// Auto-recover an interrupted project move (B-28 project move) BEFORE discovery/rescue:
-	// resume forward or roll back the journaled move so the managed set + on-disk state are
-	// consistent before anything else reads them — no operator action (decision 5).
-	s.recoverInterruptedMove()
+	// Auto-recover an interrupted SPECIAL op — move or ns/proj rename (B-28) — BEFORE
+	// discovery/rescue: resume forward or roll back the journaled op so the managed set +
+	// on-disk state are consistent before anything else reads them — no operator action.
+	s.recoverInterruptedOp()
 
 	projects, leftovers := s.discoverProjects()
 

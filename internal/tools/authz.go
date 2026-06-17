@@ -112,6 +112,11 @@ var toolLevels = map[string]authz.Level{
 	// project move = admin on the target (the gate floor); the handler tightens to
 	// super-user (admin-on-both is the designed-for future relaxation).
 	"move_project": authz.LevelAdmin,
+	// B-28 ns/proj rename: rename_project = admin on the namespace (the project stays in its
+	// namespace — looser than move, no handler super-user tighten); rename_namespace = admin
+	// gate floor, the handler tightens to super-user (it relabels the whole namespace).
+	"rename_project":   authz.LevelAdmin,
+	"rename_namespace": authz.LevelAdmin,
 }
 
 // toolLevel returns the required level for a tool, defaulting to admin (fail-closed)

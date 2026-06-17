@@ -27,10 +27,15 @@ type ScopeCleaner interface {
 	// PurgeProject removes every grant referencing the specific project ns/proj from
 	// every persisted scope (namespace-wide and wildcard grants are left intact).
 	PurgeProject(ns, proj string) error
-	// RewriteProject re-homes every grant referencing project oldNs/proj to newNs/proj
-	// across every persisted scope (the project-move mirror of PurgeProject; namespace-wide
-	// and wildcard grants are left intact).
-	RewriteProject(oldNs, proj, newNs string) error
+	// RewriteProject re-homes every grant referencing project oldNs/oldProj to newNs/newProj
+	// across every persisted scope — serving BOTH a project move (oldProj==newProj, ns
+	// changes) and a project rename (oldNs==newNs, proj changes). Namespace-wide and wildcard
+	// grants are left intact.
+	RewriteProject(oldNs, oldProj, newNs, newProj string) error
+	// RewriteNamespace re-homes every grant referencing namespace old to new — BOTH the
+	// namespace-wide grant AND every project-specific grant under it — across every persisted
+	// scope (the namespace-rename mirror of PurgeNamespace; wildcard grants left intact).
+	RewriteNamespace(old, new string) error
 }
 
 // registerManagedProject records proj under namespace in the managed registry, auto-

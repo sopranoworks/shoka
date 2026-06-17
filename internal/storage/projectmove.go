@@ -20,11 +20,19 @@ import (
 // via os.Rename — no rebuild; git history travels with the self-contained project dir; both
 // namespaces are under base_dir (same fs ⇒ atomic rename).
 
-// Move-journal phases (the journal also records old/proj/new). Recovery is driven primarily
-// by ON-DISK reality (where the project dir actually is); the phase is a logged hint.
+// Op-journal phases (the journal also records the op + old/new ns/proj). Recovery is driven
+// primarily by ON-DISK reality (where the dir actually is); the phase is a logged hint.
 const (
 	movePhaseStarted  = "started"   // journal written; the dir rename has not completed
 	movePhaseDirMoved = "dir_moved" // the dir rename completed; the registry/grant swap may not have
+)
+
+// Op-journal op kinds (B-28 ns/proj rename generalised the move-journal into one op-journal).
+// A legacy move-journal decodes with Op=="" — recovery treats that as opMove.
+const (
+	opMove            = "move"
+	opRenameProject   = "rename_project"
+	opRenameNamespace = "rename_namespace"
 )
 
 func (s *FSGitStorage) markMoving(namespace, projectName string) {
@@ -101,7 +109,10 @@ func (s *FSGitStorage) MoveProject(ctx context.Context, oldNs, projectName, newN
 	defer s.unmarkMoving(newNs, projectName)
 
 	// Journal the intent so an interruption is auto-recovered at startup.
-	s.setMoveJournal(oldNs, projectName, newNs, movePhaseStarted)
+	s.setOpJournal(nsregistry.OpJournal{
+		Op: opMove, OldNamespace: oldNs, OldProject: projectName,
+		NewNamespace: newNs, NewProject: projectName, Project: projectName, Phase: movePhaseStarted,
+	})
 
 	// Evict the in-memory handles so the .db siblings can be renamed with no open handle.
 	s.evictProjectHandles(oldNs, projectName)
@@ -109,10 +120,13 @@ func (s *FSGitStorage) MoveProject(ctx context.Context, oldNs, projectName, newN
 	// The atomic pivot: rename the project dir (git history travels). On failure nothing
 	// has moved — clear the journal and abort.
 	if rerr := os.Rename(oldDir, newDir); rerr != nil {
-		s.clearMoveJournal()
+		s.clearOpJournal()
 		return fmt.Errorf("move: rename project dir %s/%s → %s/%s: %w", oldNs, projectName, newNs, projectName, rerr)
 	}
-	s.setMoveJournal(oldNs, projectName, newNs, movePhaseDirMoved)
+	s.setOpJournal(nsregistry.OpJournal{
+		Op: opMove, OldNamespace: oldNs, OldProject: projectName,
+		NewNamespace: newNs, NewProject: projectName, Project: projectName, Phase: movePhaseDirMoved,
+	})
 
 	// Complete the (idempotent) remainder: relocate the .db siblings, swap the registry,
 	// rewrite grants, emit the event. On failure the journal stays so StartupInit finishes
@@ -120,7 +134,7 @@ func (s *FSGitStorage) MoveProject(ctx context.Context, oldNs, projectName, newN
 	if cerr := s.completeMoveAfterRename(ctx, oldNs, projectName, newNs); cerr != nil {
 		return fmt.Errorf("move: complete %s/%s → %s/%s: %w", oldNs, projectName, newNs, projectName, cerr)
 	}
-	s.clearMoveJournal()
+	s.clearOpJournal()
 	return nil
 }
 
@@ -139,7 +153,7 @@ func (s *FSGitStorage) completeMoveAfterRename(ctx context.Context, oldNs, proje
 		}
 	}
 	if s.scopeCleaner != nil {
-		if err := s.scopeCleaner.RewriteProject(oldNs, projectName, newNs); err != nil {
+		if err := s.scopeCleaner.RewriteProject(oldNs, projectName, newNs, projectName); err != nil {
 			return fmt.Errorf("grant rewrite: %w", err)
 		}
 	}
@@ -175,99 +189,132 @@ func (s *FSGitStorage) relocateSiblingDB(oldPath, newPath string) {
 	}
 }
 
-// --- move journal helpers (best-effort; failures are logged, never fatal) ---
+// --- op journal helpers (best-effort; failures are logged, never fatal) ---
 
-func (s *FSGitStorage) setMoveJournal(oldNs, projectName, newNs, phase string) {
+func (s *FSGitStorage) setOpJournal(j nsregistry.OpJournal) {
 	if s.nsReg == nil {
 		return
 	}
-	if err := s.nsReg.SetMoveJournal(nsregistry.MoveJournal{
-		OldNamespace: oldNs, Project: projectName, NewNamespace: newNs, Phase: phase,
-	}); err != nil {
-		s.log().Warn("move: write journal failed", "err", err)
+	if err := s.nsReg.SetOpJournal(j); err != nil {
+		s.log().Warn("op: write journal failed", "err", err)
 	}
 }
 
-func (s *FSGitStorage) clearMoveJournal() {
+func (s *FSGitStorage) clearOpJournal() {
 	if s.nsReg == nil {
 		return
 	}
-	if err := s.nsReg.ClearMoveJournal(); err != nil {
-		s.log().Warn("move: clear journal failed", "err", err)
+	if err := s.nsReg.ClearOpJournal(); err != nil {
+		s.log().Warn("op: clear journal failed", "err", err)
 	}
 }
 
-// recoverInterruptedMove is called at StartupInit BEFORE discovery/rescue: if a move was in
-// progress (a journal entry survives), it AUTOMATICALLY resumes or rolls back to a
-// consistent state with NO operator action (decision 5). Recovery is driven by ON-DISK
-// reality (where the project dir actually is), since os.Rename is atomic but the phase
-// marker may lag a crash:
-//   - dir already at NEW (rename done) → finish forward (idempotent complete).
-//   - dir still at OLD (rename not done) → roll back (clear; ensure registry/grants at old).
+// recoverInterruptedOp is called at StartupInit BEFORE discovery/rescue: if a SPECIAL op
+// (move / rename_project / rename_namespace) was in progress (a journal entry survives), it
+// AUTOMATICALLY resumes or rolls back to a consistent state with NO operator action. Recovery
+// is driven by ON-DISK reality (where the dir actually is), since os.Rename is atomic but the
+// phase marker may lag a crash. A legacy move-journal decodes with Op=="" → treated as a move.
+//
+//   - move / rename_project (the dir is a project dir): probe hasGitRepo at the new vs old
+//     project path. New side has the repo → finish forward (idempotent); old side → roll back.
+//   - rename_namespace (the dir is the whole namespace dir, moved atomically): probe directory
+//     existence at <base>/<new> vs <base>/<old>. New exists → finish forward; old → roll back.
 //   - neither/both → inconsistent: log and clear, leaving stage-B health as the last resort.
-func (s *FSGitStorage) recoverInterruptedMove() {
+func (s *FSGitStorage) recoverInterruptedOp() {
 	if s.nsReg == nil {
 		return
 	}
-	j, found, err := s.nsReg.GetMoveJournal()
+	j, found, err := s.nsReg.GetOpJournal()
 	if err != nil {
-		s.log().Error("move recovery: read journal failed", "err", err)
+		s.log().Error("op recovery: read journal failed", "err", err)
 		return
 	}
 	if !found {
 		return
 	}
-	oldDir := filepath.Join(s.baseDir, j.OldNamespace, j.Project)
-	newDir := filepath.Join(s.baseDir, j.NewNamespace, j.Project)
-	newHasGit := hasGitRepo(newDir)
-	oldHasGit := hasGitRepo(oldDir)
-
-	switch {
-	case newHasGit && !oldHasGit:
-		// The dir rename completed; finish the move forward (idempotent).
-		if cerr := s.completeMoveAfterRename(context.Background(), j.OldNamespace, j.Project, j.NewNamespace); cerr != nil {
-			s.log().Error("move recovery: forward-complete failed; left for health",
-				"old", j.OldNamespace+"/"+j.Project, "new", j.NewNamespace+"/"+j.Project, "err", cerr)
-			return // keep the journal so a later restart retries
-		}
-		s.log().Info("move recovery: interrupted move auto-completed",
-			"old", j.OldNamespace+"/"+j.Project, "new", j.NewNamespace+"/"+j.Project, "phase", j.Phase)
-	case oldHasGit && !newHasGit:
-		// The dir rename never completed; roll back to the source. The registry swap and
-		// grant rewrite happen AFTER the rename, so they had not run — defensively ensure
-		// the project is registered at old and not at new, and remove any stray new .db's.
-		s.rollbackMove(j)
-		s.log().Info("move recovery: interrupted move auto-rolled-back to source",
-			"old", j.OldNamespace+"/"+j.Project, "new", j.NewNamespace+"/"+j.Project, "phase", j.Phase)
-	default:
-		s.log().Error("move recovery: inconsistent on-disk state; clearing journal, leaving to health",
-			"old", j.OldNamespace+"/"+j.Project, "new", j.NewNamespace+"/"+j.Project,
-			"oldHasGit", oldHasGit, "newHasGit", newHasGit)
+	op := j.Op
+	if op == "" {
+		op = opMove // legacy move-journal
 	}
-	s.clearMoveJournal()
+
+	switch op {
+	case opRenameNamespace:
+		if !s.recoverNamespaceRename(j) {
+			return // forward-complete failed; keep the journal so a later restart retries
+		}
+	default: // opMove, opRenameProject — both relocate a project dir
+		oldProj := j.OldProject
+		if oldProj == "" {
+			oldProj = j.Project
+		}
+		newProj := j.NewProject
+		if newProj == "" {
+			newProj = j.Project
+		}
+		oldDir := filepath.Join(s.baseDir, j.OldNamespace, oldProj)
+		newDir := filepath.Join(s.baseDir, j.NewNamespace, newProj)
+		newHasGit := hasGitRepo(newDir)
+		oldHasGit := hasGitRepo(oldDir)
+		oldKey := j.OldNamespace + "/" + oldProj
+		newKey := j.NewNamespace + "/" + newProj
+		switch {
+		case newHasGit && !oldHasGit:
+			var cerr error
+			if op == opRenameProject {
+				cerr = s.completeRenameProject(context.Background(), j.OldNamespace, oldProj, newProj)
+			} else {
+				cerr = s.completeMoveAfterRename(context.Background(), j.OldNamespace, oldProj, j.NewNamespace)
+			}
+			if cerr != nil {
+				s.log().Error("op recovery: forward-complete failed; left for health",
+					"op", op, "old", oldKey, "new", newKey, "err", cerr)
+				return // keep the journal so a later restart retries
+			}
+			s.log().Info("op recovery: interrupted op auto-completed", "op", op, "old", oldKey, "new", newKey, "phase", j.Phase)
+		case oldHasGit && !newHasGit:
+			s.rollbackProjectDirOp(op, j.OldNamespace, oldProj, j.NewNamespace, newProj)
+			s.log().Info("op recovery: interrupted op auto-rolled-back to source", "op", op, "old", oldKey, "new", newKey, "phase", j.Phase)
+		default:
+			s.log().Error("op recovery: inconsistent on-disk state; clearing journal, leaving to health",
+				"op", op, "old", oldKey, "new", newKey, "oldHasGit", oldHasGit, "newHasGit", newHasGit)
+		}
+	}
+	s.clearOpJournal()
 }
 
-// rollbackMove restores the managed record to the source after a pre-rename interruption and
-// removes any stray target-side .db siblings. Best-effort; logged.
-func (s *FSGitStorage) rollbackMove(j nsregistry.MoveJournal) {
+// rollbackProjectDirOp restores the managed record/grants to the source after a pre-rename
+// interruption of a move or project-rename, and removes any stray target-side .db siblings.
+// Best-effort; logged. (The registry swap + grant rewrite run AFTER the dir rename, so a
+// pre-rename crash means they had not run — these calls are defensive no-ops in the common case.)
+func (s *FSGitStorage) rollbackProjectDirOp(op, oldNs, oldProj, newNs, newProj string) {
 	if s.nsReg != nil {
-		// If the registry somehow already swapped (shouldn't, pre-rename), move it back;
-		// otherwise ensure the source still lists it.
-		if has, _ := s.nsReg.HasProject(j.NewNamespace, j.Project); has {
-			if err := s.nsReg.MoveProject(j.NewNamespace, j.Project, j.OldNamespace); err != nil {
-				s.log().Warn("move rollback: registry restore failed", "err", err)
+		if op == opRenameProject {
+			if has, _ := s.nsReg.HasProject(oldNs, newProj); has {
+				if err := s.nsReg.RenameProject(oldNs, newProj, oldProj); err != nil {
+					s.log().Warn("rename rollback: registry restore failed", "err", err)
+				}
 			}
-		} else if err := s.nsReg.AddProject(j.OldNamespace, j.Project); err != nil {
-			s.log().Warn("move rollback: re-add to source failed", "err", err)
+		} else { // move
+			if has, _ := s.nsReg.HasProject(newNs, newProj); has {
+				if err := s.nsReg.MoveProject(newNs, newProj, oldNs); err != nil {
+					s.log().Warn("move rollback: registry restore failed", "err", err)
+				}
+			} else if err := s.nsReg.AddProject(oldNs, oldProj); err != nil {
+				s.log().Warn("move rollback: re-add to source failed", "err", err)
+			}
 		}
 	}
 	if s.scopeCleaner != nil {
 		// No-op if no grants were rewritten (they are rewritten only after the rename).
-		_ = s.scopeCleaner.RewriteProject(j.NewNamespace, j.Project, j.OldNamespace)
+		if op == opRenameProject {
+			_ = s.scopeCleaner.RewriteProject(oldNs, newProj, oldNs, oldProj)
+		} else {
+			_ = s.scopeCleaner.RewriteProject(newNs, newProj, oldNs, oldProj)
+		}
 	}
-	for _, p := range []string{s.catalogPath(j.NewNamespace, j.Project), s.indexPath(j.NewNamespace, j.Project)} {
+	for _, p := range []string{s.catalogPath(newNs, newProj), s.indexPath(newNs, newProj)} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			s.log().Warn("move rollback: remove stray target db failed", "path", p, "err", err)
+			s.log().Warn("op rollback: remove stray target db failed", "path", p, "err", err)
 		}
 	}
 }

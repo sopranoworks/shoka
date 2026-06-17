@@ -78,6 +78,74 @@ func TestMoveProject_SuperUserOnly(t *testing.T) {
 	}
 }
 
+// #7 (MCP, project RENAME = admin on the namespace). rename_project is enforced by the
+// AuthzMiddleware via toolLevels (admin-on-ns, NOT super-user — the project stays in its
+// namespace), so the gate is the assertion. Mirrors create/delete_project.
+func TestRenameProject_AuthzOnTargetNamespace(t *testing.T) {
+	args := `{"namespace":"foo","project_name":"x","new_project_name":"y"}`
+	// super-user → allowed.
+	if reached, _ := runGate(t, "*", "rename_project", args); !reached {
+		t.Error("rename_project: super-user must be allowed")
+	}
+	// admin on foo → allowed on foo.
+	if reached, _ := runGate(t, "namespace:foo:admin", "rename_project", args); !reached {
+		t.Error("rename_project: namespace:foo:admin must be allowed on foo")
+	}
+	// admin on bar → DENIED on foo.
+	if reached, res := runGate(t, "namespace:bar:admin", "rename_project", args); reached || !isError(res) {
+		t.Error("rename_project: admin on bar must be DENIED on foo")
+	}
+	// write on foo → DENIED (needs admin).
+	if reached, res := runGate(t, "namespace:foo:rw", "rename_project", args); reached || !isError(res) {
+		t.Error("rename_project: write-only on foo must be DENIED (admin required)")
+	}
+	// read on foo → DENIED.
+	if reached, res := runGate(t, "namespace:foo:r", "rename_project", args); reached || !isError(res) {
+		t.Error("rename_project: read-only on foo must be DENIED")
+	}
+}
+
+// fakeNamespaceRenamer records whether the underlying rename ran.
+type fakeNamespaceRenamer struct {
+	renamed bool
+	args    [2]string
+}
+
+func (f *fakeNamespaceRenamer) RenameNamespace(_ context.Context, oldName, newName string) error {
+	f.renamed = true
+	f.args = [2]string{oldName, newName}
+	return nil
+}
+
+// #7 (MCP, namespace RENAME = SUPER-USER only). The handler's requireSuperUser is
+// authoritative: a namespace-admin is refused and the op never runs; a super-user succeeds.
+func TestRenameNamespace_SuperUserOnly(t *testing.T) {
+	scopedCtx := func(scope string) context.Context {
+		return auth.WithPrincipal(context.Background(), auth.Principal{Scope: scope})
+	}
+	in := RenameNamespaceInput{Namespace: "src", NewNamespace: "dst"}
+
+	// namespace-admin → REFUSED, op not run.
+	f := &fakeNamespaceRenamer{}
+	res, _, _ := RenameNamespaceHandler(f)(scopedCtx("namespace:src:admin"), nil, in)
+	if res == nil || !res.IsError {
+		t.Error("namespace-admin rename_namespace must be refused (super-user only)")
+	}
+	if f.renamed {
+		t.Error("refused rename_namespace must NOT run the op")
+	}
+
+	// super-user → allowed, op runs with the right args.
+	f = &fakeNamespaceRenamer{}
+	res, _, _ = RenameNamespaceHandler(f)(scopedCtx("*"), nil, in)
+	if res != nil && res.IsError {
+		t.Fatal("super-user rename_namespace must succeed")
+	}
+	if !f.renamed || f.args != [2]string{"src", "dst"} {
+		t.Errorf("super-user rename_namespace did not run with the right args: %+v", f)
+	}
+}
+
 // fakeNamespaceManager records whether the underlying op ran.
 type fakeNamespaceManager struct {
 	createdNS string

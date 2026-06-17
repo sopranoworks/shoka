@@ -52,6 +52,11 @@ const (
 	MsgNamespaceRecover MessageType = "NAMESPACE_RECOVER"
 	// MsgMoveProject moves a project between namespaces (B-28 project move) — super-user only.
 	MsgMoveProject MessageType = "MOVE_PROJECT"
+	// B-28 ns/proj rename: RENAME_PROJECT renames a project within its namespace (admin on the
+	// namespace — wsLevels), RENAME_NAMESPACE relabels a whole namespace (super-user —
+	// wsSuperUserOps).
+	MsgRenameProject   MessageType = "RENAME_PROJECT"
+	MsgRenameNamespace MessageType = "RENAME_NAMESPACE"
 	// MsgSearchFiles requests a project-scoped full-text/filename search and
 	// MsgSearchResult carries the matches back. Search is read-only and
 	// project-scoped: it wires the existing storage.SearchFiles capability (the
@@ -591,6 +596,11 @@ var wsLevels = map[MessageType]wsOp{
 	MsgCreateProject: {authz.LevelAdmin, false},
 	MsgDeleteProject: {authz.LevelAdmin, false},
 
+	// RENAME_PROJECT = admin on the namespace (the project stays in its namespace — looser
+	// than MOVE_PROJECT, which is super-user). RENAME_NAMESPACE is NOT here: it is super-user
+	// only and handled by wsSuperUserOps.
+	MsgRenameProject: {authz.LevelAdmin, false},
+
 	MsgRecoverProject: {authz.LevelAdmin, false},
 	MsgOAuthList:      {authz.LevelAdmin, true},
 	MsgOAuthRevoke:    {authz.LevelAdmin, true},
@@ -619,6 +629,7 @@ var wsSuperUserOps = map[MessageType]bool{
 	MsgCreateNamespace: true,
 	MsgDeleteNamespace: true,
 	MsgMoveProject:     true,
+	MsgRenameNamespace: true, // a namespace rename relabels the whole namespace + all its grants
 }
 
 // authzGate applies the shared authz decision to one /ws/ui message before its
@@ -773,6 +784,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleNamespaceRecover(client, wsMsg.Payload)
 		case MsgMoveProject:
 			m.handleMoveProject(client, wsMsg.Payload)
+		case MsgRenameProject:
+			m.handleRenameProject(client, wsMsg.Payload)
+		case MsgRenameNamespace:
+			m.handleRenameNamespace(client, wsMsg.Payload)
 		case MsgSearchFiles:
 			m.handleSearchFiles(client, wsMsg.Payload)
 		case MsgGetHistory:
@@ -855,6 +870,16 @@ type namespaceManager interface {
 // projectMover is the optional storage capability behind MOVE_PROJECT (B-28 project move).
 type projectMover interface {
 	MoveProject(ctx context.Context, oldNamespace, projectName, newNamespace string) error
+}
+
+// projectRenamer / namespaceRenamer are the optional storage capabilities behind
+// RENAME_PROJECT / RENAME_NAMESPACE (B-28 ns/proj rename).
+type projectRenamer interface {
+	RenameProject(ctx context.Context, namespace, oldName, newName string) error
+}
+
+type namespaceRenamer interface {
+	RenameNamespace(ctx context.Context, oldName, newName string) error
 }
 
 // namespaceHealthReader / namespaceRecoverer are the optional storage capabilities behind
@@ -1014,6 +1039,60 @@ func (m *Manager) handleMoveProject(client *wsClient, payload json.RawMessage) {
 		return
 	}
 	client.sendResponse(MsgMoveProject, map[string]string{"status": "ok"})
+}
+
+// RenameProjectPayload is the /ws/ui project-rename request (B-28). namespace + projectName
+// identify the project; newProjectName is the new name (must be free in the namespace).
+// admin-on-namespace-gated (wsLevels). Keys match wsTarget (namespace/projectName).
+type RenameProjectPayload struct {
+	Namespace      string `json:"namespace"`
+	ProjectName    string `json:"projectName"`
+	NewProjectName string `json:"newProjectName"`
+}
+
+func (m *Manager) handleRenameProject(client *wsClient, payload json.RawMessage) {
+	var p RenameProjectPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for RENAME_PROJECT")
+		return
+	}
+	rn, ok := m.storage.(projectRenamer)
+	if !ok {
+		client.sendError("project rename is not available on this server")
+		return
+	}
+	ctx := notify.WithSender(context.Background(), client.id)
+	if err := rn.RenameProject(ctx, p.Namespace, p.ProjectName, p.NewProjectName); err != nil {
+		client.sendError(fmt.Sprintf("Failed to rename project: %v", err))
+		return
+	}
+	client.sendResponse(MsgRenameProject, map[string]string{"status": "ok"})
+}
+
+// RenameNamespacePayload is the /ws/ui namespace-rename request (B-28). namespace is the
+// current name; newNamespace the new name. super-user-gated (wsSuperUserOps).
+type RenameNamespacePayload struct {
+	Namespace    string `json:"namespace"`
+	NewNamespace string `json:"newNamespace"`
+}
+
+func (m *Manager) handleRenameNamespace(client *wsClient, payload json.RawMessage) {
+	var p RenameNamespacePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for RENAME_NAMESPACE")
+		return
+	}
+	rn, ok := m.storage.(namespaceRenamer)
+	if !ok {
+		client.sendError("namespace rename is not available on this server")
+		return
+	}
+	ctx := notify.WithSender(context.Background(), client.id)
+	if err := rn.RenameNamespace(ctx, p.Namespace, p.NewNamespace); err != nil {
+		client.sendError(fmt.Sprintf("Failed to rename namespace: %v", err))
+		return
+	}
+	client.sendResponse(MsgRenameNamespace, map[string]string{"status": "ok"})
 }
 
 // NamespaceRecoverPayload is the /ws/ui recovery request. ProjectName empty ⇒ a

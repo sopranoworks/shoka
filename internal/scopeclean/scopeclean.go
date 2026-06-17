@@ -60,13 +60,24 @@ func (c *Cleaner) PurgeProject(ns, proj string) error {
 	})
 }
 
-// RewriteProject re-homes every grant referencing the project oldNs/proj to newNs/proj
-// (namespace:<oldNs>/<proj>[:perm] → namespace:<newNs>/<proj>[:perm]) across every persisted
-// scope — the project-move mirror of PurgeProject. Namespace-wide and wildcard grants are
-// left intact (a move re-homes only the project-specific grant).
-func (c *Cleaner) RewriteProject(oldNs, proj, newNs string) error {
+// RewriteProject re-homes every grant referencing the project oldNs/oldProj to newNs/newProj
+// (namespace:<oldNs>/<oldProj>[:perm] → namespace:<newNs>/<newProj>[:perm]) across every
+// persisted scope — serving BOTH a project MOVE (oldProj==newProj, ns changes) and a project
+// RENAME (oldNs==newNs, proj changes). Namespace-wide and wildcard grants are left intact.
+func (c *Cleaner) RewriteProject(oldNs, oldProj, newNs, newProj string) error {
 	return c.rewrite(func(scope string) string {
-		out, _ := authz.RewriteProjectGrants(scope, oldNs, proj, newNs)
+		out, _ := authz.RewriteProjectGrants(scope, oldNs, oldProj, newNs, newProj)
+		return out
+	})
+}
+
+// RewriteNamespace re-homes every grant referencing namespace old to new — BOTH the
+// namespace-wide grant AND every project-specific grant under it (namespace:<old>[/<proj>][:perm]
+// → namespace:<new>[/<proj>][:perm]) — across every persisted scope. The namespace-rename
+// mirror of PurgeNamespace; wildcard grants are left intact.
+func (c *Cleaner) RewriteNamespace(old, new string) error {
+	return c.rewrite(func(scope string) string {
+		out, _ := authz.RewriteNamespaceGrants(scope, old, new)
 		return out
 	})
 }

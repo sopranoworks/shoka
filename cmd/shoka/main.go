@@ -788,6 +788,16 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	}, tools.LoggedTool(logger, "move_project", tools.MoveProjectHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "rename_project",
+		Description: "Rename a project WITHIN its namespace, preserving its full git history and derivative state. Refuses if a project of the new name already exists in the namespace (no overwrite). Distinct from move (which changes the namespace) and delete (which destroys). Requires admin on the namespace.",
+	}, tools.LoggedTool(logger, "rename_project", tools.RenameProjectHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "rename_namespace",
+		Description: "Rename (relabel) an ENTIRE namespace, carrying every project under it with their full git history, and re-home every grant that referenced the old name. Allowed even when the namespace has projects (it is a relabel, not a delete). Refuses if the new name already exists, and the 'default' namespace cannot be renamed. Requires a super-user.",
+	}, tools.LoggedTool(logger, "rename_namespace", tools.RenameNamespaceHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "subscribe",
 		Description: "Subscribe to scoped file-change notifications. Pass a pattern '<namespace>/<project>/<path>' where namespace and project are required and literal (no wildcards) and the path part is a prefix (e.g. 'directives/') or a single-segment glob (e.g. 'directives/2026-*'); recursive '**' is not supported. The session then receives a notifications/message for each external file.write/file.move/file.delete under a matching pattern — never its own writes. Additive: call again to watch more patterns (Redis SUBSCRIBE semantics). Requires the client to issue logging/setLevel to receive the messages",
 	}, tools.LoggedTool(logger, "subscribe", subMgr.SubscribeHandler()))

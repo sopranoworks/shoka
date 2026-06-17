@@ -33,6 +33,16 @@ type projectMover interface {
 	MoveProject(ctx context.Context, oldNamespace, projectName, newNamespace string) error
 }
 
+// projectRenamer / namespaceRenamer are the storage capabilities behind rename_project /
+// rename_namespace (B-28 ns/proj rename).
+type projectRenamer interface {
+	RenameProject(ctx context.Context, namespace, oldName, newName string) error
+}
+
+type namespaceRenamer interface {
+	RenameNamespace(ctx context.Context, oldName, newName string) error
+}
+
 // requireSuperUser returns an IsError result (and false) unless the request's principal
 // is a super-user (wildcard admin). It is the authoritative super-user gate for the
 // namespace ops — the AuthzMiddleware only verifies admin on the named namespace, which a
@@ -171,6 +181,69 @@ func MoveProjectHandler(s projectMover) func(context.Context, *mcp.CallToolReque
 			return lifecycleErr(fmt.Sprintf("failed to move project: %v", err)), MoveProjectOutput{}, nil
 		}
 		return nil, MoveProjectOutput{Message: fmt.Sprintf("Moved project %s → %s/%s", input.Namespace+"/"+input.ProjectName, input.NewNamespace, input.ProjectName)}, nil
+	}
+}
+
+type RenameProjectInput struct {
+	Namespace      string `json:"namespace,omitempty" jsonschema:"optional, the namespace of the project (defaults to 'default')"`
+	ProjectName    string `json:"project_name" jsonschema:"required, the current name of the project to rename"`
+	NewProjectName string `json:"new_project_name" jsonschema:"required, the new project name (must be free in the namespace)"`
+}
+
+type RenameProjectOutput struct {
+	Message string `json:"message"`
+}
+
+// RenameProjectHandler renames a project within its namespace (B-28 ns/proj rename). authz:
+// admin on the namespace (enforced by the AuthzMiddleware via toolLevels) — NOT super-user, as
+// the project does not leave its namespace (looser than move).
+func RenameProjectHandler(s projectRenamer) func(context.Context, *mcp.CallToolRequest, RenameProjectInput) (*mcp.CallToolResult, RenameProjectOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input RenameProjectInput) (*mcp.CallToolResult, RenameProjectOutput, error) {
+		if input.ProjectName == "" || input.NewProjectName == "" {
+			return lifecycleErr("project_name and new_project_name are required"), RenameProjectOutput{}, nil
+		}
+		if input.Namespace == "" {
+			input.Namespace = "default"
+		}
+		if !utils.IsValidName(input.Namespace) || !utils.IsValidName(input.ProjectName) || !utils.IsValidName(input.NewProjectName) {
+			return lifecycleErr("invalid namespace or project name: only alphanumeric, hyphen, and underscore are allowed"), RenameProjectOutput{}, nil
+		}
+		ctx = notify.WithSender(ctx, mcpSender(req))
+		if err := s.RenameProject(ctx, input.Namespace, input.ProjectName, input.NewProjectName); err != nil {
+			return lifecycleErr(fmt.Sprintf("failed to rename project: %v", err)), RenameProjectOutput{}, nil
+		}
+		return nil, RenameProjectOutput{Message: fmt.Sprintf("Renamed project %s/%s → %s/%s", input.Namespace, input.ProjectName, input.Namespace, input.NewProjectName)}, nil
+	}
+}
+
+type RenameNamespaceInput struct {
+	Namespace    string `json:"namespace" jsonschema:"required, the current name of the namespace to rename"`
+	NewNamespace string `json:"new_namespace" jsonschema:"required, the new namespace name (must be free)"`
+}
+
+type RenameNamespaceOutput struct {
+	Message string `json:"message"`
+}
+
+// RenameNamespaceHandler relabels a whole namespace (B-28 ns/proj rename). authz: SUPER-USER
+// only (verified here), like create/delete-namespace — it relabels the whole namespace and all
+// its grants. The `default` namespace is rename-protected (refused in storage).
+func RenameNamespaceHandler(s namespaceRenamer) func(context.Context, *mcp.CallToolRequest, RenameNamespaceInput) (*mcp.CallToolResult, RenameNamespaceOutput, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input RenameNamespaceInput) (*mcp.CallToolResult, RenameNamespaceOutput, error) {
+		if input.Namespace == "" || input.NewNamespace == "" {
+			return lifecycleErr("namespace and new_namespace are required"), RenameNamespaceOutput{}, nil
+		}
+		if !utils.IsValidName(input.Namespace) || !utils.IsValidName(input.NewNamespace) {
+			return lifecycleErr("invalid namespace: only alphanumeric, hyphen, and underscore are allowed"), RenameNamespaceOutput{}, nil
+		}
+		if denied, ok := requireSuperUser(ctx); !ok {
+			return denied, RenameNamespaceOutput{}, nil
+		}
+		ctx = notify.WithSender(ctx, mcpSender(req))
+		if err := s.RenameNamespace(ctx, input.Namespace, input.NewNamespace); err != nil {
+			return lifecycleErr(fmt.Sprintf("failed to rename namespace: %v", err)), RenameNamespaceOutput{}, nil
+		}
+		return nil, RenameNamespaceOutput{Message: fmt.Sprintf("Renamed namespace %s → %s", input.Namespace, input.NewNamespace)}, nil
 	}
 }
 

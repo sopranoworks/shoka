@@ -175,9 +175,17 @@ type FSGitStorage struct {
 	// checkWritable consults to refuse writes to a moving project with the retriable
 	// ErrProjectMoving; reads take no lock and are not fenced (the dir rename is atomic and
 	// handles are evicted first, so a racing read sees the old location or not-found).
+	// moveMu (the op-mutex) serializes every SPECIAL op — move + ns/proj rename (B-28) — so
+	// only one runs at a time. moving holds the "<ns>/<project>" keys currently being moved or
+	// renamed; movingNs holds the namespace names currently being renamed (a whole-namespace
+	// quiesce: a namespace rename relabels every project under it at once, so checkWritable
+	// fences the namespace as a whole rather than enumerating-and-marking each project, which
+	// would race a concurrent project create). Both are consulted by checkWritable to refuse
+	// writes with the retriable ErrProjectMoving for the op's (short, serialized) duration.
 	moveMu   sync.Mutex
 	movingMu sync.Mutex
 	moving   map[string]bool
+	movingNs map[string]bool
 
 	// identityDefaults is the configured single-user identity + agent fallback
 	// used to author commits (the 2026-06-01 identity-config directive). The
@@ -251,10 +259,11 @@ var (
 	ErrProjectCorrupted = errors.New("project is in corrupted state: working tree has uncommitted drift")
 	// ErrWriteDisabled means the WAL has backed up past its threshold.
 	ErrWriteDisabled = errors.New("writes are disabled: write-ahead log is full")
-	// ErrProjectMoving means the project is being moved between namespaces right now
-	// (B-28 project move). It is transient and RETRIABLE: the move is a brief, serialized
-	// special op, after which the project is writable again at its new location.
-	ErrProjectMoving = errors.New("project is being moved between namespaces; retry shortly")
+	// ErrProjectMoving means the project is being moved or renamed right now — or its
+	// namespace is being renamed (B-28 move + ns/proj rename). It is transient and RETRIABLE:
+	// the op is a brief, serialized special op, after which the project is writable again at
+	// its new location/name.
+	ErrProjectMoving = errors.New("project is being moved or renamed; retry shortly")
 )
 
 // VersionConflictError is returned by writes/deletes when the caller's expected
@@ -344,6 +353,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		notify:           opts.NotifyCenter,
 		nsReg:            nsReg,
 		moving:           make(map[string]bool),
+		movingNs:         make(map[string]bool),
 		identityDefaults: withIdentityFallback(opts.Identity),
 	}
 	s.pool = walworker.NewPool(w, s.commitEntry, s.quarantineEntry, opts.WALWorker)
@@ -810,9 +820,10 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 // checkWritable rejects writes when the project is corrupted/dangerous or the
 // WAL is full.
 func (s *FSGitStorage) checkWritable(namespace, projectName string) error {
-	// A project being moved between namespaces is briefly fenced (B-28 project move): refuse
-	// writes with a retriable error for the move's (short, serialized) duration.
-	if s.isMoving(namespace, projectName) {
+	// A project being moved/renamed — or any project under a namespace being renamed — is
+	// briefly fenced (B-28 move + ns/proj rename): refuse writes with a retriable error for
+	// the op's (short, serialized) duration.
+	if s.isMoving(namespace, projectName) || s.isMovingNs(namespace) {
 		return ErrProjectMoving
 	}
 	switch s.State(namespace, projectName) {

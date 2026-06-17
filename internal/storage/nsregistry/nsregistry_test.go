@@ -135,24 +135,24 @@ func TestRegistry_MoveProject(t *testing.T) {
 	}
 }
 
-func TestRegistry_MoveJournal(t *testing.T) {
+func TestRegistry_OpJournal(t *testing.T) {
 	r := open(t)
-	if _, found, _ := r.GetMoveJournal(); found {
-		t.Fatal("a fresh registry must have no move journal")
+	if _, found, _ := r.GetOpJournal(); found {
+		t.Fatal("a fresh registry must have no op journal")
 	}
-	j := MoveJournal{OldNamespace: "src", Project: "proj", NewNamespace: "dst", Phase: "dir_moved"}
-	if err := r.SetMoveJournal(j); err != nil {
+	j := OpJournal{Op: "rename_namespace", OldNamespace: "src", NewNamespace: "dst", Phase: "dir_moved"}
+	if err := r.SetOpJournal(j); err != nil {
 		t.Fatal(err)
 	}
-	got, found, err := r.GetMoveJournal()
+	got, found, err := r.GetOpJournal()
 	if err != nil || !found || got != j {
-		t.Fatalf("GetMoveJournal = (%+v, %v, %v), want %+v", got, found, err, j)
+		t.Fatalf("GetOpJournal = (%+v, %v, %v), want %+v", got, found, err, j)
 	}
-	if err := r.ClearMoveJournal(); err != nil {
+	if err := r.ClearOpJournal(); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := r.GetMoveJournal(); found {
-		t.Fatal("ClearMoveJournal must remove the entry")
+	if _, found, _ := r.GetOpJournal(); found {
+		t.Fatal("ClearOpJournal must remove the entry")
 	}
 }
 
@@ -160,6 +160,76 @@ func TestRegistry_MoveJournal(t *testing.T) {
 // from one namespace record to another with no global immutable identity blocking it, and
 // the bare-name-within-namespace keying gives the exact target-collision check a future
 // MoveProject needs (GitHub-repository-transfer no-overwrite rule).
+func TestRegistry_RenameProject(t *testing.T) {
+	r := open(t)
+	if err := r.AddProject("ns", "old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RenameProject("ns", "old", "new"); err != nil {
+		t.Fatalf("RenameProject: %v", err)
+	}
+	if has, _ := r.HasProject("ns", "old"); has {
+		t.Error("old name must be gone after rename")
+	}
+	if has, _ := r.HasProject("ns", "new"); !has {
+		t.Error("new name must be present after rename")
+	}
+	// Idempotent recovery: re-running the applied rename is a no-op success.
+	if err := r.RenameProject("ns", "old", "new"); err != nil {
+		t.Fatalf("RenameProject (idempotent re-run) must not error: %v", err)
+	}
+	// No-overwrite: renaming onto an existing name is refused.
+	if err := r.AddProject("ns", "taken"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RenameProject("ns", "new", "taken"); err == nil {
+		t.Fatal("RenameProject must refuse a target-name collision")
+	}
+}
+
+func TestRegistry_RenameNamespace(t *testing.T) {
+	r := open(t)
+	if err := r.AddProject("src", "p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AddProject("src", "p2"); err != nil {
+		t.Fatal(err)
+	}
+	if has, _ := r.HasNamespace("src"); !has {
+		t.Error("HasNamespace must report a managed namespace")
+	}
+	if err := r.RenameNamespace("src", "dst"); err != nil {
+		t.Fatalf("RenameNamespace: %v", err)
+	}
+	if has, _ := r.HasNamespace("src"); has {
+		t.Error("old namespace must be gone after rename")
+	}
+	if has, _ := r.HasNamespace("dst"); !has {
+		t.Error("new namespace must be present after rename")
+	}
+	// The record carried its projects.
+	for _, p := range []string{"p1", "p2"} {
+		if has, _ := r.HasProject("dst", p); !has {
+			t.Errorf("project %s must travel with the renamed namespace", p)
+		}
+	}
+	rec, _, _ := r.Get("dst")
+	if rec.Name != "dst" {
+		t.Errorf("the re-keyed record's Name must be updated to dst, got %q", rec.Name)
+	}
+	// Idempotent recovery: re-running the applied rename is a no-op success.
+	if err := r.RenameNamespace("src", "dst"); err != nil {
+		t.Fatalf("RenameNamespace (idempotent re-run) must not error: %v", err)
+	}
+	// No-overwrite: renaming onto an existing namespace is refused.
+	if err := r.EnsureNamespace("occupied"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RenameNamespace("dst", "occupied"); err == nil {
+		t.Fatal("RenameNamespace must refuse a target-name collision")
+	}
+}
+
 func TestRegistry_MoveReadiness(t *testing.T) {
 	r := open(t)
 	if err := r.AddProject("src", "proj"); err != nil {

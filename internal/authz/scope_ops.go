@@ -72,23 +72,55 @@ func PruneProjectGrants(scope, ns, proj string) (newScope string, removed int) {
 	})
 }
 
-// RewriteProjectGrants re-homes every grant that references the project ns/proj BY NAME —
-// namespace:<oldNs>/<proj>[:perm] → namespace:<newNs>/<proj>[:perm], the perm preserved —
-// and returns the rewritten scope plus the count rewritten. It is the project-move mirror of
-// PruneProjectGrants: every OTHER grant (the namespace-wide namespace:<oldNs>, wildcards,
-// other projects) is preserved VERBATIM, because a move re-homes only the project-specific
-// grant, not namespace-wide authority (a user with admin on oldNs does not follow the
-// project to newNs). Surviving tokens keep their exact text (legacy level-less grants are
-// not silently rewritten).
-func RewriteProjectGrants(scope, oldNs, proj, newNs string) (newScope string, rewritten int) {
+// RewriteProjectGrants re-homes every grant that references the project oldNs/oldProj BY NAME
+// — namespace:<oldNs>/<oldProj>[:perm] → namespace:<newNs>/<newProj>[:perm], the perm
+// preserved — and returns the rewritten scope plus the count rewritten. ONE helper serves
+// both project-level special ops (B-28): a MOVE passes oldProj==newProj (only the namespace
+// changes); a project RENAME passes oldNs==newNs (only the project changes). Every OTHER grant
+// (the namespace-wide namespace:<oldNs>, wildcards, other projects) is preserved VERBATIM,
+// because re-homing a single project never moves namespace-wide authority. Surviving tokens
+// keep their exact text (legacy level-less grants are not silently rewritten).
+func RewriteProjectGrants(scope, oldNs, oldProj, newNs, newProj string) (newScope string, rewritten int) {
 	var out []string
 	for _, raw := range strings.Split(scope, ",") {
 		tok := strings.TrimSpace(raw)
 		if tok == "" {
 			continue
 		}
-		if g := parseGrant(tok); !g.Wildcard && g.Namespace == oldNs && g.Project == proj {
-			out = append(out, "namespace:"+newNs+"/"+proj+projectGrantSuffix(tok))
+		if g := parseGrant(tok); !g.Wildcard && g.Namespace == oldNs && g.Project == oldProj {
+			out = append(out, "namespace:"+newNs+"/"+newProj+projectGrantSuffix(tok))
+			rewritten++
+			continue
+		}
+		out = append(out, tok)
+	}
+	if rewritten == 0 {
+		return scope, 0
+	}
+	return strings.Join(out, ","), rewritten
+}
+
+// RewriteNamespaceGrants re-homes every grant that references namespace old BY NAME to new —
+// BOTH the namespace-wide grant (namespace:<old>[:perm] → namespace:<new>[:perm]) AND every
+// project-specific grant under it (namespace:<old>/<proj>[:perm] → namespace:<new>/<proj>[:perm])
+// — the perm and the project segment preserved, and returns the rewritten scope plus the count
+// rewritten. It is the namespace-rename mirror of PruneNamespaceGrants (which removes the same
+// set): a namespace rename relabels the WHOLE namespace, so unlike a project move (which leaves
+// namespace-wide grants alone) it MUST follow both forms. Wildcard (super-user) grants and
+// grants for other namespaces are preserved VERBATIM; surviving tokens keep their exact text.
+func RewriteNamespaceGrants(scope, old, new string) (newScope string, rewritten int) {
+	var out []string
+	for _, raw := range strings.Split(scope, ",") {
+		tok := strings.TrimSpace(raw)
+		if tok == "" {
+			continue
+		}
+		if g := parseGrant(tok); !g.Wildcard && g.Namespace == old {
+			rebuilt := "namespace:" + new
+			if g.Project != "" {
+				rebuilt += "/" + g.Project
+			}
+			out = append(out, rebuilt+projectGrantSuffix(tok))
 			rewritten++
 			continue
 		}

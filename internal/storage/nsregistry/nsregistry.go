@@ -39,21 +39,36 @@ import (
 
 const (
 	namespacesBucket = "namespaces"
-	// journalBucket holds the single-entry move-journal (B-28 project move): an
-	// in-progress MoveProject records its intent here so an interrupted move can be
-	// AUTOMATICALLY resumed or rolled back at startup, with no operator action. Only one
-	// move runs at a time (storage serialises via moveMu), so a single key suffices.
+	// journalBucket holds the single-entry op-journal (B-28 project move + ns/proj
+	// rename): an in-progress special op (move / rename_project / rename_namespace)
+	// records its intent here so an interruption can be AUTOMATICALLY resumed or rolled
+	// back at startup, with no operator action. Only one special op runs at a time
+	// (storage serialises via the op-mutex), so a single key suffices. The bucket name is
+	// kept as "move_journal" so a legacy in-flight move-journal survives the upgrade.
 	journalBucket = "move_journal"
 	journalKey    = "current"
 )
 
-// MoveJournal records an in-progress project move so it can be auto-recovered at startup.
-// Phase is an opaque string the storage layer advances; nsregistry only persists it.
-type MoveJournal struct {
+// OpJournal records an in-progress SPECIAL op (move / rename_project / rename_namespace) so
+// it can be auto-recovered at startup. Op and Phase are opaque strings the storage layer
+// sets/advances; nsregistry only persists them. The shape is general enough to capture all
+// three ops: a move changes the namespace (proj fixed), a project rename changes the project
+// (ns fixed), a namespace rename relabels the whole namespace (project empty).
+//
+// Backward compatibility (B-28 ns/proj rename): a LEGACY move-journal (written before this
+// generalisation) decodes here with Op=="" and only the old `project` field set — recovery
+// treats Op=="" as a move and falls back to Project for OldProject/NewProject. JSON encoding
+// keeps the upgrade migration-free.
+type OpJournal struct {
+	Op           string `json:"op,omitempty"` // "" (legacy move) | "move" | "rename_project" | "rename_namespace"
 	OldNamespace string `json:"old_namespace"`
-	Project      string `json:"project"`
+	OldProject   string `json:"old_project,omitempty"`
 	NewNamespace string `json:"new_namespace"`
-	Phase        string `json:"phase"`
+	NewProject   string `json:"new_project,omitempty"`
+	// Project is the legacy single-project field; retained ONLY so a pre-rename move-journal
+	// decodes losslessly (recovery falls back to it when OldProject/NewProject are empty).
+	Project string `json:"project,omitempty"`
+	Phase   string `json:"phase"`
 }
 
 // Record is one managed namespace: its name, when Shoka took it under management, and the
@@ -320,19 +335,108 @@ func (r *Registry) MoveProject(oldNs, proj, newNs string) error {
 	})
 }
 
-// SetMoveJournal records (or overwrites) the single in-progress move-journal entry.
-func (r *Registry) SetMoveJournal(j MoveJournal) error {
+// HasNamespace reports whether ns is a managed namespace — the namespace-level uniqueness
+// check a RenameNamespace uses to enforce the no-overwrite-in-target rule (the mirror of
+// HasProject for the project case).
+func (r *Registry) HasNamespace(ns string) (bool, error) {
+	_, found, err := r.Get(ns)
+	return found, err
+}
+
+// RenameProject atomically re-keys a project name WITHIN one namespace's record (B-28 ns/proj
+// rename): in ONE bbolt transaction it refuses if the namespace already has a project named
+// `new` (the no-overwrite rule), removes `old` from the record's Projects, and adds `new`.
+// Idempotent-safe for recovery: if `old` is absent but `new` already present, it is a no-op
+// success (a prior partial rename already swapped the registry).
+func (r *Registry) RenameProject(ns, old, new string) error {
+	return r.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(namespacesBucket))
+		rec, found, err := loadRecord(b, ns)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("nsregistry: namespace %q is not managed", ns)
+		}
+		oldHas, newHas := false, false
+		kept := rec.Projects[:0:0]
+		for _, p := range rec.Projects {
+			switch p {
+			case old:
+				oldHas = true
+			case new:
+				newHas = true
+				kept = append(kept, p)
+			default:
+				kept = append(kept, p)
+			}
+		}
+		// Idempotent recovery: already renamed (new present, old gone).
+		if newHas && !oldHas {
+			return nil
+		}
+		// No-overwrite: target name already taken by a different project.
+		if newHas && oldHas {
+			return fmt.Errorf("nsregistry: project %q already exists in namespace %q", new, ns)
+		}
+		if !oldHas {
+			return fmt.Errorf("nsregistry: project %q not found in namespace %q", old, ns)
+		}
+		kept = append(kept, new)
+		sort.Strings(kept)
+		rec.Projects = kept
+		return putRecord(b, rec)
+	})
+}
+
+// RenameNamespace atomically re-keys a whole namespace record from old→new (B-28 ns/proj
+// rename): in ONE bbolt transaction it refuses if `new` is already managed (the no-overwrite
+// rule), then writes the SAME record (carrying its full Projects list) under the `new` key
+// with Name=new and deletes the `old` key. Idempotent-safe for recovery: if `old` is absent
+// but `new` already present, it is a no-op success (a prior partial rename already swapped).
+func (r *Registry) RenameNamespace(old, new string) error {
+	return r.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(namespacesBucket))
+		oldRec, oldFound, err := loadRecord(b, old)
+		if err != nil {
+			return err
+		}
+		_, newFound, err := loadRecord(b, new)
+		if err != nil {
+			return err
+		}
+		// Idempotent recovery: already renamed (new present, old gone).
+		if newFound && !oldFound {
+			return nil
+		}
+		if newFound {
+			return fmt.Errorf("nsregistry: namespace %q already exists", new)
+		}
+		if !oldFound {
+			return fmt.Errorf("nsregistry: namespace %q is not managed", old)
+		}
+		oldRec.Name = new
+		if err := putRecord(b, oldRec); err != nil {
+			return err
+		}
+		return b.Delete([]byte(old))
+	})
+}
+
+// SetOpJournal records (or overwrites) the single in-progress op-journal entry.
+func (r *Registry) SetOpJournal(j OpJournal) error {
 	return r.db.Update(func(tx *bolt.Tx) error {
 		val, err := json.Marshal(&j)
 		if err != nil {
-			return fmt.Errorf("nsregistry: encode move journal: %w", err)
+			return fmt.Errorf("nsregistry: encode op journal: %w", err)
 		}
 		return tx.Bucket([]byte(journalBucket)).Put([]byte(journalKey), val)
 	})
 }
 
-// GetMoveJournal returns the in-progress move-journal entry; found is false when none.
-func (r *Registry) GetMoveJournal() (j MoveJournal, found bool, err error) {
+// GetOpJournal returns the in-progress op-journal entry; found is false when none. A legacy
+// move-journal decodes into OpJournal with Op=="" and only the legacy Project field set.
+func (r *Registry) GetOpJournal() (j OpJournal, found bool, err error) {
 	err = r.db.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket([]byte(journalBucket)).Get([]byte(journalKey))
 		if v == nil {
@@ -344,9 +448,9 @@ func (r *Registry) GetMoveJournal() (j MoveJournal, found bool, err error) {
 	return j, found, err
 }
 
-// ClearMoveJournal removes the move-journal entry (idempotent) — the move completed or was
-// fully rolled back.
-func (r *Registry) ClearMoveJournal() error {
+// ClearOpJournal removes the op-journal entry (idempotent) — the op completed or was fully
+// rolled back.
+func (r *Registry) ClearOpJournal() error {
 	return r.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(journalBucket)).Delete([]byte(journalKey))
 	})

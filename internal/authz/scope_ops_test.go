@@ -122,10 +122,49 @@ func TestRewriteProjectGrants(t *testing.T) {
 			"namespace:foo/p1:admin", "foo", "p1", "baz", "namespace:baz/p1:admin", 1},
 	}
 	for _, c := range cases {
-		got, n := RewriteProjectGrants(c.scope, c.ns, c.p, c.dst)
+		// A move keeps the project name (oldProj == newProj == c.p); only the namespace changes.
+		got, n := RewriteProjectGrants(c.scope, c.ns, c.p, c.dst, c.p)
 		if got != c.wantScope || n != c.wantRewritten {
-			t.Errorf("%s: RewriteProjectGrants(%q,%q,%q,%q) = (%q,%d), want (%q,%d)",
-				c.name, c.scope, c.ns, c.p, c.dst, got, n, c.wantScope, c.wantRewritten)
+			t.Errorf("%s: RewriteProjectGrants(%q,%q,%q,%q,%q) = (%q,%d), want (%q,%d)",
+				c.name, c.scope, c.ns, c.p, c.dst, c.p, got, n, c.wantScope, c.wantRewritten)
+		}
+	}
+}
+
+// TestRewriteProjectGrants_RenameCase covers the generalised helper's OTHER caller: a project
+// RENAME keeps the namespace and changes the project segment.
+func TestRewriteProjectGrants_RenameCase(t *testing.T) {
+	// namespace:ns/old:rw → namespace:ns/new:rw (ns fixed, proj changes); ns-wide untouched.
+	got, n := RewriteProjectGrants("namespace:ns/old:rw,namespace:ns:admin", "ns", "old", "ns", "new")
+	if want := "namespace:ns/new:rw,namespace:ns:admin"; got != want || n != 1 {
+		t.Errorf("rename rewrite = (%q,%d), want (%q,1)", got, n, want)
+	}
+}
+
+// TestRewriteNamespaceGrants covers the namespace-rename DUAL rewrite: BOTH the namespace-wide
+// grant AND every project-specific grant follow the new name; wildcards and other namespaces
+// are untouched; perms (and the legacy level-less form) are preserved.
+func TestRewriteNamespaceGrants(t *testing.T) {
+	cases := []struct {
+		name, scope, old, new string
+		wantScope             string
+		wantRewritten         int
+	}{
+		{"namespace-wide AND project-specific both follow, perms preserved",
+			"namespace:src:rw,namespace:src/p1:admin,namespace:other:rw", "src", "dst",
+			"namespace:dst:rw,namespace:dst/p1:admin,namespace:other:rw", 2},
+		{"wildcard untouched",
+			"*:admin", "src", "dst", "*:admin", 0},
+		{"legacy level-less forms preserved",
+			"namespace:src,namespace:src/p1", "src", "dst", "namespace:dst,namespace:dst/p1", 2},
+		{"a different namespace is untouched",
+			"namespace:other/p1:rw", "src", "dst", "namespace:other/p1:rw", 0},
+	}
+	for _, c := range cases {
+		got, n := RewriteNamespaceGrants(c.scope, c.old, c.new)
+		if got != c.wantScope || n != c.wantRewritten {
+			t.Errorf("%s: RewriteNamespaceGrants(%q,%q,%q) = (%q,%d), want (%q,%d)",
+				c.name, c.scope, c.old, c.new, got, n, c.wantScope, c.wantRewritten)
 		}
 	}
 }

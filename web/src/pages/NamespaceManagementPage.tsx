@@ -5,6 +5,7 @@ import { useToast } from '../lib/toast'
 import { PromptDialog } from '../components/PromptDialog'
 import { TypeToConfirmDialog } from '../components/TypeToConfirmDialog'
 import { MoveProjectDialog } from '../components/MoveProjectDialog'
+import { RenameDialog } from '../components/RenameDialog'
 import {
   namespaceHealth,
   createNamespace,
@@ -12,10 +13,16 @@ import {
   createProject,
   deleteProject,
   moveProject,
+  renameProject,
+  renameNamespace,
   namespaceRecover,
   type NamespaceHealth,
   type ProjectHealth,
 } from '../lib/nsManageOps'
+
+// DefaultNamespace is rename-protected (server-enforced); the UI also shows no rename
+// affordance for it (decision 3). Mirrors the server's DefaultNamespace constant.
+const DEFAULT_NAMESPACE = 'default'
 import styles from './NamespaceManagementPage.module.css'
 
 const NAME_RE = /^[A-Za-z0-9_-]+$/
@@ -31,6 +38,12 @@ function msg(e: unknown): string {
 type AddTarget = { kind: 'namespace' } | { kind: 'project'; namespace: string } | null
 // DelTarget: the type-the-name confirm dialog is deleting a project or a namespace.
 type DelTarget =
+  | { kind: 'project'; namespace: string; name: string }
+  | { kind: 'namespace'; name: string }
+  | null
+// RenameTarget: the edit-the-name dialog is renaming a project (within its namespace) or a
+// namespace (B-28 ns/proj rename).
+type RenameTarget =
   | { kind: 'project'; namespace: string; name: string }
   | { kind: 'namespace'; name: string }
   | null
@@ -50,6 +63,8 @@ export function NamespaceManagementPage() {
   const [del, setDel] = useState<DelTarget>(null)
   // The project being moved (B-28), or null. Move is super-user only and DISTINCT from delete.
   const [move, setMove] = useState<{ namespace: string; project: string } | null>(null)
+  // The project/namespace being renamed (B-28), or null. DISTINCT from move and delete.
+  const [rename, setRename] = useState<RenameTarget>(null)
 
   function refresh() {
     void qc.invalidateQueries({ queryKey: ['namespace-health'] })
@@ -91,6 +106,16 @@ export function NamespaceManagementPage() {
     if (!m || !target) return
     void run(moveProject(m.namespace, m.project, target), `Moved ${m.namespace}/${m.project} → ${target}/${m.project}.`)
   }
+  function onConfirmRename(newName: string) {
+    const r = rename
+    setRename(null)
+    if (!r || !newName) return
+    if (r.kind === 'project') {
+      void run(renameProject(r.namespace, r.name, newName), `Renamed ${r.namespace}/${r.name} → ${r.namespace}/${newName}.`)
+    } else {
+      void run(renameNamespace(r.name, newName), `Renamed namespace ${r.name} → ${newName}.`)
+    }
+  }
 
   const allNamespaces = (health.data?.namespaces ?? []).map((n) => n.name)
 
@@ -119,6 +144,8 @@ export function NamespaceManagementPage() {
             isSuperUser={isSuperUser}
             onAddProject={() => setAdd({ kind: 'project', namespace: nh.name })}
             onMoveProject={(name) => setMove({ namespace: nh.name, project: name })}
+            onRenameProject={(name) => setRename({ kind: 'project', namespace: nh.name, name })}
+            onRenameNamespace={() => setRename({ kind: 'namespace', name: nh.name })}
             onDeleteProject={(name) => setDel({ kind: 'project', namespace: nh.name, name })}
             onDeleteNamespace={() => setDel({ kind: 'namespace', name: nh.name })}
             onDropMissing={(proj) =>
@@ -177,6 +204,14 @@ export function NamespaceManagementPage() {
         onCancel={() => setMove(null)}
       />
 
+      <RenameDialog
+        open={rename !== null}
+        kind={rename?.kind ?? 'project'}
+        currentName={rename?.name ?? ''}
+        onConfirm={onConfirmRename}
+        onCancel={() => setRename(null)}
+      />
+
       <TypeToConfirmDialog
         open={del !== null}
         title={del?.kind === 'namespace' ? `Delete namespace ${del.name}` : `Delete project ${del?.name ?? ''}`}
@@ -214,6 +249,8 @@ function NamespaceBlock({
   isSuperUser,
   onAddProject,
   onMoveProject,
+  onRenameProject,
+  onRenameNamespace,
   onDeleteProject,
   onDeleteNamespace,
   onDropMissing,
@@ -224,6 +261,8 @@ function NamespaceBlock({
   isSuperUser: boolean
   onAddProject: () => void
   onMoveProject: (name: string) => void
+  onRenameProject: (name: string) => void
+  onRenameNamespace: () => void
   onDeleteProject: (name: string) => void
   onDeleteNamespace: () => void
   onDropMissing: (proj: string) => void
@@ -242,6 +281,17 @@ function NamespaceBlock({
         <button className={styles.btn} onClick={onAddProject}>
           + Add project
         </button>
+        {/* Namespace rename (B-28): super-user only, and NO affordance for the protected
+            `default` namespace (decision 3). Neutral styling — distinct from the danger Delete. */}
+        {isSuperUser && nh.name !== DEFAULT_NAMESPACE && (
+          <button
+            className={styles.btn}
+            data-testid={`ns-rename-${nh.name}`}
+            onClick={onRenameNamespace}
+          >
+            Rename…
+          </button>
+        )}
         {isSuperUser && (
           <button
             className={`${styles.btn} ${styles.danger}`}
@@ -273,6 +323,7 @@ function NamespaceBlock({
                 namespace={nh.name}
                 isSuperUser={isSuperUser}
                 onMove={() => onMoveProject(p.name)}
+                onRename={() => onRenameProject(p.name)}
                 onDelete={() => onDeleteProject(p.name)}
                 onDropMissing={() => onDropMissing(p.name)}
               />
@@ -316,6 +367,7 @@ function ProjectRow({
   namespace,
   isSuperUser,
   onMove,
+  onRename,
   onDelete,
   onDropMissing,
 }: {
@@ -323,6 +375,7 @@ function ProjectRow({
   namespace: string
   isSuperUser: boolean
   onMove: () => void
+  onRename: () => void
   onDelete: () => void
   onDropMissing: () => void
 }) {
@@ -343,6 +396,17 @@ function ProjectRow({
           {isSuperUser && present && (
             <button className={styles.btn} onClick={onMove}>
               Move…
+            </button>
+          )}
+        </span>
+        {/* Rename lives in its own dedicated slot, kept VISUALLY DISTINCT from both the Move
+            slot (pick-target) and Delete (type-to-destroy): a low-friction edit-the-name. Every
+            LISTED namespace is administerable (the listing is admin-filtered), so project rename
+            shows for present projects (admin-on-ns) — NOT super-user-gated, unlike move. */}
+        <span className={styles.moveSlot} data-testid={`rename-slot-${namespace}-${p.name}`}>
+          {present && (
+            <button className={styles.btn} onClick={onRename}>
+              Rename…
             </button>
           )}
         </span>
