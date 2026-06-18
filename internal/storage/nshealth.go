@@ -37,11 +37,15 @@ type ForeignDir struct {
 	Adoptable bool   `json:"adoptable"`
 }
 
-// OrphanSibling is a stray catalog/index .db (e.g. <proj>.db / <proj>.index.db) whose
-// project dir is gone — a managed thing left broken/incomplete (UNHEALTHY). Name is the
-// project base name the stray DBs belong to.
+// OrphanSibling is a stray catalog/index/deleted-log .db (e.g. <proj>.db /
+// <proj>.index.db / <proj>.deleted.db) whose project dir is gone — a managed thing left
+// broken/incomplete (UNHEALTHY). Name is the project base name the stray DBs belong to;
+// Files are the actual on-disk sibling filenames so the UI can show the FULL filename
+// (e.g. "shoka.db") rather than the bare base (which collided confusingly with a namespace
+// name in the field).
 type OrphanSibling struct {
-	Name string `json:"name"`
+	Name  string   `json:"name"`
+	Files []string `json:"files,omitempty"`
 }
 
 // NamespaceHealth is one managed namespace's health picture.
@@ -127,8 +131,8 @@ func (s *FSGitStorage) checkNamespaceHealth(ns string) NamespaceHealth {
 	}
 
 	// Enumerate the namespace directory once.
-	projDirs := make(map[string]bool) // names that ARE .git projects
-	dbBases := make(map[string]bool)  // names that have a catalog/index sibling .db
+	projDirs := make(map[string]bool)    // names that ARE .git projects
+	dbBases := make(map[string][]string) // base -> the actual sibling .db filenames present
 	if entries, err := os.ReadDir(nsDir); err == nil {
 		for _, e := range entries {
 			name := e.Name()
@@ -145,7 +149,7 @@ func (s *FSGitStorage) checkNamespaceHealth(ns string) NamespaceHealth {
 				continue
 			}
 			if base, ok := dbBaseName(name); ok {
-				dbBases[base] = true
+				dbBases[base] = append(dbBases[base], name)
 			}
 		}
 	}
@@ -175,10 +179,14 @@ func (s *FSGitStorage) checkNamespaceHealth(ns string) NamespaceHealth {
 		}
 	}
 
-	// Orphaned siblings: a catalog/index .db whose project dir is gone — UNHEALTHY.
-	for base := range dbBases {
+	// Orphaned siblings: a catalog/index/deleted-log .db whose project dir is gone —
+	// UNHEALTHY. A LIVE project's siblings (its <p>.db, <p>.index.db, AND <p>.deleted.db,
+	// all now mapped to base <p> by dbBaseName) are NOT orphaned, because projDirs[<p>] is
+	// set. Files carries the real filenames so the UI shows the full name.
+	for base, files := range dbBases {
 		if !projDirs[base] {
-			nh.Orphaned = append(nh.Orphaned, OrphanSibling{Name: base})
+			sort.Strings(files)
+			nh.Orphaned = append(nh.Orphaned, OrphanSibling{Name: base, Files: files})
 			nh.Healthy = false
 		}
 	}
@@ -193,12 +201,19 @@ func sortProjects(ps []ProjectHealth) {
 	sort.Slice(ps, func(i, j int) bool { return ps[i].Name < ps[j].Name })
 }
 
-// dbBaseName returns the project base name of a catalog/index sibling file (<proj>.db or
-// <proj>.index.db) and true; ("", false) for any other file. ".index.db" is checked first
-// (it is a longer suffix of ".db").
+// dbBaseName returns the project base name of a per-project sibling DB file and true;
+// ("", false) for any other file. Shoka keeps THREE derivative siblings per project:
+// the catalog <proj>.db, the index <proj>.index.db, and the deleted-log <proj>.deleted.db
+// (the last added 2026-06-18). The longer compound suffixes (".index.db", ".deleted.db")
+// MUST be checked before the bare ".db" — otherwise "<proj>.deleted.db" would map to base
+// "<proj>.deleted" (a phantom with no project dir) and a LIVE project's deleted-log would
+// be falsely flagged orphaned (and Clean would delete it). All three map to base <proj>.
 func dbBaseName(fileName string) (string, bool) {
 	if strings.HasSuffix(fileName, ".index.db") {
 		return strings.TrimSuffix(fileName, ".index.db"), true
+	}
+	if strings.HasSuffix(fileName, ".deleted.db") {
+		return strings.TrimSuffix(fileName, ".deleted.db"), true
 	}
 	if strings.HasSuffix(fileName, ".db") {
 		return strings.TrimSuffix(fileName, ".db"), true
@@ -280,13 +295,25 @@ func (s *FSGitStorage) CleanOrphanedSibling(namespace, name string) error {
 	if hasGitRepo(filepath.Join(s.baseDir, namespace, name)) {
 		return fmt.Errorf("%s/%s is a live project; refusing to clean its catalog/index as orphaned", namespace, name)
 	}
-	s.evictProjectHandles(namespace, name)
-	var errs []error
-	if err := os.Remove(s.catalogPath(namespace, name)); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, fmt.Errorf("remove catalog db: %w", err))
+	// DATA-LOSS GUARD: refuse to clean a LIVE project's derivative sibling. A name like
+	// "<p>.deleted" or "<p>.index" would, via siblingDBPaths, resolve to <p>.deleted.db /
+	// <p>.index.db — the live deleted-log / index of project <p> — and deleting it is silent
+	// data loss. The dbBaseName fix means the health check no longer surfaces such an item,
+	// but a stale UI or direct call could still pass it; refuse defensively. (A genuine
+	// stray whose base is NOT a live project still cleans normally.)
+	for _, suf := range []string{".deleted", ".index"} {
+		if base := strings.TrimSuffix(name, suf); base != name && hasGitRepo(filepath.Join(s.baseDir, namespace, base)) {
+			return fmt.Errorf("%s/%s is a live project's %q sibling; refusing to clean (would delete live data)", namespace, base, suf)
+		}
 	}
-	if err := os.Remove(s.indexPath(namespace, name)); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, fmt.Errorf("remove index db: %w", err))
+	s.evictProjectHandles(namespace, name)
+	// Remove every derivative sibling of the stray base (catalog/index/deleted-log) via the
+	// single siblingDBPaths source of truth, so cleaning a stray never leaves one behind.
+	var errs []error
+	for _, p := range s.siblingDBPaths(namespace, name) {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("remove sibling db %s: %w", filepath.Base(p), err))
+		}
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)

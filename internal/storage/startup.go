@@ -26,13 +26,14 @@ type projectRef struct {
 // pre-B-37 guard-less write half-created one (dir + per-project .db, no repo), or an
 // externally-created stray. It is never registered; the non-blocking
 // post-StartupInit relocation step (relocateLeftovers) quarantines it to lost+found
-// (D4 / B-38.1). treePath is the leftover directory; dbPath is its sibling
-// <project>.db when present, otherwise "".
+// (D4 / B-38.1). treePath is the leftover directory; dbPaths are its present sibling DBs
+// (catalog <project>.db, index <project>.index.db, deleted-log <project>.deleted.db) so they
+// are relocated to lost+found WITH the dir rather than stranded as orphans.
 type leftover struct {
 	namespace string
 	name      string
 	treePath  string
-	dbPath    string
+	dbPaths   []string
 }
 
 // discoverProjects walks <base_dir>/<namespace>/<project>/ and returns every real,
@@ -77,12 +78,14 @@ func (s *FSGitStorage) discoverProjects() ([]projectRef, []leftover) {
 			switch classifyProjectEntry(nsPath, pr) {
 			case entryLeftover:
 				// Repo-less: not a project. Surface it (do not register it) so the
-				// post-startup step relocates it to lost+found. Include the sibling
-				// "<project>.db" when it is present so the two move together.
+				// post-startup step relocates it to lost+found. Include EVERY present
+				// derivative sibling (catalog/index/deleted-log via siblingDBPaths) so they
+				// all move together rather than stranding as orphans.
 				lf := leftover{namespace: ns.Name(), name: pr.Name(), treePath: filepath.Join(nsPath, pr.Name())}
-				dbPath := s.catalogPath(ns.Name(), pr.Name())
-				if _, statErr := os.Stat(dbPath); statErr == nil {
-					lf.dbPath = dbPath
+				for _, p := range s.siblingDBPaths(ns.Name(), pr.Name()) {
+					if _, statErr := os.Stat(p); statErr == nil {
+						lf.dbPaths = append(lf.dbPaths, p)
+					}
 				}
 				leftovers = append(leftovers, lf)
 			case entryProject:
@@ -197,12 +200,12 @@ func (s *FSGitStorage) relocateLeftovers(leftovers []leftover, now time.Time) {
 			}
 			continue
 		}
-		// Re-confirm the sibling .db still exists (it was present at discovery); omit
-		// it gracefully if absent so depositTree never fails on a missing sibling.
+		// Re-confirm each sibling DB still exists (present at discovery); omit any now
+		// absent so depositTree never fails on a missing sibling.
 		var siblings []string
-		if lf.dbPath != "" {
-			if _, err := os.Stat(lf.dbPath); err == nil {
-				siblings = append(siblings, lf.dbPath)
+		for _, p := range lf.dbPaths {
+			if _, err := os.Stat(p); err == nil {
+				siblings = append(siblings, p)
 			}
 		}
 		dest, err := s.depositTree(lf.namespace, lf.name, lf.treePath, now, siblings...)
@@ -213,7 +216,7 @@ func (s *FSGitStorage) relocateLeftovers(leftovers []leftover, now time.Time) {
 		}
 		s.log().Warn("relocated repo-less leftover to lost+found",
 			"namespace", lf.namespace, "project", lf.name,
-			"tree", lf.treePath, "db", lf.dbPath, "dest", dest)
+			"tree", lf.treePath, "dbs", lf.dbPaths, "dest", dest)
 		s.notifyQuarantined(lf.namespace, lf.name, lf.name)
 	}
 }

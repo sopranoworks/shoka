@@ -129,8 +129,14 @@ func (s *FSGitStorage) RenameProject(ctx context.Context, namespace, oldName, ne
 // the startup recovery share them: relocate the catalog/index siblings, re-key the registry,
 // rewrite the project-specific grant, emit project_renamed.
 func (s *FSGitStorage) completeRenameProject(ctx context.Context, namespace, oldName, newName string) error {
-	s.relocateSiblingDB(s.catalogPath(namespace, oldName), s.catalogPath(namespace, newName))
-	s.relocateSiblingDB(s.indexPath(namespace, oldName), s.indexPath(namespace, newName))
+	// Relocate every derivative sibling DB (catalog, index, deleted-log) via the single
+	// siblingDBPaths source of truth — old/new slices are parallel, so a future sibling
+	// travels with the rename without editing this site.
+	oldSibs := s.siblingDBPaths(namespace, oldName)
+	newSibs := s.siblingDBPaths(namespace, newName)
+	for i := range oldSibs {
+		s.relocateSiblingDB(oldSibs[i], newSibs[i])
+	}
 
 	if s.nsReg != nil {
 		if err := s.nsReg.RenameProject(namespace, oldName, newName); err != nil {

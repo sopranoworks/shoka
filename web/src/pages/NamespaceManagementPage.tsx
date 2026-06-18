@@ -333,13 +333,31 @@ function NamespaceBlock({
       )}
 
       {(nh.orphaned?.length ?? 0) > 0 && (
-        <div className={styles.recoverRow}>
+        <div className={styles.recoverRow} data-testid={`orphaned-${nh.name}`}>
           <span className={styles.muted}>Orphaned data (no project):</span>
-          {nh.orphaned!.map((o) => (
-            <button key={o.name} className={styles.btn} onClick={() => onCleanOrphan(o.name)}>
-              Clean {o.name}
-            </button>
-          ))}
+          {nh.orphaned!.map((o) => {
+            // Mirror the server's live-sibling Clean refusal: never offer Clean for an item
+            // that belongs to a present project (the server is the authority; this is
+            // defensive — after the classifier fix a live project's sibling is not flagged).
+            const liveSibling = projects.some((p) => p.name === o.name && p.state !== 'missing')
+            // Show the FULL filename(s) (e.g. "shoka.db"), not the bare base, so a stray is
+            // unambiguous (the bare base collided confusingly with a namespace name).
+            const label = (o.files && o.files.length > 0 ? o.files : [o.name]).join(', ')
+            return (
+              <span
+                key={o.name}
+                className={styles.foreignInline}
+                data-testid={`orphan-${nh.name}-${o.name}`}
+              >
+                <span className={styles.mono}>{label}</span>
+                {!liveSibling && (
+                  <button className={styles.btn} onClick={() => onCleanOrphan(o.name)}>
+                    Clean
+                  </button>
+                )}
+              </span>
+            )
+          })}
         </div>
       )}
 

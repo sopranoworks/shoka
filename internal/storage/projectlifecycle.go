@@ -134,17 +134,18 @@ func (s *FSGitStorage) DeleteProject(ctx context.Context, namespace, projectName
 	// so the .db sibling files can be unlinked with no open handle.
 	s.evictProjectHandles(namespace, projectName)
 
-	// Remove all three on-disk artefacts together; collect errors so a partial failure is
-	// surfaced rather than silently leaving a sibling behind.
+	// Remove the project dir AND every derivative sibling DB together (catalog, index,
+	// deleted-log — via the single siblingDBPaths source of truth, so a newly-added sibling
+	// is never forgotten here). Collect errors so a partial failure is surfaced rather than
+	// silently leaving a sibling behind.
 	var errs []error
 	if rerr := os.RemoveAll(projectPath); rerr != nil {
 		errs = append(errs, fmt.Errorf("remove project dir: %w", rerr))
 	}
-	if rerr := os.Remove(s.catalogPath(namespace, projectName)); rerr != nil && !os.IsNotExist(rerr) {
-		errs = append(errs, fmt.Errorf("remove catalog db: %w", rerr))
-	}
-	if rerr := os.Remove(s.indexPath(namespace, projectName)); rerr != nil && !os.IsNotExist(rerr) {
-		errs = append(errs, fmt.Errorf("remove index db: %w", rerr))
+	for _, p := range s.siblingDBPaths(namespace, projectName) {
+		if rerr := os.Remove(p); rerr != nil && !os.IsNotExist(rerr) {
+			errs = append(errs, fmt.Errorf("remove sibling db %s: %w", filepath.Base(p), rerr))
+		}
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -221,9 +222,10 @@ func (s *FSGitStorage) DeleteNamespace(ctx context.Context, namespace string) er
 	return nil
 }
 
-// evictProjectHandles closes and unregisters a project's in-memory catalog and index
-// handles and drops its health state, so the on-disk .db siblings can be unlinked with no
-// open handle and no stale entry survives. It touches only this project's keys.
+// evictProjectHandles closes and unregisters a project's in-memory catalog, index, AND
+// deleted-log handles and drops its health state, so the on-disk .db siblings can be
+// unlinked/relocated with no open handle and no stale entry survives. It touches only this
+// project's keys.
 func (s *FSGitStorage) evictProjectHandles(namespace, projectName string) {
 	key := projectKey(namespace, projectName)
 	s.catMu.Lock()
@@ -246,6 +248,18 @@ func (s *FSGitStorage) evictProjectHandles(namespace, projectName string) {
 		delete(s.indexes, key)
 	}
 	s.idxMu.Unlock()
+	// The deleted-log is the third per-project sibling (2026-06-18); close its handle too so
+	// its <proj>.deleted.db can be unlinked/relocated with no open handle.
+	s.dlMu.Lock()
+	if dl, ok := s.deletedLogs[key]; ok {
+		if dl != nil {
+			if err := dl.Close(); err != nil {
+				s.log().Warn("deleted-log close on delete failed", "project", key, "err", err)
+			}
+		}
+		delete(s.deletedLogs, key)
+	}
+	s.dlMu.Unlock()
 	s.stateMu.Lock()
 	delete(s.states, key)
 	s.stateMu.Unlock()

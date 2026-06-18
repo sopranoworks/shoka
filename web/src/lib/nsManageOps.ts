@@ -18,9 +18,12 @@ export interface ForeignDir {
   adoptable: boolean
 }
 
-// A stray catalog/index .db whose project dir is gone.
+// A stray catalog/index/deleted-log .db whose project dir is gone. files are the actual
+// on-disk filenames (e.g. ["shoka.db"]) so the row can show the FULL filename, not the bare
+// base (which collided confusingly with a namespace name).
 export interface OrphanSibling {
   name: string
+  files?: string[]
 }
 
 export interface NamespaceHealth {

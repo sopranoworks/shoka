@@ -144,8 +144,14 @@ func (s *FSGitStorage) MoveProject(ctx context.Context, oldNs, projectName, newN
 // disposable derivatives, so a failed sibling rename falls back to remove-old + lazy
 // rebuild at the new location.
 func (s *FSGitStorage) completeMoveAfterRename(ctx context.Context, oldNs, projectName, newNs string) error {
-	s.relocateSiblingDB(s.catalogPath(oldNs, projectName), s.catalogPath(newNs, projectName))
-	s.relocateSiblingDB(s.indexPath(oldNs, projectName), s.indexPath(newNs, projectName))
+	// Relocate every derivative sibling DB (catalog, index, deleted-log) via the single
+	// siblingDBPaths source of truth — the old and new slices are parallel (same order), so
+	// a newly-added sibling travels with the move without editing this site.
+	oldSibs := s.siblingDBPaths(oldNs, projectName)
+	newSibs := s.siblingDBPaths(newNs, projectName)
+	for i := range oldSibs {
+		s.relocateSiblingDB(oldSibs[i], newSibs[i])
+	}
 
 	if s.nsReg != nil {
 		if err := s.nsReg.MoveProject(oldNs, projectName, newNs); err != nil {

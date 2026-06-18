@@ -28,7 +28,7 @@ func makeLeftover(t *testing.T, s *FSGitStorage, ns, name string, withDB bool) l
 		if err := os.WriteFile(dbPath, []byte("fake catalog db"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		lf.dbPath = dbPath
+		lf.dbPaths = append(lf.dbPaths, dbPath)
 	}
 	return lf
 }
@@ -67,8 +67,8 @@ func TestDiscoverProjects_SurfacesRepolessLeftover(t *testing.T) {
 	if got.treePath != lf.treePath {
 		t.Fatalf("leftover treePath = %q, want %q", got.treePath, lf.treePath)
 	}
-	if got.dbPath != lf.dbPath {
-		t.Fatalf("leftover dbPath = %q, want %q (sibling .db present)", got.dbPath, lf.dbPath)
+	if len(got.dbPaths) != 1 || got.dbPaths[0] != s.catalogPath("ns", "stray") {
+		t.Fatalf("leftover dbPaths = %v, want [%q] (sibling .db present)", got.dbPaths, s.catalogPath("ns", "stray"))
 	}
 }
 
@@ -82,8 +82,8 @@ func TestDiscoverProjects_LeftoverWithoutDB(t *testing.T) {
 	if len(leftovers) != 1 {
 		t.Fatalf("leftovers = %+v, want exactly one", leftovers)
 	}
-	if leftovers[0].dbPath != "" {
-		t.Fatalf("dbPath = %q, want empty (no sibling .db)", leftovers[0].dbPath)
+	if len(leftovers[0].dbPaths) != 0 {
+		t.Fatalf("dbPaths = %v, want empty (no sibling .db)", leftovers[0].dbPaths)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestRelocateLeftovers_MovesTreeAndDBToLostFound(t *testing.T) {
 	if _, err := os.Stat(lf.treePath); !os.IsNotExist(err) {
 		t.Fatalf("leftover tree still present, stat err=%v", err)
 	}
-	if _, err := os.Stat(lf.dbPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(lf.dbPaths[0]); !os.IsNotExist(err) {
 		t.Fatalf("leftover .db still present, stat err=%v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestRelocateLeftovers_IdempotentWhenTreeGone(t *testing.T) {
 		namespace: "ns",
 		name:      "stray",
 		treePath:  filepath.Join(s.baseDir, "ns", "stray"),
-		dbPath:    s.catalogPath("ns", "stray"),
+		dbPaths:   []string{s.catalogPath("ns", "stray")},
 	}
 
 	s.relocateLeftovers([]leftover{lf}, fixedTS)
@@ -211,7 +211,7 @@ func TestStartupInit_RelocatesLeftover(t *testing.T) {
 	if _, err := os.Stat(lf.treePath); !os.IsNotExist(err) {
 		t.Fatalf("leftover tree still present after relocation, stat err=%v", err)
 	}
-	if _, err := os.Stat(lf.dbPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(lf.dbPaths[0]); !os.IsNotExist(err) {
 		t.Fatalf("leftover .db still present after relocation, stat err=%v", err)
 	}
 }
