@@ -125,16 +125,33 @@ func (s *FSGitStorage) removeDeletedLogFile(namespace, projectName string) {
 // These are exactly the live edges that make the hook and the bounded repair walk
 // agree on the same net state. A failure logs + counts (dlUpdateFailed) but NEVER
 // fails the commit — the bounded repair is the safety net.
+//
+// Lazy-create discipline (2026-06-18): the store is created ONLY on a real deletion.
+// op:"delete" is the sole record-ADDING op, so it alone uses the create-capable
+// deletedLogFor. For write/move, dropping a path from the currently-deleted set is
+// meaningful only if a log already exists (a path can be deleted only after a prior
+// delete created the log), so they use the no-create deletedLogForRead and SKIP when it
+// is absent — a project that never deletes anything never gets an empty <p>.deleted.db
+// (the over-broad create-on-write that produced needless empty logs is removed).
 func (s *FSGitStorage) deletedLogApply(e wal.Entry, commitHash string, ts time.Time) {
 	if !s.deletedLogEnabled {
 		return
 	}
-	st, err := s.deletedLogFor(e.Namespace, e.Project)
-	if err != nil {
-		s.log().Warn("deleted-log unavailable at commit-land",
-			"namespace", e.Namespace, "project", e.Project, "op", e.Op, "err", err)
-		s.dlUpdateFailed.Add(1)
-		return
+	var st *deletedlog.Store
+	if e.Op == "delete" {
+		var err error
+		st, err = s.deletedLogFor(e.Namespace, e.Project) // create-capable: a delete records
+		if err != nil {
+			s.log().Warn("deleted-log unavailable at commit-land",
+				"namespace", e.Namespace, "project", e.Project, "op", e.Op, "err", err)
+			s.dlUpdateFailed.Add(1)
+			return
+		}
+	} else {
+		st = s.deletedLogForRead(e.Namespace, e.Project) // no-create: write/move only update
+		if st == nil {
+			return // no existing log ⇒ nothing to drop; do NOT create one
+		}
 	}
 	var applyErr error
 	switch e.Op {

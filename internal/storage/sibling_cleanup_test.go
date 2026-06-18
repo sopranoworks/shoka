@@ -27,6 +27,17 @@ func bfWriteCommit(t *testing.T, s *FSGitStorage, ns, proj, path, body string) {
 	s.WaitForWAL(30 * time.Second)
 }
 
+// bfDeleteCommit deletes a file and drains the WAL. A real op:"delete" is what creates the
+// <proj>.deleted.db (the lazy-create fix: write/move no longer create it), so these
+// sibling-cleanup tests seed the deleted-log via a delete, not a write.
+func bfDeleteCommit(t *testing.T, s *FSGitStorage, ns, proj, path string) {
+	t.Helper()
+	if err := s.DeleteFile(ns, proj, path); err != nil {
+		t.Fatalf("delete %s/%s/%s: %v", ns, proj, path, err)
+	}
+	s.WaitForWAL(30 * time.Second)
+}
+
 // #1 (core) — the classifier recognises .deleted.db: a LIVE project with all three sibling
 // DBs produces NO orphaned entry; a genuine stray catalog with no project dir still IS one.
 func TestBugfix_ClassifierRecognizesDeletedDB(t *testing.T) {
@@ -65,9 +76,10 @@ func TestBugfix_DeleteProjectRemovesDeletedLog(t *testing.T) {
 	if err := s.CreateProject("ns", "p"); err != nil {
 		t.Fatal(err)
 	}
-	bfWriteCommit(t, s, "ns", "p", "a.md", "x") // commit hook creates p.deleted.db
+	bfWriteCommit(t, s, "ns", "p", "a.md", "x")
+	bfDeleteCommit(t, s, "ns", "p", "a.md") // a real delete creates p.deleted.db
 	if _, err := os.Stat(s.deletedLogPath("ns", "p")); err != nil {
-		t.Fatalf("precondition: deleted-log should exist after a write: %v", err)
+		t.Fatalf("precondition: deleted-log should exist after a delete: %v", err)
 	}
 	if err := s.DeleteProject(context.Background(), "ns", "p"); err != nil {
 		t.Fatal(err)
@@ -95,6 +107,7 @@ func TestBugfix_MoveRelocatesDeletedLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	bfWriteCommit(t, s, "src", "p", "a.md", "x")
+	bfDeleteCommit(t, s, "src", "p", "a.md") // creates src p.deleted.db
 	if err := s.MoveProject(context.Background(), "src", "p", "dst"); err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +126,7 @@ func TestBugfix_RenameRelocatesDeletedLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	bfWriteCommit(t, s, "ns", "old", "a.md", "x")
+	bfDeleteCommit(t, s, "ns", "old", "a.md") // creates ns/old.deleted.db
 	if err := s.RenameProject(context.Background(), "ns", "old", "new"); err != nil {
 		t.Fatal(err)
 	}
@@ -131,8 +145,9 @@ func TestBugfix_LeftoverBundlesAllSiblings(t *testing.T) {
 	if err := s.CreateProject("ns", "p"); err != nil {
 		t.Fatal(err)
 	}
-	bfWriteCommit(t, s, "ns", "p", "a.md", "x") // p.deleted.db
-	bfTouch(t, s.indexPath("ns", "p"))          // p.index.db
+	bfWriteCommit(t, s, "ns", "p", "a.md", "x")
+	bfDeleteCommit(t, s, "ns", "p", "a.md") // p.deleted.db (real, via delete)
+	bfTouch(t, s.indexPath("ns", "p"))      // p.index.db
 	// Make it repo-less so discovery classifies it as a leftover.
 	if err := os.RemoveAll(filepath.Join(s.baseDir, "ns", "p", ".git")); err != nil {
 		t.Fatal(err)
@@ -156,7 +171,8 @@ func TestBugfix_CleanRefusesLiveSiblingButCleansStray(t *testing.T) {
 	if err := s.CreateProject("ns", "maintenance"); err != nil {
 		t.Fatal(err)
 	}
-	bfWriteCommit(t, s, "ns", "maintenance", "a.md", "x") // live maintenance.deleted.db
+	bfWriteCommit(t, s, "ns", "maintenance", "a.md", "x")
+	bfDeleteCommit(t, s, "ns", "maintenance", "a.md") // live maintenance.deleted.db (via delete)
 	dl := s.deletedLogPath("ns", "maintenance")
 	if _, err := os.Stat(dl); err != nil {
 		t.Fatalf("precondition: live deleted-log should exist: %v", err)
