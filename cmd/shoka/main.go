@@ -48,6 +48,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// boolPtr returns a pointer to b, for filling pointer-valued option/config fields.
+func boolPtr(b bool) *bool { return &b }
+
 func main() {
 	// Subcommand dispatch: `shoka project ...` / `shoka wal ...` / `shoka snapshot ...`
 	// run the CLI; anything else (flags or nothing) runs the server.
@@ -144,6 +147,13 @@ func main() {
 			UserEmail:   cfg.Identity.User.Email,
 			AgentName:   cfg.Identity.AgentDefault.Name,
 			AgentWorker: cfg.Identity.AgentDefault.Worker,
+		},
+		// Deleted-file log (the 2026-06-18 deleted-log directive). No interval — the
+		// repair is lazy (two triggers), never a sweep.
+		DeletedLog: storage.DeletedLogOptions{
+			Enabled:     boolPtr(cfg.Storage.DeletedLog.IsEnabled()),
+			RepairDepth: cfg.Storage.DeletedLog.EffectiveRepairDepth(),
+			MaxEntries:  cfg.Storage.DeletedLog.EffectiveMaxEntries(),
 		},
 	}
 	s, err := storage.NewFSGitStorageWithOptions(cfg.Storage.BaseDir, storageOpts)
@@ -732,6 +742,16 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 		Name:        "search_files",
 		Description: "Search a project's files by filename, content, or both (case-insensitive substring), returning matches with context snippets",
 	}, tools.LoggedTool(logger, "search_files", tools.SearchFilesHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "list_deleted",
+		Description: "List a project's currently-deleted files (path, the commit that deleted it, and when), a cheap read of the deleted-file log. Admin-only. Pair with revive_file to restore one.",
+	}, tools.LoggedTool(logger, "list_deleted", tools.ListDeletedHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "revive_file",
+		Description: "Restore a deleted file by re-creating its last content as a NEW commit (forward-only; history is preserved). Pass the path from list_deleted; from_commit optionally overrides the deletion commit. Admin-only. Errors clearly if git no longer has the deletion (cap eviction or external history rewrite).",
+	}, tools.LoggedTool(logger, "revive_file", tools.ReviveFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "recover_project",

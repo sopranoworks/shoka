@@ -335,6 +335,45 @@ func (b BackupConfig) EffectiveRetentionCount() int {
 	return *b.RetentionCount
 }
 
+// DeletedLogConfig controls the per-project deleted-file log (the 2026-06-18
+// deleted-log directive): the live currently-deleted set written at the commit
+// funnel and rebuilt by a bounded recent-commit repair walk. Unlike index /
+// lost_found / oauth_cleaner it has NO interval, because there is deliberately NO
+// background sweep: repair is lazy on two triggers (the log is absent, or a
+// revival finds its recorded commit gone). Enabled is a pointer so an absent block
+// defaults to TRUE while an explicit false is kept. RepairDepth bounds the rebuild
+// walk (default 50 — the cost report's stable since_last50 window); MaxEntries is
+// the FIFO cap (default 1000). Both are pointers so an absent value takes the
+// default while an explicit value (incl. 0 = unbounded) is honoured.
+type DeletedLogConfig struct {
+	Enabled     *bool `yaml:"enabled"`
+	RepairDepth *int  `yaml:"repair_depth"`
+	MaxEntries  *int  `yaml:"max_entries"`
+}
+
+// IsEnabled reports the effective enabled value (default true).
+func (d DeletedLogConfig) IsEnabled() bool {
+	return d.Enabled == nil || *d.Enabled
+}
+
+// EffectiveRepairDepth returns the repair-walk depth, defaulting an absent value
+// to 50; an explicit value (including 0) is honoured.
+func (d DeletedLogConfig) EffectiveRepairDepth() int {
+	if d.RepairDepth == nil {
+		return 50
+	}
+	return *d.RepairDepth
+}
+
+// EffectiveMaxEntries returns the FIFO cap, defaulting an absent value to 1000; an
+// explicit value (including 0 = unbounded) is honoured.
+func (d DeletedLogConfig) EffectiveMaxEntries() int {
+	if d.MaxEntries == nil {
+		return 1000
+	}
+	return *d.MaxEntries
+}
+
 // validateBackupScope checks a scope string is one of the accepted forms. It
 // mirrors storage.ParseScope's syntax without importing storage (config stays
 // dependency-light; storage.ParseScope is the authoritative runtime parser).
@@ -434,6 +473,7 @@ type Config struct {
 		Index        IndexConfig        `yaml:"index"`
 		Backup       BackupConfig       `yaml:"backup"`
 		OAuthCleaner OAuthCleanerConfig `yaml:"oauth_cleaner"`
+		DeletedLog   DeletedLogConfig   `yaml:"deleted_log"`
 	} `yaml:"storage"`
 	FileLock  FileLockConfig  `yaml:"filelock"`
 	WAL       WALConfig       `yaml:"wal"`

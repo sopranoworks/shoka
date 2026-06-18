@@ -88,6 +88,20 @@ const (
 	// History) — no storage or MCP-tool change.
 	MsgDeleteFile MessageType = "DELETE_FILE"
 	MsgDeleteAck  MessageType = "DELETE_ACK"
+	// MsgListDeleted lists a project's currently-deleted files (the 2026-06-18
+	// deleted-log directive) — a cheap O(cap) read of the per-project deleted-file
+	// log (no git walk); the response rides the same type carrying the deleted
+	// entries. MsgReviveFile re-creates one deleted file forward-only (read the
+	// content at the deletion commit's parent, write it back as a NEW commit);
+	// MsgReviveAck carries the revived path back, OR a clear divergence error (the
+	// deletion commit is gone from git — cap eviction or external rewrite) so the UI
+	// surfaces "can no longer be restored", never a silent failure. Both are
+	// ADMIN-ONLY (the deleted overlay is an admin affordance), gated server-side via
+	// wsLevels — distinct from the client-side grace-period trash-can (DELETE_FILE),
+	// which is recent/undoable; this surface is the full git past with no grace.
+	MsgListDeleted MessageType = "LIST_DELETED"
+	MsgReviveFile  MessageType = "REVIVE_FILE"
+	MsgReviveAck   MessageType = "REVIVE_ACK"
 	// MsgRecoverProject is the in-product recovery for a project stuck in
 	// `corrupted` (uncommitted working-tree drift): it re-syncs the write-path
 	// baseline to the ACTUAL on-disk git HEAD and clears a FALSE corrupted flag,
@@ -611,6 +625,12 @@ var wsLevels = map[MessageType]wsOp{
 	MsgRenameProject: {authz.LevelAdmin, false},
 
 	MsgRecoverProject: {authz.LevelAdmin, false},
+
+	// Deleted-file log ops (B-28, the 2026-06-18 directive): admin on the target
+	// namespace (the recover_project template; namespace-scoped, not global).
+	MsgListDeleted: {authz.LevelAdmin, false},
+	MsgReviveFile:  {authz.LevelAdmin, false},
+
 	MsgOAuthList:      {authz.LevelAdmin, true},
 	MsgOAuthRevoke:    {authz.LevelAdmin, true},
 	MsgOAuthIssueSelf: {authz.LevelAdmin, true},
@@ -811,6 +831,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleDeleteFile(client, wsMsg.Payload)
 		case MsgRecoverProject:
 			m.handleRecoverProject(client, wsMsg.Payload)
+		case MsgListDeleted:
+			m.handleListDeleted(client, wsMsg.Payload)
+		case MsgReviveFile:
+			m.handleReviveFile(client, wsMsg.Payload)
 		case MsgOAuthList:
 			m.handleOAuthList(client)
 		case MsgOAuthRevoke:

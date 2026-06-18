@@ -138,3 +138,34 @@ func TestAuthzMiddleware_NonToolsCallPassthrough(t *testing.T) {
 		t.Fatal("non-tools/call must reach next unconditionally")
 	}
 }
+
+// TestAuthzMiddleware_DeletedLogAdminOnly: list_deleted/revive_file are admin on
+// the target namespace (B-28 deleted-log). A read-write principal is denied; the
+// namespace admin and the super-user pass.
+func TestAuthzMiddleware_DeletedLogAdminOnly(t *testing.T) {
+	if got := toolLevel("list_deleted"); got != authz.LevelAdmin {
+		t.Errorf("list_deleted level = %v, want admin", got)
+	}
+	if got := toolLevel("revive_file"); got != authz.LevelAdmin {
+		t.Errorf("revive_file level = %v, want admin", got)
+	}
+	for _, tool := range []string{"list_deleted", "revive_file"} {
+		args := `{"namespace":"foo","project_name":"x","path":"a.md"}`
+		// read-write on foo → denied (needs admin)
+		if reached, res := runGate(t, "namespace:foo:rw", tool, args); reached || !isError(res) {
+			t.Fatalf("%s must require admin (rw denied)", tool)
+		}
+		// admin on a DIFFERENT namespace → denied
+		if reached, res := runGate(t, "namespace:bar:admin", tool, args); reached || !isError(res) {
+			t.Fatalf("%s on foo must be denied to a bar-admin", tool)
+		}
+		// admin on foo → allowed
+		if reached, res := runGate(t, "namespace:foo:admin", tool, args); !reached || isError(res) {
+			t.Fatalf("%s on foo must be allowed to a foo-admin", tool)
+		}
+		// super-user → allowed
+		if reached, res := runGate(t, "*", tool, args); !reached || isError(res) {
+			t.Fatalf("%s must be allowed to a super-user", tool)
+		}
+	}
+}

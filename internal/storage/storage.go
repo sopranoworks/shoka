@@ -141,6 +141,21 @@ type StorageService interface {
 	// ReadFileAtVersion reads the content of a file at a specific Git commit hash.
 	ReadFileAtVersion(namespace, projectName, path, hash string) (string, error)
 
+	// ListDeleted returns a project's currently-deleted files (the 2026-06-18
+	// deleted-log directive) — a cheap O(cap) read of the per-project deleted-file
+	// log, no git walk and no on-read validation. If the log is absent it is first
+	// rebuilt by a bounded recent-commit repair walk (trigger a).
+	ListDeleted(namespace, projectName string) ([]DeletedFile, error)
+
+	// ReviveFile re-creates a deleted file forward-only: it reads the file's content
+	// at the parent of its deletion commit (the O(1) last-present content) and writes
+	// it back as a new commit. fromCommit overrides the recorded deletion commit;
+	// when empty, the deleted-log entry is used, falling back to a name-specified
+	// path-filtered history scan. Returns ErrDeletionDiverged if git no longer has
+	// the deletion (cap eviction / external rewrite), which also triggers a bounded
+	// refresh of the log.
+	ReviveFile(ctx context.Context, namespace, projectName, path, fromCommit string) error
+
 	// DiffVersions computes the structured diff of path between two explicit,
 	// immutable commits (fromHash → toHash). It opens an independent PlainOpen
 	// handle and reads only immutable objects under a deadline, holding NO lock

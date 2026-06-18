@@ -14,6 +14,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/storage/opmeta"
 	"github.com/sopranoworks/shoka/internal/storage/wal"
 	"github.com/sopranoworks/shoka/internal/storage/walworker"
 )
@@ -122,7 +123,13 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 	}
 	committer := object.Signature{Name: id.UserName, Email: id.UserEmail, When: now}
 
-	msg := subject + "\n\n" + id.Trailers()
+	// Append the machine-readable Shoka-Op trailer (the 2026-06-18 accuracy fix):
+	// one JSON line describing the operation, so BOTH the live deleted-log hook and
+	// the bounded repair walk read the SAME truth and classify delete-vs-move
+	// identically. Built from the WAL entry; no timestamp (the commit time is
+	// authoritative). The message was unparsed before this, so the line collides
+	// with no reader.
+	msg := subject + "\n\n" + id.Trailers() + opmeta.Trailer(opMetaForEntry(e))
 	commit := &object.Commit{Author: author, Committer: committer, Message: msg, TreeHash: newTree, ParentHashes: parents}
 	cobj := r.Storer.NewEncodedObject()
 	if err := commit.Encode(cobj); err != nil {
@@ -148,6 +155,13 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 			"project", projectKey(e.Namespace, e.Project), "error", ierr)
 	}
 
+	// Update the per-project deleted-file log (the 2026-06-18 deleted-log directive)
+	// at the commit-land funnel: the deletion commit hash exists only now, after
+	// advanceHead. Best-effort and keyed off the commit Op — one hook captures every
+	// delete path (single delete + move-source) and nets out re-creates; a failure
+	// is logged + counted but never fails the commit (the bounded repair is the net).
+	s.deletedLogApply(e, commitHash.String(), now)
+
 	s.emit(ChangeEvent{
 		Event:      event,
 		Namespace:  e.Namespace,
@@ -157,6 +171,20 @@ func (s *FSGitStorage) commitEntry(ctx context.Context, e wal.Entry) error {
 		Timestamp:  now,
 	})
 	return nil
+}
+
+// opMetaForEntry maps a WAL entry to the operation metadata embedded in the commit
+// message. e.Op is "delete"/"move"/anything-else (the commit switch treats the
+// default as "write"), mirrored here: a move carries the source as From.
+func opMetaForEntry(e wal.Entry) opmeta.Meta {
+	switch e.Op {
+	case "delete":
+		return opmeta.Meta{Op: opmeta.OpDelete, Path: e.Path}
+	case "move":
+		return opmeta.Meta{Op: opmeta.OpMove, Path: e.Path, From: e.MoveFrom}
+	default:
+		return opmeta.Meta{Op: opmeta.OpWrite, Path: e.Path}
+	}
 }
 
 // quarantineEntry is the walworker QuarantineFunc — the deposit counterpart to

@@ -219,6 +219,18 @@ storage:
     enabled: true      # set false to disable the worker (dev/debug)
     interval: 5m       # sweep cadence
 
+  # Deleted-file log. A per-project store (<base_dir>/<namespace>/<project>.deleted.db)
+  # of currently-deleted files, written at the commit funnel and used by the admin
+  # "deleted files" view + the revive_file / list_deleted ops. There is deliberately
+  # NO interval / background sweep: repair is LAZY, on two triggers only — the log is
+  # absent (first use), or a revival finds its recorded commit gone from git — each
+  # rebuilding from a BOUNDED recent-commit walk (never the full history). Defaults
+  # shown; an absent block uses them.
+  deleted_log:
+    enabled: true       # set false to disable the deleted-file log + revive/list ops
+    repair_depth: 50    # bounded rebuild-walk depth in commits (the stable since_last50 window)
+    max_entries: 1000   # FIFO cap on remembered deletions (oldest evicted; 0 = unbounded)
+
   # OAuth dead-series cleaner. The OAuth token store has no other garbage
   # collection, so fully-dead token series (both the access AND refresh token
   # expired) would otherwise accumulate forever. This periodic sweep deletes a

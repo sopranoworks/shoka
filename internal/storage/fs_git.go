@@ -20,6 +20,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage/catalog"
+	"github.com/sopranoworks/shoka/internal/storage/deletedlog"
 	"github.com/sopranoworks/shoka/internal/storage/filelock"
 	"github.com/sopranoworks/shoka/internal/storage/index"
 	"github.com/sopranoworks/shoka/internal/storage/nsregistry"
@@ -62,6 +63,26 @@ type FSGitStorage struct {
 	// path is I2/I3).
 	idxMu   sync.Mutex
 	indexes map[string]*index.Index
+
+	// deletedLogs holds one open per-project deleted-file log (the 2026-06-18
+	// deleted-log directive) keyed by "<namespace>/<project>", at the sibling path
+	// <base>/<ns>/<project>.deleted.db. It is a SEPARATE store (not a bucket in the
+	// index — keeps the index's present-paths-only invariant), a disposable
+	// derivative of git: the commit-land hook keeps it live and a bounded two-trigger
+	// repair rebuilds it when absent. dlMu guards only the map; the bbolt handles are
+	// concurrency-safe. dlUpdateFailed counts best-effort hook failures (the I1
+	// idxUpdateFailed precedent): a failure never fails the commit; repair is the net.
+	dlMu           sync.Mutex
+	deletedLogs    map[string]*deletedlog.Store
+	dlUpdateFailed atomic.Int64
+
+	// Deleted-log tunables (from Options.DeletedLog / config storage.deleted_log).
+	// There is deliberately NO interval: repair is lazy on two triggers (log absent;
+	// revival-hash-gone), never a background sweep. repairDepth bounds the recent-
+	// commit rebuild walk; maxEntries is the FIFO cap.
+	deletedLogEnabled     bool
+	deletedLogRepairDepth int
+	deletedLogMaxEntries  int
 
 	// fixLinksKicks carries post-move fix_links reconciliation requests (I3). A
 	// successful Move does a non-blocking send here (so a move never blocks on a
@@ -223,6 +244,38 @@ type Options struct {
 	// storage constructed without identity (e.g. in tests) still produces an
 	// intentional author. PROVISIONAL — see internal/identity (B-28).
 	Identity identity.Defaults
+
+	// DeletedLog carries the deleted-file log tunables (config storage.deleted_log).
+	// The zero value is a sensible default-on store (see deletedLogDefaults).
+	DeletedLog DeletedLogOptions
+}
+
+// DeletedLogOptions configures the per-project deleted-file log. Enabled is a
+// pointer so the zero value (nil) means "default on" — storage built without
+// config (e.g. tests) gets a live deleted-log; the config layer passes an explicit
+// value. RepairDepth bounds the recent-commit repair walk; MaxEntries is the FIFO
+// cap. There is no interval — repair is lazy (two triggers), never a sweep.
+type DeletedLogOptions struct {
+	Enabled     *bool
+	RepairDepth int
+	MaxEntries  int
+}
+
+// deletedLogDefaults resolves unset deleted-log tunables to the directive's
+// defaults (enabled true, repair_depth 50, max_entries 1000). A nil Enabled or a
+// non-positive RepairDepth/MaxEntries means "unset"; the config layer applies its
+// own defaults too, so this only guards storage built without config (e.g. tests).
+func deletedLogDefaults(o DeletedLogOptions) (enabled bool, repairDepth, maxEntries int) {
+	enabled = o.Enabled == nil || *o.Enabled
+	repairDepth = o.RepairDepth
+	if repairDepth <= 0 {
+		repairDepth = 50
+	}
+	maxEntries = o.MaxEntries
+	if maxEntries <= 0 {
+		maxEntries = 1000
+	}
+	return enabled, repairDepth, maxEntries
 }
 
 // ChangeEvent describes a successful mutation, delivered to a registered handler
@@ -349,6 +402,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		states:           make(map[string]ProjectState),
 		catalogs:         make(map[string]*catalog.Catalog),
 		indexes:          make(map[string]*index.Index),
+		deletedLogs:      make(map[string]*deletedlog.Store),
 		fixLinksKicks:    make(chan fixLinksKick, fixLinksKickBuffer),
 		notify:           opts.NotifyCenter,
 		nsReg:            nsReg,
@@ -356,6 +410,7 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		movingNs:         make(map[string]bool),
 		identityDefaults: withIdentityFallback(opts.Identity),
 	}
+	s.deletedLogEnabled, s.deletedLogRepairDepth, s.deletedLogMaxEntries = deletedLogDefaults(opts.DeletedLog)
 	s.pool = walworker.NewPool(w, s.commitEntry, s.quarantineEntry, opts.WALWorker)
 	return s, nil
 }
@@ -413,6 +468,16 @@ func (s *FSGitStorage) Close() error {
 		delete(s.indexes, key)
 	}
 	s.idxMu.Unlock()
+	s.dlMu.Lock()
+	for key, dl := range s.deletedLogs {
+		if dl != nil {
+			if err := dl.Close(); err != nil {
+				s.log().Warn("deleted-log close failed", "project", key, "err", err)
+			}
+		}
+		delete(s.deletedLogs, key)
+	}
+	s.dlMu.Unlock()
 	if s.nsReg != nil {
 		if err := s.nsReg.Close(); err != nil {
 			s.log().Warn("namespace registry close failed", "err", err)

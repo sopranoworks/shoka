@@ -93,6 +93,12 @@ var toolLevels = map[string]authz.Level{
 	"delete_file":    authz.LevelWrite,
 	// admin
 	"recover_project": authz.LevelAdmin,
+	// B-28 deleted-file log (the 2026-06-18 directive): listing/reviving deleted files
+	// is admin on the target namespace (the recover_project template). Revival is a
+	// privileged, near-destructive-adjacent op; listing the deleted overlay is also
+	// admin-gated so the enumeration surface stays admin-only.
+	"list_deleted": authz.LevelAdmin,
+	"revive_file":  authz.LevelAdmin,
 	// admin on the target namespace (B-28 ns/proj management part 1): project
 	// create/delete are namespace:admin (create RAISED from write — a write-only
 	// principal can no longer create projects). The namespace ops carry admin here too,
