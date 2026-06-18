@@ -52,6 +52,19 @@ export function backendCreateProject(
   })
 }
 
+// Delete a file over the control socket (a git-tracked hard remove), so it lands
+// in the project's deleted-file log. Used to seed a deleted file for the
+// deleted-view / revive E2E.
+export function backendDelete(
+  namespace: string,
+  project: string,
+  path: string,
+): Promise<void> {
+  return withWs(async (ws) => {
+    await rpc(ws, 'DELETE_FILE', { namespace, projectName: project, path })
+  })
+}
+
 // Move a file over a SEPARATE /ws/ui connection, so the server broadcasts a
 // file.move NOTIFY to the page (which is sender-excluded only from its OWN
 // connection's moves). Used to test the open-view follow on another connection.

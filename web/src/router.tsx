@@ -32,6 +32,12 @@ const NewFilePage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
 )
+// The admin "Deleted files" view (B-28, the 2026-06-18 deleted-log directive):
+// lists a project's deleted files and revives one forward-only. Lazy — it is an
+// admin-only power-user surface, off the initial bundle.
+const DeletedPage = lazy(() =>
+  import('./pages/DeletedPage').then((m) => ({ default: m.DeletedPage })),
+)
 
 // Wrap a lazily-loaded page in a Suspense boundary with the delayed fallback.
 function lazyRoute(Page: React.ComponentType) {
@@ -196,6 +202,15 @@ const settingsRoute = createRoute({
   component: lazyRoute(SettingsPage),
 })
 
+// "/p/$namespace/$project/deleted" the admin deleted-files view (B-28). Lists the
+// project's currently-deleted files and revives one. Admin-only (server gate
+// authoritative; the page also hides for a non-admin).
+const deletedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/p/$namespace/$project/deleted',
+  component: lazyRoute(DeletedPage),
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   projectRoute,
@@ -207,6 +222,7 @@ const routeTree = rootRoute.addChildren([
   connectionsRoute,
   projectSettingsRoute,
   settingsRoute,
+  deletedRoute,
 ])
 
 export const router = createRouter({
