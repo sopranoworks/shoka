@@ -284,8 +284,9 @@ func main() {
 		// OAuth dead-series cleaner (2026-06-15 authz foundation): a periodic sweep
 		// deleting fully-dead token series (refresh expired + grace) — the OAuth store
 		// has no other GC, so dead series otherwise accumulate forever. ON by default;
-		// tick-only (no boot sweep), mirroring the storage sweep workers. Only started
-		// here, inside the OAuth-enabled block, so it never runs without a store.
+		// runs one sweep at boot (so restarts more frequent than the interval still
+		// purge dead series), then on the ticker. Only started here, inside the
+		// OAuth-enabled block, so it never runs without a store.
 		oauthStore.StartCleaner(ctx, oauthstore.CleanerConfig{
 			Enabled:  cfg.Storage.OAuthCleaner.IsEnabled(),
 			Interval: cfg.Storage.OAuthCleaner.Interval.Std(),
