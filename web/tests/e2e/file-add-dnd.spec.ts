@@ -98,6 +98,17 @@ test('drops a file onto a FOLDER row → it lands under that folder', async ({ p
 
   await dropFile(page, 'in-folder.md', '# In folder\n', 'dropdir')
 
+  // Wait for the async drop → SAVE_FILE round-trip to actually SETTLE before navigating.
+  // The per-file toast is emitted only after addDroppedFile resolves (the save committed
+  // AND the tree query was invalidated). dropFile only DISPATCHES the drop and returns;
+  // navigating before the save completes would tear the page down mid-save and the file
+  // would never be created — the historical flake. This waits on the real completion
+  // signal (duration-independent), accepting either outcome — a fresh "Added …" or, when
+  // the file already exists (e.g. under --repeat-each), the "Kept the existing …" settle.
+  await expect(
+    page.getByText(/(Added|Kept the existing) dropdir\/in-folder\.md/),
+  ).toBeVisible({ timeout: 10_000 })
+
   // It was created at dropdir/in-folder.md (folder-targeted destination): the blob
   // route for that exact path loads and renders the dropped content.
   await page.goto(`/p/${NS}/${PROJ}/blob/dropdir/in-folder.md`)
@@ -129,7 +140,10 @@ test('a name collision is NOT silently overwritten — confirm overwrites, cance
   await expect(page.getByText('ORIGINAL CANCEL', { exact: false })).toBeVisible()
   page.once('dialog', (d) => void d.dismiss())
   await dropFile(page, 'collide-cancel.md', '# SHOULD NOT LAND\n')
-  // Give the (declined) flow a beat, then confirm the original is untouched.
+  // Wait until the declined flow has fully SETTLED (the conflict round-trip completed and
+  // the user declined → the "Kept the existing …" toast) before navigating — not a fixed
+  // beat. Only then assert the original is untouched.
+  await expect(page.getByText('Kept the existing collide-cancel.md')).toBeVisible({ timeout: 10_000 })
   await page.goto(`/p/${NS}/${PROJ}/blob/collide-cancel.md`)
   await expect(page.getByText('ORIGINAL CANCEL', { exact: false })).toBeVisible({
     timeout: 10_000,
@@ -141,6 +155,9 @@ test('a name collision is NOT silently overwritten — confirm overwrites, cance
   await expect(page.getByText('ORIGINAL ACCEPT', { exact: false })).toBeVisible()
   page.once('dialog', (d) => void d.accept())
   await dropFile(page, 'collide-accept.md', '# OVERWRITTEN BY DROP\n')
+  // Wait for the confirmed overwrite to LAND (the "Added <path>" toast fires only after
+  // the if_match resend committed) before navigating — same real-signal gate as above.
+  await expect(page.getByText('Added collide-accept.md')).toBeVisible({ timeout: 10_000 })
   await page.goto(`/p/${NS}/${PROJ}/blob/collide-accept.md`)
   await expect(page.getByText('OVERWRITTEN BY DROP', { exact: false })).toBeVisible({
     timeout: 10_000,
