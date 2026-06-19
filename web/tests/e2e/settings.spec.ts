@@ -294,6 +294,33 @@ test('Bug B: "+ Add namespace" is hidden while a wildcard grant is present', asy
   await expect(form.getByLabel('namespace')).toHaveCount(0)
 })
 
+test('Bug: "Generate invite code" is disabled when there are zero grants', async ({ page }) => {
+  await loginOrRegister(page, { accept: false })
+  await openUserManagement(page)
+  const form = page.getByRole('form', { name: 'Create invite' })
+  const gen = page.getByRole('button', { name: 'Generate invite code' })
+
+  // A valid email + a valid grant → enabled.
+  await page.getByLabel('invitee email').fill('a@example.com')
+  await form.getByLabel('namespace').first().fill('demo')
+  await expect(gen).toBeEnabled()
+
+  // Delete the only grant row → ZERO grants → disabled (the bug: it stayed enabled).
+  await form.getByRole('button', { name: 'remove grant' }).first().click()
+  await expect(form.getByLabel('namespace')).toHaveCount(0)
+  await expect(gen).toBeDisabled()
+
+  // Re-entering the email must NOT re-enable it while grants are zero.
+  await page.getByLabel('invitee email').fill('')
+  await page.getByLabel('invitee email').fill('b@example.com')
+  await expect(gen).toBeDisabled()
+
+  // All-rows-blank variant: add a row back but leave it blank → still disabled.
+  await form.getByRole('button', { name: /Add namespace/ }).click()
+  await expect(form.getByLabel('namespace')).toHaveCount(1)
+  await expect(gen).toBeDisabled()
+})
+
 test('Bug 2: revoking the backing pending invite clears the displayed code', async ({ page }) => {
   await loginOrRegister(page, { accept: false })
   await openUserManagement(page)

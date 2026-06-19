@@ -388,6 +388,10 @@ function InviteSection({
   // A non-wildcard grant row with an empty namespace is invalid; surface it BEFORE
   // submit (red frame on the input, disabled submit) instead of only erroring on submit.
   const hasEmptyNs = grants.some((g) => g.target !== '*' && g.target.trim() === '')
+  // There must be at least one VALID grant — a non-empty target (a wildcard '*' counts).
+  // This is the effective set onCreate sends; with zero rows (or all rows blank) it is
+  // empty even when the email is filled, so the button must disable (the server rejects it).
+  const noValidGrant = !grants.some((g) => g.target.trim() !== '')
 
   return (
     <section className={styles.invites}>
@@ -455,13 +459,15 @@ function InviteSection({
         <button
           type="submit"
           className={`${styles.btn} ${styles.primary}`}
-          disabled={email.trim() === '' || hasEmptyNs}
+          disabled={email.trim() === '' || hasEmptyNs || noValidGrant}
           title={
             email.trim() === ''
               ? 'Enter an invitee email'
-              : hasEmptyNs
-                ? 'Fill in every namespace, or remove the empty row'
-                : ''
+              : noValidGrant
+                ? 'Add at least one namespace grant'
+                : hasEmptyNs
+                  ? 'Fill in every namespace, or remove the empty row'
+                  : ''
           }
         >
           Generate invite code
