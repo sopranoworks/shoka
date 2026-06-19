@@ -38,6 +38,50 @@ func TestNewHandle_UniqueAndOpaque(t *testing.T) {
 	}
 }
 
+// RevokeByPrincipalEmail revokes every series AND pending auth code for one principal
+// (case-insensitive), leaves other principals untouched, and is idempotent — the
+// cross-store access cut for user disable/delete (B-28).
+func TestRevokeByPrincipalEmail(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	alice := Principal{Name: "Alice", Email: "alice@example.com"}
+	bob := Principal{Name: "Bob", Email: "bob@example.com"}
+	a1, _ := s.NewSeries("https://c/cimd", alice, "https://shoka/mcp", "*", now, accessTTL, refreshTTL)
+	a2, _ := s.NewSeries("https://c/cimd", alice, "https://shoka/mcp", "*", now, accessTTL, refreshTTL)
+	b1, _ := s.NewSeries("https://c/cimd", bob, "https://shoka/mcp", "*", now, accessTTL, refreshTTL)
+	if err := s.PutCode("alice-code", CodeRecord{ClientID: "x", Principal: alice, Expiry: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("PutCode: %v", err)
+	}
+
+	n, err := s.RevokeByPrincipalEmail("ALICE@example.com") // case-insensitive match
+	if err != nil {
+		t.Fatalf("RevokeByPrincipalEmail: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 series revoked, got %d", n)
+	}
+	// Alice's access tokens no longer authorize.
+	if _, err := s.Lookup(a1.AccessToken, now); err != ErrNotFound {
+		t.Fatalf("alice a1 should be gone, got %v", err)
+	}
+	if _, err := s.Lookup(a2.AccessToken, now); err != ErrNotFound {
+		t.Fatalf("alice a2 should be gone, got %v", err)
+	}
+	// Alice's pending code is gone (cannot mint a fresh token).
+	if _, err := s.TakeCode("alice-code", now); err != ErrNotFound {
+		t.Fatalf("alice code should be gone, got %v", err)
+	}
+	// Bob's series is untouched.
+	if _, err := s.Lookup(b1.AccessToken, now); err != nil {
+		t.Fatalf("bob's token must still authorize, got %v", err)
+	}
+	// Idempotent: revoking again revokes nothing.
+	n2, err := s.RevokeByPrincipalEmail("alice@example.com")
+	if err != nil || n2 != 0 {
+		t.Fatalf("re-revoke should be 0,nil; got %d,%v", n2, err)
+	}
+}
+
 // A DCR-registered client (B-63) round-trips: PutClient persists it, GetClient
 // resolves it, and an unknown id is ErrNotFound (the /token re-register signal).
 func TestRegisteredClient_PutGetAndUnknown(t *testing.T) {

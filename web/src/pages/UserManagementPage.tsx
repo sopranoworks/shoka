@@ -4,6 +4,7 @@ import {
   listUsers,
   listInvites,
   setUserScope,
+  setUserEnabled,
   removeUser,
   createInvite,
   revokeInvite,
@@ -68,6 +69,21 @@ export function UserManagementPage() {
     }
   }
 
+  async function onToggleEnabled(email: string, enabled: boolean) {
+    try {
+      await setUserEnabled(email, enabled)
+      toast({
+        level: 'warn',
+        text: enabled
+          ? `Enabled ${email}.`
+          : `Disabled ${email} — their sessions and MCP tokens are revoked.`,
+      })
+      refreshUsers()
+    } catch (e) {
+      toast({ level: 'warn', text: msg(e) })
+    }
+  }
+
   return (
     <div className={styles.page}>
       <h1 className={styles.title}>User management</h1>
@@ -87,6 +103,7 @@ export function UserManagementPage() {
                 <th>Email</th>
                 <th>Name</th>
                 <th>Permissions</th>
+                <th>State</th>
                 <th></th>
               </tr>
             </thead>
@@ -101,6 +118,7 @@ export function UserManagementPage() {
                   onCancel={() => setEditing(null)}
                   onSave={(scope) => onSaveScope(u.email, scope)}
                   onRemove={() => onRemove(u.email)}
+                  onToggleEnabled={() => onToggleEnabled(u.email, u.disabled)}
                 />
               ))}
             </tbody>
@@ -126,6 +144,7 @@ function UserRow({
   onCancel,
   onSave,
   onRemove,
+  onToggleEnabled,
 }: {
   user: UserInfo
   namespaces: string[]
@@ -134,6 +153,7 @@ function UserRow({
   onCancel: () => void
   onSave: (scope: string) => void
   onRemove: () => void
+  onToggleEnabled: () => void
 }) {
   return (
     <>
@@ -141,11 +161,21 @@ function UserRow({
         <td className={styles.mono}>{user.email}</td>
         <td>{user.display_name}</td>
         <td>{describeScope(user.scope)}</td>
+        <td data-testid="user-state">
+          {user.disabled ? <span className={styles.disabled}>Disabled</span> : 'Active'}
+        </td>
         <td className={styles.actions}>
           {!editing && (
             <>
               <button className={styles.btn} onClick={onEdit}>
                 Edit permissions
+              </button>
+              <button
+                className={styles.btn}
+                onClick={onToggleEnabled}
+                aria-label={user.disabled ? 'Enable user' : 'Disable user'}
+              >
+                {user.disabled ? 'Enable' : 'Disable'}
               </button>
               <button className={`${styles.btn} ${styles.danger}`} onClick={onRemove}>
                 Remove
@@ -156,7 +186,7 @@ function UserRow({
       </tr>
       {editing && (
         <tr>
-          <td colSpan={4}>
+          <td colSpan={5}>
             <ScopeEditor
               initial={user.scope}
               namespaces={namespaces}

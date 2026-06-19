@@ -77,8 +77,13 @@ type UserRecord struct {
 	TOTPSecretEnc []byte                `json:"totp_secret_enc,omitempty"` // AES-256-GCM(base32 secret); empty = TOTP not enrolled
 	Credentials   []webauthn.Credential `json:"credentials,omitempty"`     // zero+ registered passkeys (public material only)
 	Scope         string                `json:"scope"`                     // authorization grant; first user = AdminScope
-	CreatedAt     time.Time             `json:"created_at"`
-	UpdatedAt     time.Time             `json:"updated_at"`
+	// Disabled, when true, locks the account out: login is refused after credential
+	// verification and the user's live sessions + OAuth tokens are revoked on disable
+	// (B-28). A record written before this field existed decodes Disabled as false
+	// (JSON omits the absent key) — i.e. enabled — so no migration runs.
+	Disabled  bool      `json:"disabled,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // WebAuthnID implements webauthn.User: the opaque user handle (not the email, to

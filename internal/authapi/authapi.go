@@ -318,6 +318,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A disabled account is refused AFTER credential verification (so this never leaks
+	// account existence to an unauthenticated caller) and BEFORE any session is minted.
+	if u.Disabled {
+		writeError(w, http.StatusForbidden, "this account has been disabled")
+		return
+	}
 	h.startSession(w, r, u.Email)
 	writeJSON(w, http.StatusOK, statusResponse{
 		UsersExist:    true,

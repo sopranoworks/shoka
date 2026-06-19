@@ -163,6 +163,12 @@ func (h *Handler) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusUnauthorized, "passkey assertion failed")
 		return
 	}
+	// A disabled account is refused AFTER the assertion verifies and BEFORE any session
+	// is minted (mirrors handleLogin) — the flag is inert without BOTH login gates.
+	if u.Disabled {
+		writeError(w, http.StatusForbidden, "this account has been disabled")
+		return
+	}
 	// Persist the updated authenticator sign count (clone-detection hygiene).
 	updateCredential(u, cred)
 	_ = h.users.PutUser(u)

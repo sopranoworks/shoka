@@ -156,6 +156,41 @@ func TestLogin_PasswordAndTOTP(t *testing.T) {
 	}
 }
 
+// TestLogin_DisabledUserRefused: a disabled account is refused at handleLogin AFTER the
+// correct password (403, no session); re-enabling restores login. The gate is what gives
+// the Disabled flag teeth on the password path (B-28).
+func TestLogin_DisabledUserRefused(t *testing.T) {
+	h, us := newTestHandler(t, true)
+	rec := postJSON(t, h, "/auth/register", registerRequest{
+		Email: "op@example.com", DisplayName: "Op", Password: "hunter2hunter2",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", rec.Code, rec.Body.String())
+	}
+	// Enabled + correct password → session.
+	rec = postJSON(t, h, "/auth/login", loginRequest{Email: "op@example.com", Password: "hunter2hunter2"})
+	if rec.Code != http.StatusOK || sessionCookie(rec) == nil {
+		t.Fatalf("enabled login should succeed: code=%d", rec.Code)
+	}
+	// Disable, then the SAME correct password is refused with no session.
+	if err := us.SetUserDisabled("op@example.com", true); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	rec = postJSON(t, h, "/auth/login", loginRequest{Email: "op@example.com", Password: "hunter2hunter2"})
+	if rec.Code != http.StatusForbidden || sessionCookie(rec) != nil {
+		t.Fatalf("disabled login must be 403 with no session: code=%d cookie=%v body=%s",
+			rec.Code, sessionCookie(rec), rec.Body.String())
+	}
+	// Re-enable → login works again.
+	if err := us.SetUserDisabled("op@example.com", false); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	rec = postJSON(t, h, "/auth/login", loginRequest{Email: "op@example.com", Password: "hunter2hunter2"})
+	if rec.Code != http.StatusOK || sessionCookie(rec) == nil {
+		t.Fatalf("re-enabled login should succeed: code=%d", rec.Code)
+	}
+}
+
 func TestLogout_DeletesSession(t *testing.T) {
 	h, _ := newTestHandler(t, true)
 	rec := postJSON(t, h, "/auth/register", registerRequest{Email: "a@x.com", Password: "passw0rd!"})

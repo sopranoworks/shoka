@@ -33,6 +33,7 @@ type UserInfo struct {
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
 	Scope       string `json:"scope"`
+	Disabled    bool   `json:"disabled"`
 }
 
 // ListUsers returns every user as a no-secret UserInfo (never the password hash,
@@ -45,7 +46,7 @@ func (s *Store) ListUsers() ([]UserInfo, error) {
 			if err := json.Unmarshal(v, &rec); err != nil {
 				return fmt.Errorf("userstore: decode user: %w", err)
 			}
-			out = append(out, UserInfo{Email: rec.Email, DisplayName: rec.DisplayName, Scope: rec.Scope})
+			out = append(out, UserInfo{Email: rec.Email, DisplayName: rec.DisplayName, Scope: rec.Scope, Disabled: rec.Disabled})
 			return nil
 		})
 	})
@@ -94,30 +95,70 @@ func (s *Store) RemoveUser(email string) error {
 		if err := ub.Delete([]byte(key)); err != nil {
 			return err
 		}
-		// Drop the user's sessions (collected during scan, deleted after — never
-		// mutating mid-iteration).
-		sb := tx.Bucket([]byte(sessionsBucket))
-		var dead [][]byte
-		err := sb.ForEach(func(k, v []byte) error {
-			var sess SessionRecord
-			if err := json.Unmarshal(v, &sess); err != nil {
-				return nil // skip undecodable
-			}
-			if sess.Email == key {
-				dead = append(dead, append([]byte(nil), k...))
-			}
-			return nil
-		})
+		return dropSessionsTx(tx, key)
+	})
+}
+
+// SetUserDisabled sets a user's Disabled flag (the admin-only enable/disable). When
+// disabling, it ALSO drops that user's live sessions in the same transaction — a
+// disabled user is locked out immediately (the OAuth/MCP token revocation is a
+// cross-store call wired at the handler layer, since oauthstore is separate). Returns
+// ErrNotFound if the user does not exist. The caller MUST refuse a self-disable before
+// calling this (the server self-guard lives at the call site, which knows the acting
+// principal).
+func (s *Store) SetUserDisabled(email string, disabled bool) error {
+	key := normalizeEmail(email)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(usersBucket))
+		v := b.Get([]byte(key))
+		if v == nil {
+			return ErrNotFound
+		}
+		var rec UserRecord
+		if err := json.Unmarshal(v, &rec); err != nil {
+			return fmt.Errorf("userstore: decode user: %w", err)
+		}
+		rec.Disabled = disabled
+		rec.UpdatedAt = time.Now()
+		val, err := json.Marshal(&rec)
 		if err != nil {
+			return fmt.Errorf("userstore: encode user: %w", err)
+		}
+		if err := b.Put([]byte(key), val); err != nil {
 			return err
 		}
-		for _, k := range dead {
-			if derr := sb.Delete(k); derr != nil {
-				return derr
-			}
+		if disabled {
+			return dropSessionsTx(tx, key)
 		}
 		return nil
 	})
+}
+
+// dropSessionsTx deletes every session bound to the (already-normalized) email key,
+// in the given transaction. Keys are collected during the scan and deleted after it,
+// never mutating the bucket mid-iteration (the DeleteDeadSeries discipline).
+func dropSessionsTx(tx *bolt.Tx, emailKey string) error {
+	sb := tx.Bucket([]byte(sessionsBucket))
+	var dead [][]byte
+	err := sb.ForEach(func(k, v []byte) error {
+		var sess SessionRecord
+		if err := json.Unmarshal(v, &sess); err != nil {
+			return nil // skip undecodable
+		}
+		if sess.Email == emailKey {
+			dead = append(dead, append([]byte(nil), k...))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, k := range dead {
+		if derr := sb.Delete(k); derr != nil {
+			return derr
+		}
+	}
+	return nil
 }
 
 // RewriteScopes applies fn to every user's scope AND every pending invite's scope,

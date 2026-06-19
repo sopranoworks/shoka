@@ -9,6 +9,7 @@ export interface UserInfo {
   email: string
   display_name: string
   scope: string
+  disabled: boolean
 }
 
 export interface InviteInfo {
@@ -34,6 +35,10 @@ export function listUsers(): Promise<{ users: UserInfo[] }> {
 
 export function setUserScope(email: string, scope: string): Promise<{ status: string }> {
   return wsClient().request('ADMIN_SET_USER_SCOPE', { email, scope })
+}
+
+export function setUserEnabled(email: string, enabled: boolean): Promise<{ status: string }> {
+  return wsClient().request('ADMIN_SET_USER_ENABLED', { email, enabled })
 }
 
 export function removeUser(email: string): Promise<{ status: string }> {

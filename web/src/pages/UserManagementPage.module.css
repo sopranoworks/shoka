@@ -96,6 +96,12 @@
   border-color: rgba(220, 70, 70, 0.4);
 }
 
+/* A disabled account's state cell (B-28 enable/disable). */
+.disabled {
+  color: #ff9b9b;
+  font-weight: 600;
+}
+
 .editor {
   background: var(--color-bg, #1d1d1d);
   border: 1px solid var(--color-border, #333);

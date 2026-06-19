@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -26,6 +27,11 @@ type adminSetScopeRequest struct {
 
 type adminRemoveUserRequest struct {
 	Email string `json:"email"`
+}
+
+type adminSetEnabledRequest struct {
+	Email   string `json:"email"`
+	Enabled bool   `json:"enabled"`
 }
 
 type adminCreateInviteRequest struct {
@@ -124,6 +130,50 @@ func (m *Manager) handleAdminSetUserScope(client *wsClient, payload json.RawMess
 	client.sendResponse(MsgAdminSetUserScope, AdminAckPayload{Status: "ok"})
 }
 
+// handleAdminSetUserEnabled enables or disables an account. Disabling locks the user
+// out immediately: SetUserDisabled drops their live UI sessions in its write, and we
+// additionally revoke their OAuth/MCP token series here (cross-store) so a live token
+// cannot outlive the disable. The isSelf self-guard refuses disabling one's own account.
+func (m *Manager) handleAdminSetUserEnabled(client *wsClient, payload json.RawMessage) {
+	if !m.usersAvailable(client) {
+		return
+	}
+	var p adminSetEnabledRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for ADMIN_SET_USER_ENABLED")
+		return
+	}
+	if p.Email == "" {
+		client.sendError("ADMIN_SET_USER_ENABLED requires an email")
+		return
+	}
+	if client.isSelf(p.Email) {
+		client.sendError("you cannot disable your own account")
+		return
+	}
+	if err := m.users.SetUserDisabled(p.Email, !p.Enabled); err != nil {
+		client.sendError(fmt.Sprintf("Failed to update account state: %v", err))
+		return
+	}
+	if !p.Enabled {
+		m.revokeOAuthForUser(p.Email)
+	}
+	client.sendResponse(MsgAdminSetUserEnabled, AdminAckPayload{Status: "ok"})
+}
+
+// revokeOAuthForUser revokes every OAuth/MCP token series bound to email when an OAuth
+// store is wired (nil = OAuth disabled — nothing to revoke). Best-effort: the user's
+// lockout already holds via the login gate + dropped sessions, so a rare revoke error is
+// logged, not surfaced to the caller (the disable/delete itself succeeded).
+func (m *Manager) revokeOAuthForUser(email string) {
+	if m.oauth == nil {
+		return
+	}
+	if _, err := m.oauth.RevokeByPrincipalEmail(email); err != nil {
+		log.Printf("oauth revoke for disabled/removed user failed: %v", err)
+	}
+}
+
 func (m *Manager) handleAdminRemoveUser(client *wsClient, payload json.RawMessage) {
 	if !m.usersAvailable(client) {
 		return
@@ -145,6 +195,9 @@ func (m *Manager) handleAdminRemoveUser(client *wsClient, payload json.RawMessag
 		client.sendError(fmt.Sprintf("Failed to remove user: %v", err))
 		return
 	}
+	// RemoveUser cascades the user's sessions; close the cross-store gap by revoking
+	// their OAuth/MCP token series too, so a removed user's MCP access stops at once.
+	m.revokeOAuthForUser(p.Email)
 	client.sendResponse(MsgAdminRemoveUser, AdminAckPayload{Status: "ok"})
 }
 

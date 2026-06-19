@@ -59,6 +59,24 @@ func (f *fakeOAuthStore) Revoke(seriesID string) error {
 	return nil
 }
 
+func (f *fakeOAuthStore) RevokeByPrincipalEmail(email string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	target := strings.ToLower(strings.TrimSpace(email))
+	kept := f.series[:0:0]
+	n := 0
+	for _, s := range f.series {
+		if strings.EqualFold(strings.TrimSpace(s.Principal.Email), target) {
+			f.revoked = append(f.revoked, s.SeriesID)
+			n++
+			continue
+		}
+		kept = append(kept, s)
+	}
+	f.series = kept
+	return n, nil
+}
+
 func (f *fakeOAuthStore) revokedIDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

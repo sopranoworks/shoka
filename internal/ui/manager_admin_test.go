@@ -3,9 +3,11 @@ package ui
 import (
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
 	"github.com/sopranoworks/shoka/internal/storage/userstore"
 )
 
@@ -74,6 +76,111 @@ func TestWSUI_AdminOps_GatedAndSelfOmitted(t *testing.T) {
 	}
 	if _, err := us.GetUser("u@example.com"); err != nil {
 		t.Fatal("self account must still exist after refused self-removal")
+	}
+}
+
+// TestWSUI_AdminSetUserEnabled_SelfGuard: an admin cannot disable their own account
+// (the server-side self-guard, defence in depth on top of self being omitted from the list).
+func TestWSUI_AdminSetUserEnabled_SelfGuard(t *testing.T) {
+	m, _, _ := newSharedCenterManager(t)
+	us := testUserStore(t)
+	m.SetUserStore(us)
+	ph, _ := userstore.HashPassword("pw")
+	_ = us.CreateFirstAdmin(&userstore.UserRecord{Email: "u@example.com", PasswordHash: ph})
+
+	srv := httptest.NewServer(withScope("*", m))
+	defer srv.Close()
+	c := dialWS(t, srv.URL)
+	defer c.Close()
+
+	sendWS(t, c, MsgAdminSetUserEnabled, adminSetEnabledRequest{Email: "u@example.com", Enabled: false})
+	if ft := firstFrameType(t, c); ft != Error {
+		t.Fatalf("self-disable must be refused with ERROR, got %s", ft)
+	}
+	u, err := us.GetUser("u@example.com")
+	if err != nil || u.Disabled {
+		t.Fatalf("self account must not be disabled after refused self-disable: %+v err=%v", u, err)
+	}
+}
+
+// TestWSUI_AdminSetUserEnabled_DisableRevokesSessionsAndOAuth: disabling a user flips the
+// flag, drops their live UI sessions, and revokes their OAuth/MCP token series — leaving
+// an unrelated user's tokens untouched (the immediate-lockout decision, B-28).
+func TestWSUI_AdminSetUserEnabled_DisableRevokesSessionsAndOAuth(t *testing.T) {
+	m, _, _ := newSharedCenterManager(t)
+	us := testUserStore(t)
+	m.SetUserStore(us)
+	oauth := &fakeOAuthStore{series: []oauthstore.SeriesInfo{
+		{SeriesID: "s-bob", Principal: oauthstore.Principal{Email: "bob@x.com"}},
+		{SeriesID: "s-carol", Principal: oauthstore.Principal{Email: "carol@x.com"}},
+	}}
+	m.SetOAuthStore(oauth)
+	ph, _ := userstore.HashPassword("pw")
+	_ = us.CreateFirstAdmin(&userstore.UserRecord{Email: "u@example.com", PasswordHash: ph})
+	_ = us.CreateUser(&userstore.UserRecord{Email: "bob@x.com", PasswordHash: ph, Scope: "namespace:foo:rw"})
+	sess, err := us.CreateSession("bob@x.com", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(withScope("*", m))
+	defer srv.Close()
+	c := dialWS(t, srv.URL)
+	defer c.Close()
+
+	sendWS(t, c, MsgAdminSetUserEnabled, adminSetEnabledRequest{Email: "bob@x.com", Enabled: false})
+	var ack AdminAckPayload
+	readUntil(t, c, MsgAdminSetUserEnabled, &ack, 2*time.Second)
+
+	u, err := us.GetUser("bob@x.com")
+	if err != nil || !u.Disabled {
+		t.Fatalf("bob must be disabled: %+v err=%v", u, err)
+	}
+	if _, err := us.LookupSession(sess.ID, time.Now()); err == nil {
+		t.Fatal("bob's live session must be dropped on disable")
+	}
+	revoked := oauth.revokedIDs()
+	if !slices.Contains(revoked, "s-bob") {
+		t.Fatalf("bob's oauth series must be revoked: %v", revoked)
+	}
+	if slices.Contains(revoked, "s-carol") {
+		t.Fatalf("an unrelated user's series must NOT be revoked: %v", revoked)
+	}
+}
+
+// TestWSUI_AdminRemoveUser_RevokesOAuth: deleting a user (the existing path) now also
+// revokes their OAuth/MCP token series — the cross-store gap the investigation found.
+func TestWSUI_AdminRemoveUser_RevokesOAuth(t *testing.T) {
+	m, _, _ := newSharedCenterManager(t)
+	us := testUserStore(t)
+	m.SetUserStore(us)
+	oauth := &fakeOAuthStore{series: []oauthstore.SeriesInfo{
+		{SeriesID: "s-bob", Principal: oauthstore.Principal{Email: "bob@x.com"}},
+		{SeriesID: "s-carol", Principal: oauthstore.Principal{Email: "carol@x.com"}},
+	}}
+	m.SetOAuthStore(oauth)
+	ph, _ := userstore.HashPassword("pw")
+	_ = us.CreateFirstAdmin(&userstore.UserRecord{Email: "u@example.com", PasswordHash: ph})
+	_ = us.CreateUser(&userstore.UserRecord{Email: "bob@x.com", PasswordHash: ph, Scope: "namespace:foo:rw"})
+
+	srv := httptest.NewServer(withScope("*", m))
+	defer srv.Close()
+	c := dialWS(t, srv.URL)
+	defer c.Close()
+
+	sendWS(t, c, MsgAdminRemoveUser, adminRemoveUserRequest{Email: "bob@x.com"})
+	var ack AdminAckPayload
+	readUntil(t, c, MsgAdminRemoveUser, &ack, 2*time.Second)
+
+	if _, err := us.GetUser("bob@x.com"); err == nil {
+		t.Fatal("bob must be removed")
+	}
+	revoked := oauth.revokedIDs()
+	if !slices.Contains(revoked, "s-bob") {
+		t.Fatalf("bob's oauth series must be revoked on delete: %v", revoked)
+	}
+	if slices.Contains(revoked, "s-carol") {
+		t.Fatalf("unrelated series must NOT be revoked: %v", revoked)
 	}
 }
 

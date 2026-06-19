@@ -151,12 +151,13 @@ const (
 	// User-management ops (B-28 stage 3) — all super-user-only (admin level, global),
 	// enforced by the stage-2 dispatch gate; the destructive ones additionally refuse
 	// the caller's own account (server-side self-guard, defence in depth).
-	MsgAdminListUsers    MessageType = "ADMIN_LIST_USERS"
-	MsgAdminSetUserScope MessageType = "ADMIN_SET_USER_SCOPE"
-	MsgAdminRemoveUser   MessageType = "ADMIN_REMOVE_USER"
-	MsgAdminCreateInvite MessageType = "ADMIN_CREATE_INVITE"
-	MsgAdminListInvites  MessageType = "ADMIN_LIST_INVITES"
-	MsgAdminRevokeInvite MessageType = "ADMIN_REVOKE_INVITE"
+	MsgAdminListUsers      MessageType = "ADMIN_LIST_USERS"
+	MsgAdminSetUserScope   MessageType = "ADMIN_SET_USER_SCOPE"
+	MsgAdminSetUserEnabled MessageType = "ADMIN_SET_USER_ENABLED"
+	MsgAdminRemoveUser     MessageType = "ADMIN_REMOVE_USER"
+	MsgAdminCreateInvite   MessageType = "ADMIN_CREATE_INVITE"
+	MsgAdminListInvites    MessageType = "ADMIN_LIST_INVITES"
+	MsgAdminRevokeInvite   MessageType = "ADMIN_REVOKE_INVITE"
 	// MsgPermissionDenied is the authorization-refusal frame for the /ws/ui dispatch
 	// gate (the B-28 stage-2 enforcement flip): a session principal whose scope lacks
 	// the level the requested operation requires gets this instead of the handler
@@ -460,6 +461,10 @@ func (c *wsClient) sendResponse(msgType MessageType, payload interface{}) {
 type OAuthConnectionStore interface {
 	List() ([]oauthstore.SeriesInfo, error)
 	Revoke(seriesID string) error
+	// RevokeByPrincipalEmail revokes every token series (and pending auth code) for a
+	// principal email — the cross-store access cut when a user is disabled or deleted
+	// (B-28). Returns the number of series revoked.
+	RevokeByPrincipalEmail(email string) (int, error)
 }
 
 // OAuthSelfIssuer mints a fresh access token bound to the current-mode operator
@@ -489,6 +494,7 @@ func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request) (string, time.Time, erro
 type UserAdminStore interface {
 	ListUsers() ([]userstore.UserInfo, error)
 	UpdateUserScope(email, scope string) error
+	SetUserDisabled(email string, disabled bool) error
 	RemoveUser(email string) error
 	CreateInvite(email, scope, createdBy string, now time.Time, ttl time.Duration) (string, userstore.InviteRecord, error)
 	ListInvites() ([]userstore.InviteInfo, error)
@@ -635,12 +641,13 @@ var wsLevels = map[MessageType]wsOp{
 	MsgOAuthRevoke:    {authz.LevelAdmin, true},
 	MsgOAuthIssueSelf: {authz.LevelAdmin, true},
 
-	MsgAdminListUsers:    {authz.LevelAdmin, true},
-	MsgAdminSetUserScope: {authz.LevelAdmin, true},
-	MsgAdminRemoveUser:   {authz.LevelAdmin, true},
-	MsgAdminCreateInvite: {authz.LevelAdmin, true},
-	MsgAdminListInvites:  {authz.LevelAdmin, true},
-	MsgAdminRevokeInvite: {authz.LevelAdmin, true},
+	MsgAdminListUsers:      {authz.LevelAdmin, true},
+	MsgAdminSetUserScope:   {authz.LevelAdmin, true},
+	MsgAdminSetUserEnabled: {authz.LevelAdmin, true},
+	MsgAdminRemoveUser:     {authz.LevelAdmin, true},
+	MsgAdminCreateInvite:   {authz.LevelAdmin, true},
+	MsgAdminListInvites:    {authz.LevelAdmin, true},
+	MsgAdminRevokeInvite:   {authz.LevelAdmin, true},
 
 	// Health read = admin-somewhere (global admin target; the handler filters to the
 	// principal's admin namespaces). Recovery = admin on the target namespace (the handler
@@ -845,6 +852,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleAdminListUsers(client)
 		case MsgAdminSetUserScope:
 			m.handleAdminSetUserScope(client, wsMsg.Payload)
+		case MsgAdminSetUserEnabled:
+			m.handleAdminSetUserEnabled(client, wsMsg.Payload)
 		case MsgAdminRemoveUser:
 			m.handleAdminRemoveUser(client, wsMsg.Payload)
 		case MsgAdminCreateInvite:

@@ -54,6 +54,38 @@ func TestUpdateUserScope(t *testing.T) {
 	}
 }
 
+// TestSetUserDisabled: disabling sets the flag AND drops the user's live sessions
+// (immediate lockout); re-enabling clears the flag; an unknown user is ErrNotFound.
+func TestSetUserDisabled(t *testing.T) {
+	s := openTestStore(t)
+	seedAdmin(t, s)
+	ph, _ := HashPassword("pw")
+	_ = s.CreateUser(&UserRecord{Email: "u@x.com", PasswordHash: ph})
+	sess, _ := s.CreateSession("u@x.com", time.Now(), time.Hour)
+
+	if err := s.SetUserDisabled("u@x.com", true); err != nil {
+		t.Fatalf("SetUserDisabled(true): %v", err)
+	}
+	u, _ := s.GetUser("u@x.com")
+	if !u.Disabled {
+		t.Fatal("user should be disabled")
+	}
+	if _, err := s.LookupSession(sess.ID, time.Now()); err != ErrNotFound {
+		t.Fatalf("disabled user's session must be dropped, got %v", err)
+	}
+	// Re-enable clears the flag.
+	if err := s.SetUserDisabled("u@x.com", false); err != nil {
+		t.Fatalf("SetUserDisabled(false): %v", err)
+	}
+	u, _ = s.GetUser("u@x.com")
+	if u.Disabled {
+		t.Fatal("user should be re-enabled")
+	}
+	if err := s.SetUserDisabled("missing@x.com", true); err != ErrNotFound {
+		t.Fatalf("disable missing: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestRemoveUser_DropsSessions(t *testing.T) {
 	s := openTestStore(t)
 	seedAdmin(t, s)

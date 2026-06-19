@@ -46,6 +46,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -432,6 +433,73 @@ func (s *Store) Revoke(seriesID string) error {
 		s.revocations.Add(1)
 	}
 	return err
+}
+
+// RevokeByPrincipalEmail deletes every token series AND every outstanding authorization
+// code bound to the given principal email (case-insensitive), returning the number of
+// series revoked. This is the cross-store access cut for user disable/delete (B-28): a
+// removed or disabled user's MCP/OAuth tokens must stop authorizing IMMEDIATELY, not age
+// out. One write transaction; keys/records are collected during each scan and removed
+// after it, never mutating mid-iteration (the DeleteDeadSeries discipline). Idempotent:
+// an unknown or empty principal is a no-op (0, nil). Counts toward revocations like Revoke.
+func (s *Store) RevokeByPrincipalEmail(email string) (int, error) {
+	target := strings.ToLower(strings.TrimSpace(email))
+	if target == "" {
+		return 0, nil
+	}
+	var revoked int
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		// Token series.
+		sb := tx.Bucket([]byte(seriesBucket))
+		var deadSeries []SeriesRecord
+		if err := sb.ForEach(func(_, v []byte) error {
+			var rec SeriesRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("oauthstore: decode series: %w", err)
+			}
+			if strings.EqualFold(strings.TrimSpace(rec.Principal.Email), target) {
+				deadSeries = append(deadSeries, rec)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, rec := range deadSeries {
+			if err := deleteSeries(tx, rec); err != nil {
+				return err
+			}
+		}
+		revoked = len(deadSeries)
+		// Outstanding authorization codes for the same principal (not reachable via the
+		// series buckets, so handled here so a pending code cannot mint a fresh token).
+		cb := tx.Bucket([]byte(codesBucket))
+		var deadCodes [][]byte
+		if err := cb.ForEach(func(k, v []byte) error {
+			var rec CodeRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return nil // skip undecodable
+			}
+			if strings.EqualFold(strings.TrimSpace(rec.Principal.Email), target) {
+				deadCodes = append(deadCodes, append([]byte(nil), k...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range deadCodes {
+			if err := cb.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if revoked > 0 {
+		s.revocations.Add(int64(revoked))
+	}
+	return revoked, nil
 }
 
 // DeleteDeadSeries removes every series that is FULLY dead — both its access and
