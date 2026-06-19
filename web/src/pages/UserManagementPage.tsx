@@ -272,12 +272,14 @@ function ScopeEditor({
         ))}
       </datalist>
       <div className={styles.editorActions}>
-        <button className={styles.btn} onClick={addRow}>
-          + Add namespace
-        </button>
+        {/* A wildcard subsumes every per-namespace grant, so while one is present neither
+            adding individual rows nor the wildcard button is offered (both hidden). */}
         {!grants.some((g) => g.target === '*') && (
-          // A wildcard *:admin subsumes every per-namespace grant (authz max-wins), so
-          // adding "All namespaces" REPLACES the individual rows with the single wildcard.
+          <button className={styles.btn} onClick={addRow}>
+            + Add namespace
+          </button>
+        )}
+        {!grants.some((g) => g.target === '*') && (
           <button className={styles.btn} onClick={() => setGrants([{ target: '*', level: 'admin' }])}>
             + Wildcard (all)
           </button>
@@ -436,12 +438,14 @@ function InviteSection({
             ))}
           </datalist>
           <div className={styles.editorActions}>
-            <button type="button" className={styles.btn} onClick={() => setGrants((g) => [...g, { target: '', level: 'rw' }])}>
-              + Add namespace
-            </button>
+            {/* While a wildcard is present it subsumes every per-namespace grant, so neither
+                adding individual rows nor the wildcard button is offered (both hidden). */}
             {!grants.some((g) => g.target === '*') && (
-              // "All namespaces" (*:admin) subsumes every per-namespace grant, so adding
-              // it REPLACES the individual rows with the single wildcard row.
+              <button type="button" className={styles.btn} onClick={() => setGrants((g) => [...g, { target: '', level: 'rw' }])}>
+                + Add namespace
+              </button>
+            )}
+            {!grants.some((g) => g.target === '*') && (
               <button type="button" className={styles.btn} onClick={() => setGrants([{ target: '*', level: 'admin' }])}>
                 + Wildcard (all)
               </button>
@@ -451,8 +455,14 @@ function InviteSection({
         <button
           type="submit"
           className={`${styles.btn} ${styles.primary}`}
-          disabled={hasEmptyNs}
-          title={hasEmptyNs ? 'Fill in every namespace, or remove the empty row' : ''}
+          disabled={email.trim() === '' || hasEmptyNs}
+          title={
+            email.trim() === ''
+              ? 'Enter an invitee email'
+              : hasEmptyNs
+                ? 'Fill in every namespace, or remove the empty row'
+                : ''
+          }
         >
           Generate invite code
         </button>

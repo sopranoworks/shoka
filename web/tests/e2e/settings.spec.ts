@@ -261,6 +261,37 @@ test('Bug 1: "All namespaces" replaces the per-namespace rows in the scope edito
   await editor.getByRole('button', { name: /Wildcard/ }).click()
   await expect(editor.getByLabel('namespace')).toHaveCount(0)
   await expect(editor.getByText('All namespaces (*)')).toBeVisible()
+  // Bug B (editor): with a wildcard present, "+ Add namespace" is hidden too — no
+  // individual rows can be added back alongside the wildcard.
+  await expect(editor.getByRole('button', { name: /Add namespace/ })).toHaveCount(0)
+})
+
+test('Bug A: "Generate invite code" re-disables when the email is cleared', async ({ page }) => {
+  await loginOrRegister(page, { accept: false })
+  await openUserManagement(page)
+  const form = page.getByRole('form', { name: 'Create invite' })
+  const gen = page.getByRole('button', { name: 'Generate invite code' })
+  // With a namespace filled, only the email gates the button.
+  await form.getByLabel('namespace').first().fill('demo')
+  await expect(gen).toBeDisabled() // email still empty
+  await page.getByLabel('invitee email').fill('a@example.com')
+  await expect(gen).toBeEnabled()
+  // Clearing the email returns the button to disabled (the bug: it stayed enabled).
+  await page.getByLabel('invitee email').fill('')
+  await expect(gen).toBeDisabled()
+})
+
+test('Bug B: "+ Add namespace" is hidden while a wildcard grant is present', async ({ page }) => {
+  await loginOrRegister(page, { accept: false })
+  await openUserManagement(page)
+  const form = page.getByRole('form', { name: 'Create invite' })
+  await expect(form.getByRole('button', { name: /Add namespace/ })).toBeVisible()
+  await form.getByRole('button', { name: /Wildcard/ }).click()
+  await expect(form.getByText('All namespaces (*)')).toBeVisible()
+  // Both "+ Add namespace" and "+ Wildcard (all)" are gone, and no individual row remains.
+  await expect(form.getByRole('button', { name: /Add namespace/ })).toHaveCount(0)
+  await expect(form.getByRole('button', { name: /Wildcard/ })).toHaveCount(0)
+  await expect(form.getByLabel('namespace')).toHaveCount(0)
 })
 
 test('Bug 2: revoking the backing pending invite clears the displayed code', async ({ page }) => {
@@ -287,9 +318,11 @@ test('Improvement 3: an empty namespace is flagged invalid before submit', async
   // The default empty row is flagged BEFORE any submit, and submit is disabled.
   await expect(ns).toHaveAttribute('aria-invalid', 'true')
   await expect(page.getByRole('button', { name: 'Generate invite code' })).toBeDisabled()
-  // Filling it clears the invalid state and enables submit.
+  // Filling it clears the invalid state; with an email too, submit enables (the email
+  // gate is exercised separately in "Bug A").
   await ns.fill('demo')
   await expect(ns).not.toHaveAttribute('aria-invalid', 'true')
+  await page.getByLabel('invitee email').fill('a@example.com')
   await expect(page.getByRole('button', { name: 'Generate invite code' })).toBeEnabled()
 })
 
