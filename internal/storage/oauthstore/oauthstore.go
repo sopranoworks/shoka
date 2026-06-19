@@ -40,7 +40,9 @@ package oauthstore
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,7 +70,30 @@ const (
 	accessBucket  = "access"
 	refreshBucket = "refresh"
 	clientsBucket = "clients" // DCR-registered public clients (B-63, RFC 7591)
+	metaBucket    = "meta"    // store metadata (schema/migration markers, B-71 Stage 0)
 )
+
+// migrationKeyTokensHashed marks that the one-time B-71 Stage 0 re-key (raw token →
+// hash at rest) has completed for this store. Its presence in metaBucket makes the
+// migration idempotent — it never re-runs once done.
+const migrationKeyTokensHashed = "tokens_hashed_v1"
+
+// hashHandle is the one-way at-rest representation of an OAuth handle (access token,
+// refresh token, or authorization code). The buckets are keyed by hashHandle(raw) and
+// SeriesRecord persists only the hash, so a read of oauth.db never yields a usable
+// credential (B-71 Stage 0). Handles are 256-bit cryptographically-random (NewHandle),
+// so a single fast SHA-256 is sufficient — there is nothing to brute-force, unlike a
+// user-chosen password (no argon2 needed). It uses the same one-way SHA-256 primitive
+// as internal/tokenfp.Fingerprint, but the FULL 64-hex digest (no truncation) because
+// this is a lookup key where collisions must not occur. The empty handle maps to the
+// empty string (an absent handle is never a stored key).
+func hashHandle(handle string) string {
+	if handle == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(handle))
+	return hex.EncodeToString(sum[:])
+}
 
 // Principal is the bound current-mode principal for a token. Today this is the
 // single configured operator; under multi-user mode (a later B-28 leg) different
@@ -91,18 +116,28 @@ type CodeRecord struct {
 }
 
 // SeriesRecord is one connection's live token pair plus the binding that every
-// rotation preserves. AccessToken/RefreshToken are the currently-valid handles;
-// a rotation replaces both.
+// rotation preserves. A rotation replaces both tokens.
+//
+// At rest only the HASHES are persisted (B-71 Stage 0): AccessTokenHash /
+// RefreshTokenHash are hashHandle(rawToken), and the access/refresh buckets are keyed
+// by those hashes — so a read of oauth.db never yields a usable bearer/refresh token.
+// AccessToken/RefreshToken are the RAW handles; they are `json:"-"` (never written to
+// the DB) and are populated ONLY in-memory on the record returned by NewSeries/Rotate,
+// the one moment the raw value exists, so the caller can hand it to the client once.
+// A record decoded from the store has empty AccessToken/RefreshToken and non-empty
+// hashes — every lookup hashes the incoming handle and compares against the hash.
 type SeriesRecord struct {
-	SeriesID      string    `json:"series_id"`
-	AccessToken   string    `json:"access_token"`
-	RefreshToken  string    `json:"refresh_token"`
-	ClientID      string    `json:"client_id"` // the CIMD metadata URL
-	Principal     Principal `json:"principal"`
-	Resource      string    `json:"resource"`
-	IssuedAt      time.Time `json:"issued_at"`
-	AccessExpiry  time.Time `json:"access_expiry"`
-	RefreshExpiry time.Time `json:"refresh_expiry"`
+	SeriesID         string    `json:"series_id"`
+	AccessToken      string    `json:"-"` // raw; in-memory only (issuance return), never persisted
+	RefreshToken     string    `json:"-"` // raw; in-memory only (issuance return), never persisted
+	AccessTokenHash  string    `json:"access_token_hash"`
+	RefreshTokenHash string    `json:"refresh_token_hash"`
+	ClientID         string    `json:"client_id"` // the CIMD metadata URL
+	Principal        Principal `json:"principal"`
+	Resource         string    `json:"resource"`
+	IssuedAt         time.Time `json:"issued_at"`
+	AccessExpiry     time.Time `json:"access_expiry"`
+	RefreshExpiry    time.Time `json:"refresh_expiry"`
 	// Scope is the authorization grant the token carries (the 2026-06-15 authz
 	// foundation). "*" = all-access (every DCR token). A pre-issued non-DCR token
 	// would carry a namespace grant (e.g. "namespace:foo"). A record written before
@@ -169,7 +204,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("oauthstore: open %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{codesBucket, seriesBucket, accessBucket, refreshBucket, clientsBucket} {
+		for _, b := range []string{codesBucket, seriesBucket, accessBucket, refreshBucket, clientsBucket, metaBucket} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
@@ -180,7 +215,15 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("oauthstore: init buckets: %w", err)
 	}
-	return &Store{db: db, path: path}, nil
+	s := &Store{db: db, path: path}
+	// One-time B-71 Stage 0 re-key: any store written by the old plaintext layout is
+	// transformed so no raw token remains at rest. Idempotent + crash-safe (a single
+	// atomic transaction guarded by a marker), so it is safe to run on every Open.
+	if err := s.migrateHashTokensAtRest(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("oauthstore: token-hash migration: %w", err)
+	}
+	return s, nil
 }
 
 // Close closes the underlying bbolt DB.
@@ -205,7 +248,8 @@ func (s *Store) PutCode(code string, rec CodeRecord) error {
 		return fmt.Errorf("oauthstore: encode code: %w", err)
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(codesBucket)).Put([]byte(code), val)
+		// Keyed by the hash of the code, not the code itself (B-71 Stage 0).
+		return tx.Bucket([]byte(codesBucket)).Put([]byte(hashHandle(code)), val)
 	})
 }
 
@@ -221,14 +265,15 @@ func (s *Store) TakeCode(code string, now time.Time) (CodeRecord, error) {
 	// signalled out-of-band — a non-nil return from db.Update rolls the tx back.
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(codesBucket))
-		v := b.Get([]byte(code))
+		ch := hashHandle(code) // the bucket is keyed by the code's hash (B-71 Stage 0)
+		v := b.Get([]byte(ch))
 		if v == nil {
 			return ErrNotFound
 		}
 		if err := json.Unmarshal(v, &rec); err != nil {
 			return fmt.Errorf("oauthstore: decode code: %w", err)
 		}
-		if derr := b.Delete([]byte(code)); derr != nil {
+		if derr := b.Delete([]byte(ch)); derr != nil {
 			return derr
 		}
 		expired = now.After(rec.Expiry)
@@ -263,16 +308,18 @@ func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, 
 		return SeriesRecord{}, err
 	}
 	rec := SeriesRecord{
-		SeriesID:      seriesID,
-		AccessToken:   access,
-		RefreshToken:  refresh,
-		ClientID:      clientID,
-		Principal:     p,
-		Resource:      resource,
-		IssuedAt:      now,
-		AccessExpiry:  now.Add(accessTTL),
-		RefreshExpiry: now.Add(refreshTTL),
-		Scope:         scope,
+		SeriesID:         seriesID,
+		AccessToken:      access,  // raw, in-memory only — returned to the caller once
+		RefreshToken:     refresh, // raw, in-memory only — returned to the caller once
+		AccessTokenHash:  hashHandle(access),
+		RefreshTokenHash: hashHandle(refresh),
+		ClientID:         clientID,
+		Principal:        p,
+		Resource:         resource,
+		IssuedAt:         now,
+		AccessExpiry:     now.Add(accessTTL),
+		RefreshExpiry:    now.Add(refreshTTL),
+		Scope:            scope,
 	}
 	if err := s.putSeries(rec, "", ""); err != nil {
 		return SeriesRecord{}, err
@@ -291,8 +338,9 @@ func (s *Store) Rotate(oldRefresh string, now time.Time, accessTTL, refreshTTL t
 	var out SeriesRecord
 	var expired bool
 	err := s.db.Update(func(tx *bolt.Tx) error {
+		oldRefreshHash := hashHandle(oldRefresh)
 		rb := tx.Bucket([]byte(refreshBucket))
-		sidRaw := rb.Get([]byte(oldRefresh))
+		sidRaw := rb.Get([]byte(oldRefreshHash))
 		if sidRaw == nil {
 			return ErrNotFound
 		}
@@ -307,8 +355,9 @@ func (s *Store) Rotate(oldRefresh string, now time.Time, accessTTL, refreshTTL t
 			return fmt.Errorf("oauthstore: decode series: %w", err)
 		}
 		// Predecessor invalidation: only the series' CURRENT refresh token may
-		// rotate. A stale handle (already rotated away) is rejected.
-		if rec.RefreshToken != oldRefresh {
+		// rotate. A stale handle (already rotated away) is rejected. Compared by hash,
+		// since the raw refresh is never stored (B-71 Stage 0).
+		if rec.RefreshTokenHash != oldRefreshHash {
 			return ErrNotFound
 		}
 		if now.After(rec.RefreshExpiry) {
@@ -326,12 +375,14 @@ func (s *Store) Rotate(oldRefresh string, now time.Time, accessTTL, refreshTTL t
 		if err != nil {
 			return err
 		}
-		oldAccess := rec.AccessToken
-		rec.AccessToken = newAccess
-		rec.RefreshToken = newRefresh
+		oldAccessHash := rec.AccessTokenHash
+		rec.AccessToken = newAccess   // raw, in-memory only — returned to the caller once
+		rec.RefreshToken = newRefresh // raw, in-memory only — returned to the caller once
+		rec.AccessTokenHash = hashHandle(newAccess)
+		rec.RefreshTokenHash = hashHandle(newRefresh)
 		rec.AccessExpiry = now.Add(accessTTL)
 		rec.RefreshExpiry = now.Add(refreshTTL)
-		if err := putSeriesTx(tx, rec, oldAccess, oldRefresh); err != nil {
+		if err := putSeriesTx(tx, rec, oldAccessHash, oldRefreshHash); err != nil {
 			return err
 		}
 		out = rec
@@ -353,8 +404,9 @@ func (s *Store) Rotate(oldRefresh string, now time.Time, accessTTL, refreshTTL t
 func (s *Store) Lookup(accessToken string, now time.Time) (SeriesRecord, error) {
 	var rec SeriesRecord
 	err := s.db.View(func(tx *bolt.Tx) error {
+		ah := hashHandle(accessToken) // the bucket is keyed by the token's hash (B-71 Stage 0)
 		ab := tx.Bucket([]byte(accessBucket))
-		sidRaw := ab.Get([]byte(accessToken))
+		sidRaw := ab.Get([]byte(ah))
 		if sidRaw == nil {
 			return ErrNotFound
 		}
@@ -365,8 +417,9 @@ func (s *Store) Lookup(accessToken string, now time.Time) (SeriesRecord, error) 
 		if err := json.Unmarshal(sraw, &rec); err != nil {
 			return fmt.Errorf("oauthstore: decode series: %w", err)
 		}
-		// Defend against a stale access pointer that outlived a rotation.
-		if rec.AccessToken != accessToken {
+		// Defend against a stale access pointer that outlived a rotation (by hash —
+		// the raw access token is never stored).
+		if rec.AccessTokenHash != ah {
 			return ErrNotFound
 		}
 		if now.After(rec.AccessExpiry) {
@@ -674,15 +727,17 @@ func (s *Store) OAuthRevocations() int64 {
 
 // putSeries persists rec and re-points its access/refresh handles, deleting the
 // given predecessor handles (empty = none). Used by NewSeries.
-func (s *Store) putSeries(rec SeriesRecord, oldAccess, oldRefresh string) error {
+func (s *Store) putSeries(rec SeriesRecord, oldAccessHash, oldRefreshHash string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return putSeriesTx(tx, rec, oldAccess, oldRefresh)
+		return putSeriesTx(tx, rec, oldAccessHash, oldRefreshHash)
 	})
 }
 
-// putSeriesTx is the in-transaction form: write the series row, point the new
-// access/refresh handles at it, and delete the predecessor handles.
-func putSeriesTx(tx *bolt.Tx, rec SeriesRecord, oldAccess, oldRefresh string) error {
+// putSeriesTx is the in-transaction form: write the series row (hashes only — the raw
+// AccessToken/RefreshToken are json:"-" and never serialized), point the new
+// access/refresh HASH keys at it, and delete the predecessor hash keys. oldAccessHash
+// / oldRefreshHash are the predecessor pair's hashes ("" on first issue).
+func putSeriesTx(tx *bolt.Tx, rec SeriesRecord, oldAccessHash, oldRefreshHash string) error {
 	val, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("oauthstore: encode series: %w", err)
@@ -692,31 +747,140 @@ func putSeriesTx(tx *bolt.Tx, rec SeriesRecord, oldAccess, oldRefresh string) er
 	}
 	ab := tx.Bucket([]byte(accessBucket))
 	rb := tx.Bucket([]byte(refreshBucket))
-	if oldAccess != "" && oldAccess != rec.AccessToken {
-		if err := ab.Delete([]byte(oldAccess)); err != nil {
+	if oldAccessHash != "" && oldAccessHash != rec.AccessTokenHash {
+		if err := ab.Delete([]byte(oldAccessHash)); err != nil {
 			return err
 		}
 	}
-	if oldRefresh != "" && oldRefresh != rec.RefreshToken {
-		if err := rb.Delete([]byte(oldRefresh)); err != nil {
+	if oldRefreshHash != "" && oldRefreshHash != rec.RefreshTokenHash {
+		if err := rb.Delete([]byte(oldRefreshHash)); err != nil {
 			return err
 		}
 	}
-	if err := ab.Put([]byte(rec.AccessToken), []byte(rec.SeriesID)); err != nil {
+	if err := ab.Put([]byte(rec.AccessTokenHash), []byte(rec.SeriesID)); err != nil {
 		return err
 	}
-	return rb.Put([]byte(rec.RefreshToken), []byte(rec.SeriesID))
+	return rb.Put([]byte(rec.RefreshTokenHash), []byte(rec.SeriesID))
 }
 
-// deleteSeries removes a series row and its current access/refresh handles.
+// deleteSeries removes a series row and its current access/refresh HASH keys.
 func deleteSeries(tx *bolt.Tx, rec SeriesRecord) error {
 	if err := tx.Bucket([]byte(seriesBucket)).Delete([]byte(rec.SeriesID)); err != nil {
 		return err
 	}
-	if err := tx.Bucket([]byte(accessBucket)).Delete([]byte(rec.AccessToken)); err != nil {
+	if err := tx.Bucket([]byte(accessBucket)).Delete([]byte(rec.AccessTokenHash)); err != nil {
 		return err
 	}
-	return tx.Bucket([]byte(refreshBucket)).Delete([]byte(rec.RefreshToken))
+	return tx.Bucket([]byte(refreshBucket)).Delete([]byte(rec.RefreshTokenHash))
+}
+
+// migrateHashTokensAtRest performs the one-time B-71 Stage 0 re-key: a store written by
+// the OLD plaintext layout (access/refresh buckets keyed by the RAW handle; raw tokens
+// embedded in the series JSON) is transformed so no raw token remains at rest — buckets
+// keyed by hashHandle, series JSON carrying only the hashes. Guarded by a marker in
+// metaBucket and run in ONE atomic transaction, so it is idempotent (skipped once done)
+// and crash-safe (a crash before commit changes nothing; the next Open re-runs cleanly).
+//
+//   - series: each row carrying a raw token (old layout) is re-keyed — the raw-keyed
+//     access/refresh entries are replaced by hash-keyed ones (→ sid) and the series JSON
+//     is rewritten with the hashes set and the raw fields cleared.
+//   - codes: dropped wholesale — 1m-TTL single-use, and migration runs at Open before the
+//     server accepts requests, so nothing live is lost.
+//   - clients (DCR RegisteredClient): UNTOUCHED. A client_id is a PUBLIC identifier (sent
+//     in /authorize and /token in the clear by design), not a secret, and these public
+//     clients carry NO client_secret — there is nothing secret-equivalent to hash.
+func (s *Store) migrateHashTokensAtRest() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		mb := tx.Bucket([]byte(metaBucket))
+		if mb.Get([]byte(migrationKeyTokensHashed)) != nil {
+			return nil // already migrated — never re-run
+		}
+		sb := tx.Bucket([]byte(seriesBucket))
+		ab := tx.Bucket([]byte(accessBucket))
+		rb := tx.Bucket([]byte(refreshBucket))
+
+		// rawAwareRecord sees the OLD raw token fields (which the live SeriesRecord drops
+		// via json:"-") so the migration can read a raw token still present at rest.
+		type rawAwareRecord struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		}
+		type rewrite struct {
+			sid                      []byte
+			val                      []byte
+			oldAccess, oldRefresh    string
+			newAccessKey, newRefresh string
+		}
+		var rewrites []rewrite
+		if err := sb.ForEach(func(k, v []byte) error {
+			var raw rawAwareRecord
+			if err := json.Unmarshal(v, &raw); err != nil {
+				return fmt.Errorf("oauthstore: migrate decode series: %w", err)
+			}
+			if raw.AccessToken == "" && raw.RefreshToken == "" {
+				return nil // already new layout — nothing to re-key
+			}
+			var rec SeriesRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("oauthstore: migrate decode series: %w", err)
+			}
+			rec.AccessTokenHash = hashHandle(raw.AccessToken)
+			rec.RefreshTokenHash = hashHandle(raw.RefreshToken)
+			rec.AccessToken = ""  // json:"-" already drops it; cleared for clarity
+			rec.RefreshToken = "" // json:"-" already drops it; cleared for clarity
+			nv, err := json.Marshal(rec)
+			if err != nil {
+				return fmt.Errorf("oauthstore: migrate encode series: %w", err)
+			}
+			rewrites = append(rewrites, rewrite{
+				sid:          append([]byte(nil), k...),
+				val:          nv,
+				oldAccess:    raw.AccessToken,
+				oldRefresh:   raw.RefreshToken,
+				newAccessKey: rec.AccessTokenHash,
+				newRefresh:   rec.RefreshTokenHash,
+			})
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, rw := range rewrites {
+			if err := sb.Put(rw.sid, rw.val); err != nil {
+				return err
+			}
+			if rw.oldAccess != "" {
+				if err := ab.Delete([]byte(rw.oldAccess)); err != nil {
+					return err
+				}
+			}
+			if err := ab.Put([]byte(rw.newAccessKey), rw.sid); err != nil {
+				return err
+			}
+			if rw.oldRefresh != "" {
+				if err := rb.Delete([]byte(rw.oldRefresh)); err != nil {
+					return err
+				}
+			}
+			if err := rb.Put([]byte(rw.newRefresh), rw.sid); err != nil {
+				return err
+			}
+		}
+		// Drop all authorization codes (1m-TTL, single-use; safe before serving).
+		cb := tx.Bucket([]byte(codesBucket))
+		var codeKeys [][]byte
+		if err := cb.ForEach(func(k, _ []byte) error {
+			codeKeys = append(codeKeys, append([]byte(nil), k...))
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range codeKeys {
+			if err := cb.Delete(k); err != nil {
+				return err
+			}
+		}
+		return mb.Put([]byte(migrationKeyTokensHashed), []byte("1"))
+	})
 }
 
 // NewHandle returns a cryptographically-random opaque token handle (256 bits,
