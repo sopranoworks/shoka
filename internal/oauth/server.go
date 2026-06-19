@@ -88,7 +88,13 @@ type AuthServer struct {
 	now           func() time.Time // injectable for tests
 }
 
-// NewAuthServer builds an AuthServer. TTLs default to sensible values when zero.
+// NewAuthServer builds an AuthServer. TTLs default to sensible FINITE values when
+// zero/negative — the no-indefinite floor (B-71 Stage 5): 0/unset is never
+// "forever," it resolves to a finite default. Production wiring resolves these in
+// config.applyDefaults (so the self-issued path is covered too); this clamp is the
+// defense-in-depth fallback for any direct constructor (e.g. tests). The values
+// match config's defaults: access 1h, refresh 90d (was an un-reviewed 30d; revisited
+// against GitHub's ~6mo rotating refresh — Shoka rotates too), code 1m.
 func NewAuthServer(store *oauthstore.Store, verifier *Verifier, cfg AuthServerConfig) *AuthServer {
 	accessTTL := cfg.AccessTTL
 	if accessTTL <= 0 {
@@ -96,7 +102,7 @@ func NewAuthServer(store *oauthstore.Store, verifier *Verifier, cfg AuthServerCo
 	}
 	refreshTTL := cfg.RefreshTTL
 	if refreshTTL <= 0 {
-		refreshTTL = 30 * 24 * time.Hour
+		refreshTTL = 90 * 24 * time.Hour
 	}
 	codeTTL := cfg.CodeTTL
 	if codeTTL <= 0 {

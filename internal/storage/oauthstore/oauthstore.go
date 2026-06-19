@@ -503,13 +503,13 @@ func (s *Store) RevokeByPrincipalEmail(email string) (int, error) {
 }
 
 // DeleteDeadSeries removes every series that is FULLY dead — both its access and
-// its refresh token are unusable — past a grace period. A series is fully dead
-// once now is after its RefreshExpiry (the refresh token is the longer-lived of
-// the pair, so a passed refresh-expiry means neither token can be used again);
-// grace defers the deletion by that much past refresh-expiry so an operator can
-// still see a recently-disconnected connection on the admin surface before it is
-// swept. It returns the number of series deleted. An access-expired series whose
-// refresh is still live is NOT deleted (it remains a usable connection).
+// its refresh token are unusable. A series is dead once now is after its
+// RefreshExpiry (the refresh token is the longer-lived of the pair, so a passed
+// refresh-expiry means neither token can be used again), and a dead series is
+// swept IMMEDIATELY — there is no grace period (B-71 Stage 5: expiry ⇒ revoke,
+// matching GitHub PATs, which have no grace). It returns the number of series
+// deleted. An access-expired series whose refresh is still live is NOT deleted (it
+// remains a usable connection).
 //
 // It is the cleaner sweep's one cycle (StartCleaner drives it on a ticker); it is
 // exported so a cycle can be run directly in a test without synthetic timing.
@@ -517,7 +517,7 @@ func (s *Store) RevokeByPrincipalEmail(email string) (int, error) {
 // and refresh handle buckets are cleaned alongside the series row. Keys to delete
 // are collected during the ForEach scan and removed after it, never mutating the
 // bucket mid-iteration.
-func (s *Store) DeleteDeadSeries(now time.Time, grace time.Duration) (int, error) {
+func (s *Store) DeleteDeadSeries(now time.Time) (int, error) {
 	var deleted int
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		var dead []SeriesRecord
@@ -526,7 +526,7 @@ func (s *Store) DeleteDeadSeries(now time.Time, grace time.Duration) (int, error
 			if err := json.Unmarshal(v, &rec); err != nil {
 				return fmt.Errorf("oauthstore: decode series: %w", err)
 			}
-			if now.After(rec.RefreshExpiry.Add(grace)) {
+			if now.After(rec.RefreshExpiry) {
 				dead = append(dead, rec)
 			}
 			return nil

@@ -290,7 +290,6 @@ func main() {
 		oauthStore.StartCleaner(ctx, oauthstore.CleanerConfig{
 			Enabled:  cfg.Storage.OAuthCleaner.IsEnabled(),
 			Interval: cfg.Storage.OAuthCleaner.Interval.Std(),
-			Grace:    cfg.Storage.OAuthCleaner.Grace.Std(),
 			Logger:   logger,
 		})
 

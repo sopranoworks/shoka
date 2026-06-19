@@ -8,12 +8,12 @@ import (
 
 // CleanerConfig configures the OAuth dead-series cleaner sweep (the 2026-06-15
 // authz/lifecycle foundation). It mirrors the storage sweep workers' config shape
-// (Enabled gate + Interval tick) and adds Grace, the delay past a series'
-// refresh-expiry before it is swept.
+// (Enabled gate + Interval tick). There is NO grace: a series is swept as soon as
+// its refresh is past expiry (B-71 Stage 5 removed the grace window — expiry ⇒
+// immediately sweepable, matching GitHub PATs).
 type CleanerConfig struct {
 	Enabled  bool          // gate; false starts no goroutine
 	Interval time.Duration // tick cadence; <=0 disables the sweep even if Enabled
-	Grace    time.Duration // keep a fully-dead series this long past refresh-expiry
 	Logger   *slog.Logger  // sweep log; nil → slog.Default()
 }
 
@@ -24,12 +24,12 @@ type CleanerConfig struct {
 // ticker loop: the ticker's first tick is a full Interval (default 1h) away, so a
 // server restarting more often than the interval would otherwise never sweep and
 // already-dead series would linger for days. The boot sweep purges them on every
-// start. Each subsequent tick runs one DeleteDeadSeries(now, Grace); an error is
-// logged and the next tick retries. The OAuth store accumulates dead series forever
+// start. Each subsequent tick runs one DeleteDeadSeries(now); an error is logged
+// and the next tick retries. The OAuth store accumulates dead series forever
 // otherwise (no other GC exists), so this is on by default in config.
 //
 // Both the boot sweep and every tick delete ONLY fully-dead series (refresh past
-// expiry + Grace) via DeleteDeadSeries; a refresh-live or live token is never
+// expiry — no grace) via DeleteDeadSeries; a refresh-live or live token is never
 // touched. The boot sweep is under the same Enabled/Interval guard as the loop — a
 // disabled cleaner runs no sweep at all.
 func (s *Store) StartCleaner(ctx context.Context, cfg CleanerConfig) {
@@ -41,7 +41,7 @@ func (s *Store) StartCleaner(ctx context.Context, cfg CleanerConfig) {
 		logger = slog.Default()
 	}
 	sweep := func() {
-		deleted, err := s.DeleteDeadSeries(time.Now(), cfg.Grace)
+		deleted, err := s.DeleteDeadSeries(time.Now())
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "oauth cleaner cycle failed",
 				slog.Any("error", err))

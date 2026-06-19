@@ -54,9 +54,12 @@ server:
       # connect. List the legitimate connector domain(s) for your deployment.
       # trusted_client_metadata_domains:
       #   - "the-connector-domain-you-trust"
-      # Token lifetimes (optional; defaults: access 1h, refresh 720h, code 1m).
+      # Token lifetimes (optional; finite defaults: access 1h, refresh 2160h=90d,
+      # code 1m). 0/unset/negative is NOT "forever" — it resolves to the finite
+      # default (B-71 Stage 5 no-indefinite floor). Refresh rotates on every use, so
+      # an actively-used connection never expires; the value is the idle timeout.
       # access_token_ttl: "1h"
-      # refresh_token_ttl: "720h"
+      # refresh_token_ttl: "2160h"
       # authorization_code_ttl: "1m"
       # Client-registration posture advertised in the AS metadata (B-63). One of:
       #   cimd (default) — advertise client_id_metadata_document_supported, NO
@@ -234,12 +237,15 @@ storage:
   # OAuth dead-series cleaner. The OAuth token store has no other garbage
   # collection, so fully-dead token series (both the access AND refresh token
   # expired) would otherwise accumulate forever. This periodic sweep deletes a
-  # series once it is past its refresh-expiry plus a grace window. Only runs when
-  # the OAuth transport (server.mcp.oauth) is configured. Defaults shown.
+  # series as soon as it is past its refresh-expiry — there is NO grace window
+  # (B-71 Stage 5: expiry ⇒ immediately swept). Only runs when the OAuth transport
+  # (server.mcp.oauth) is configured. Defaults shown.
+  # NOTE (breaking change, B-71 Stage 5): the former `grace:` key was REMOVED. A
+  # config that still sets oauth_cleaner.grace will FAIL to load (strict key
+  # checking). Delete the line.
   oauth_cleaner:
     enabled: true      # set false to keep dead series (they show on the admin page)
     interval: 1h       # how often to sweep
-    grace: 24h         # keep a dead series this long past refresh-expiry before deleting
 
 # Per-file write lock manager. Reads take no lock; each write holds a per-file
 # lock only across the check-and-write critical section. Defaults shown.

@@ -201,7 +201,9 @@ type OAuthTransportConfig struct {
 	// the legitimate connector domain(s) here. The value lives ONLY in config,
 	// never in source — confidentiality and flexibility.
 	TrustedClientMetadataDomains []string `yaml:"trusted_client_metadata_domains"`
-	// Token lifetimes (0 = built-in defaults: access 1h, refresh 30d, code 1m).
+	// Token lifetimes. 0/unset/negative is NOT "forever" — applyDefaults resolves it
+	// to the finite default (access 1h, refresh 90d, code 1m; B-71 Stage 5's
+	// no-indefinite floor). See defaultAccessTokenTTL/RefreshTokenTTL/CodeTTL.
 	AccessTokenTTL       Duration `yaml:"access_token_ttl"`
 	RefreshTokenTTL      Duration `yaml:"refresh_token_ttl"`
 	AuthorizationCodeTTL Duration `yaml:"authorization_code_ttl"`
@@ -287,15 +289,17 @@ func (i IndexConfig) IsEnabled() bool {
 
 // OAuthCleanerConfig controls the OAuth dead-series cleaner sweep (the 2026-06-15
 // authz/lifecycle foundation): a periodic sweep that deletes fully-dead token
-// series (both access and refresh expired) past a grace period, since the OAuth
-// store has no other GC and dead series otherwise accumulate forever. Enabled is a
-// pointer so an absent block defaults to TRUE (the operator's intent — no point
-// keeping dead tokens) while an explicit false is kept; Interval defaults to 1h and
-// Grace to 24h (applied in applyDefaults). Set enabled:false to disable.
+// series (both access and refresh expired), since the OAuth store has no other GC
+// and dead series otherwise accumulate forever. Enabled is a pointer so an absent
+// block defaults to TRUE (the operator's intent — no point keeping dead tokens)
+// while an explicit false is kept; Interval defaults to 1h (applied in
+// applyDefaults). Set enabled:false to disable. There is NO grace: a series is
+// swept as soon as its refresh is past expiry (B-71 Stage 5 removed grace — the
+// former oauth_cleaner.grace key no longer exists, and strict-KnownFields config
+// loading now REJECTS a config that still carries it).
 type OAuthCleanerConfig struct {
 	Enabled  *bool    `yaml:"enabled"`
 	Interval Duration `yaml:"interval"`
-	Grace    Duration `yaml:"grace"`
 }
 
 // IsEnabled reports the effective enabled value (default true).
@@ -484,6 +488,18 @@ type Config struct {
 	Webhooks  []WebhookConfig `yaml:"webhooks"`
 }
 
+// OAuth token-lifetime defaults (B-71 Stage 5), finite and GitHub-informed. GitHub
+// App expiring user tokens default to ~8h access / ~6mo rotating refresh; Shoka
+// rotates refresh too, so it keeps a tighter 1h access (store-backed, instantly
+// revocable) and a conservative 90d rotating refresh suited to a single-operator
+// self-hosted server. These are also the no-indefinite floor: a 0/unset/negative
+// TTL resolves UP to these in applyDefaults, so no path mints an unbounded expiry.
+const (
+	defaultAccessTokenTTL       = Duration(time.Hour)
+	defaultRefreshTokenTTL      = Duration(90 * 24 * time.Hour)
+	defaultAuthorizationCodeTTL = Duration(time.Minute)
+)
+
 // applyDefaults fills zero-valued storage-redesign tunables with the defaults
 // from the directive (§12). These defaults also live in the component packages
 // (so a zero value remains safe there); resolving them here keeps the wired
@@ -545,15 +561,28 @@ func (c *Config) applyDefaults() {
 	if c.Storage.Index.Interval == 0 {
 		c.Storage.Index.Interval = Duration(5 * time.Minute)
 	}
-	// OAuth dead-series cleaner (2026-06-15 authz foundation): default a 1h tick and
-	// a 24h grace past refresh-expiry. Enabled defaults to TRUE via
-	// OAuthCleanerConfig.IsEnabled (the operator's intent — dead tokens are not worth
-	// keeping); the sweep only runs when the OAuth store exists (OAuth configured).
+	// OAuth dead-series cleaner (2026-06-15 authz foundation): default a 1h tick.
+	// Enabled defaults to TRUE via OAuthCleanerConfig.IsEnabled (the operator's intent
+	// — dead tokens are not worth keeping); the sweep only runs when the OAuth store
+	// exists (OAuth configured). No grace (B-71 Stage 5): expiry ⇒ immediately swept.
 	if c.Storage.OAuthCleaner.Interval == 0 {
 		c.Storage.OAuthCleaner.Interval = Duration(time.Hour)
 	}
-	if c.Storage.OAuthCleaner.Grace == 0 {
-		c.Storage.OAuthCleaner.Grace = Duration(24 * time.Hour)
+	// OAuth token lifetimes (B-71 Stage 5): finite, GitHub-informed defaults, and a
+	// NO-INDEFINITE floor — 0/unset/negative is NEVER "forever," it resolves to the
+	// finite default here, so every consumer (the AS /token path AND the self-issued
+	// OAUTH_ISSUE_SELF path) receives a finite TTL and no application path can mint an
+	// unbounded expiry. (GitHub App expiring user tokens: access ~8h, refresh ~6mo,
+	// rotating — Shoka rotates too; it keeps a tighter 1h access and a conservative 90d
+	// rotating refresh for a single-operator self-hosted server.)
+	if c.Server.MCP.OAuth.AccessTokenTTL <= 0 {
+		c.Server.MCP.OAuth.AccessTokenTTL = defaultAccessTokenTTL
+	}
+	if c.Server.MCP.OAuth.RefreshTokenTTL <= 0 {
+		c.Server.MCP.OAuth.RefreshTokenTTL = defaultRefreshTokenTTL
+	}
+	if c.Server.MCP.OAuth.AuthorizationCodeTTL <= 0 {
+		c.Server.MCP.OAuth.AuthorizationCodeTTL = defaultAuthorizationCodeTTL
 	}
 	// Backup scheduler (B-70): default a 24h cadence and whole-store scope.
 	// Enabled defaults to FALSE (BackupConfig.IsEnabled); retention_count defaults

@@ -8,7 +8,8 @@ import (
 
 // The 2026-06-15 authz/lifecycle foundation: the Scope field round-trips, an
 // old-shaped record (no scope key) decodes to an empty Scope (backward compatible),
-// and the dead-series cleaner deletes only fully-dead series past the grace.
+// and the dead-series cleaner deletes fully-dead series the moment refresh expires
+// (B-71 Stage 5 removed the grace window).
 
 func TestNewSeries_ScopeRoundTrips(t *testing.T) {
 	s := openTemp(t)
@@ -78,63 +79,98 @@ func TestSeriesRecord_OldRecordDecodesEmptyScope(t *testing.T) {
 	}
 }
 
-func TestDeleteDeadSeries_DeletesOnlyFullyDeadPastGrace(t *testing.T) {
+// TestDeleteDeadSeries_DeletesRefreshExpiredImmediately proves the no-grace semantics
+// (B-71 Stage 5): a series is swept the moment its refresh is past expiry — there is no
+// grace window. A live (refresh-future) series and an access-expired-but-refresh-live
+// series (a usable connection) are kept; a series whose refresh expired a minute ago is
+// deleted (under the old 24h grace it would have lingered a day).
+func TestDeleteDeadSeries_DeletesRefreshExpiredImmediately(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 	p := Principal{Name: "Op"}
-	grace := 24 * time.Hour
 
-	// live: refresh expires far in the future — never dead.
+	// live: refresh far in the future.
 	live, err := s.NewSeries("https://c/meta", p, "res", "*", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries live: %v", err)
 	}
-	// withinGrace: refresh already expired, but not yet past the grace window.
-	withinGrace, err := s.NewSeries("https://c/meta", p, "res", "*",
-		now.Add(-refreshTTL-time.Hour), accessTTL, refreshTTL) // refresh-expiry = now-1h
+	// accessExpiredRefreshLive: access expired, refresh still valid — a usable connection.
+	accLive, err := s.NewSeries("https://c/meta", p, "res", "*",
+		now.Add(-accessTTL-time.Minute), accessTTL, refreshTTL) // access-exp = now-1m, refresh-exp future
 	if err != nil {
-		t.Fatalf("NewSeries withinGrace: %v", err)
+		t.Fatalf("NewSeries accessExpiredRefreshLive: %v", err)
 	}
-	// dead: refresh expired well past the grace window.
+	// dead: refresh expired one minute ago — with NO grace, swept immediately.
 	dead, err := s.NewSeries("https://c/meta", p, "res", "*",
-		now.Add(-refreshTTL-grace-time.Hour), accessTTL, refreshTTL) // refresh-expiry = now-grace-1h
+		now.Add(-refreshTTL-time.Minute), accessTTL, refreshTTL) // refresh-exp = now-1m
 	if err != nil {
 		t.Fatalf("NewSeries dead: %v", err)
 	}
 
-	deleted, err := s.DeleteDeadSeries(now, grace)
+	deleted, err := s.DeleteDeadSeries(now)
 	if err != nil {
 		t.Fatalf("DeleteDeadSeries: %v", err)
 	}
 	if deleted != 1 {
-		t.Fatalf("deleted = %d, want 1 (only the past-grace dead series)", deleted)
+		t.Fatalf("deleted = %d, want 1 (only the refresh-expired series, swept with no grace)", deleted)
+	}
+	remaining := remainingIDs(t, s)
+	if remaining[dead.SeriesID] {
+		t.Fatalf("refresh-expired series %s should be swept immediately (no grace)", dead.SeriesID)
+	}
+	if !remaining[live.SeriesID] || !remaining[accLive.SeriesID] {
+		t.Fatalf("live / access-expired-but-refresh-live series should remain; remaining=%v", remaining)
+	}
+}
+
+// TestDeleteDeadSeries_BoundaryIsRefreshExpiry pins the predicate boundary at exactly
+// RefreshExpiry (now.After(RefreshExpiry)) with NO added grace: a refresh expiry one ns
+// in the past is dead; exactly at now is NOT yet dead (strict After); one ns in the
+// future is kept. RED proof for the grace removal: were the predicate still
+// RefreshExpiry.Add(grace) for any grace>0, the just-past-expiry series would survive →
+// this test fails.
+func TestDeleteDeadSeries_BoundaryIsRefreshExpiry(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	p := Principal{Name: "Op"}
+
+	atBoundary, err := s.NewSeries("https://c/meta", p, "res", "*",
+		now.Add(-refreshTTL), accessTTL, refreshTTL) // refresh-exp == now exactly
+	if err != nil {
+		t.Fatalf("NewSeries atBoundary: %v", err)
+	}
+	justPast, err := s.NewSeries("https://c/meta", p, "res", "*",
+		now.Add(-refreshTTL-time.Nanosecond), accessTTL, refreshTTL) // refresh-exp = now-1ns
+	if err != nil {
+		t.Fatalf("NewSeries justPast: %v", err)
+	}
+	justFuture, err := s.NewSeries("https://c/meta", p, "res", "*",
+		now.Add(-refreshTTL+time.Nanosecond), accessTTL, refreshTTL) // refresh-exp = now+1ns
+	if err != nil {
+		t.Fatalf("NewSeries justFuture: %v", err)
 	}
 
-	// dead is gone; live and withinGrace remain (access tokens still resolve the row,
-	// modulo their own access expiry — assert via List which enumerates the rows).
-	infos, err := s.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	if _, err := s.DeleteDeadSeries(now); err != nil {
+		t.Fatalf("DeleteDeadSeries: %v", err)
 	}
-	remaining := map[string]bool{}
-	for _, i := range infos {
-		remaining[i.SeriesID] = true
+	remaining := remainingIDs(t, s)
+	if remaining[justPast.SeriesID] {
+		t.Fatalf("refresh expired (1ns past) must be swept with no grace")
 	}
-	if remaining[dead.SeriesID] {
-		t.Fatalf("dead series %s should have been deleted", dead.SeriesID)
+	if !remaining[atBoundary.SeriesID] {
+		t.Fatalf("refresh-expiry exactly == now must be kept (boundary is strict After, no grace)")
 	}
-	if !remaining[live.SeriesID] || !remaining[withinGrace.SeriesID] {
-		t.Fatalf("live/within-grace series should remain; remaining=%v", remaining)
+	if !remaining[justFuture.SeriesID] {
+		t.Fatalf("refresh still in the future (1ns) must be kept")
 	}
 }
 
 // seedSeriesByAge seeds three series relative to real wall-clock time (StartCleaner
 // sweeps with time.Now(), not an injected clock): a live one (refresh far in the
-// future), an access-expired-but-refresh-live "within grace" one (refresh just
-// expired, still inside the grace window), and a fully-dead one (refresh past expiry
-// + grace). It returns their series IDs. grace must match the CleanerConfig.Grace
-// the test then starts the cleaner with.
-func seedSeriesByAge(t *testing.T, s *Store, grace time.Duration) (liveID, withinID, deadID string) {
+// future), an access-expired-but-refresh-live one (a usable connection — kept), and a
+// dead one (refresh expired a minute ago — swept immediately, no grace). Returns their
+// series IDs.
+func seedSeriesByAge(t *testing.T, s *Store) (liveID, accessExpiredID, deadID string) {
 	t.Helper()
 	now := time.Now()
 	p := Principal{Name: "Op"}
@@ -143,19 +179,19 @@ func seedSeriesByAge(t *testing.T, s *Store, grace time.Duration) (liveID, withi
 	if err != nil {
 		t.Fatalf("NewSeries live: %v", err)
 	}
-	// refresh-expiry = now-1h: expired, but well inside the 24h grace window.
-	within, err := s.NewSeries("https://c/meta", p, "res", "*",
-		now.Add(-refreshTTL-time.Hour), accessTTL, refreshTTL)
+	// access expired (now-1m), refresh still in the future — a usable connection, kept.
+	accLive, err := s.NewSeries("https://c/meta", p, "res", "*",
+		now.Add(-accessTTL-time.Minute), accessTTL, refreshTTL)
 	if err != nil {
-		t.Fatalf("NewSeries withinGrace: %v", err)
+		t.Fatalf("NewSeries accessExpired: %v", err)
 	}
-	// refresh-expiry = now-grace-1h: fully dead, past the grace window.
+	// refresh expired a minute ago — dead, swept immediately (no grace).
 	dead, err := s.NewSeries("https://c/meta", p, "res", "*",
-		now.Add(-refreshTTL-grace-time.Hour), accessTTL, refreshTTL)
+		now.Add(-refreshTTL-time.Minute), accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries dead: %v", err)
 	}
-	return live.SeriesID, within.SeriesID, dead.SeriesID
+	return live.SeriesID, accLive.SeriesID, dead.SeriesID
 }
 
 func remainingIDs(t *testing.T, s *Store) map[string]bool {
@@ -179,40 +215,39 @@ func remainingIDs(t *testing.T, s *Store) map[string]bool {
 // still present immediately after StartCleaner returns → this test fails.
 func TestStartCleaner_BootSweepRemovesDeadSeriesWithoutTick(t *testing.T) {
 	s := openTemp(t)
-	grace := 24 * time.Hour
-	liveID, withinID, deadID := seedSeriesByAge(t, s, grace)
+	liveID, accID, deadID := seedSeriesByAge(t, s)
 
 	// Interval=time.Hour: the first tick is an hour away, so any deletion observed
 	// immediately after StartCleaner returns is the boot sweep, not a tick.
-	s.StartCleaner(t.Context(), CleanerConfig{Enabled: true, Interval: time.Hour, Grace: grace})
+	s.StartCleaner(t.Context(), CleanerConfig{Enabled: true, Interval: time.Hour})
 
 	remaining := remainingIDs(t, s)
 	if remaining[deadID] {
-		t.Fatalf("boot sweep did not remove fully-dead series %s (no tick has fired yet)", deadID)
+		t.Fatalf("boot sweep did not remove the refresh-expired series %s (no tick has fired yet)", deadID)
 	}
-	// Safety preserved in the boot path: live and refresh-live (within-grace) untouched.
-	if !remaining[liveID] || !remaining[withinID] {
-		t.Fatalf("boot sweep removed a non-dead series; remaining=%v (want live %s and within-grace %s kept)",
-			remaining, liveID, withinID)
+	// Safety preserved in the boot path: live and access-expired-but-refresh-live untouched.
+	if !remaining[liveID] || !remaining[accID] {
+		t.Fatalf("boot sweep removed a non-dead series; remaining=%v (want live %s and refresh-live %s kept)",
+			remaining, liveID, accID)
 	}
 }
 
 // TestStartCleaner_DefaultConfigSweepsAtBoot ties the config defaults to a real
 // sweep: with storage.oauth_cleaner unset, config applies Enabled=true / Interval=1h
-// / Grace=24h (proven in config.TestOAuthCleanerConfig_Defaults), and main.go wires
-// exactly that triple into StartCleaner. Starting the cleaner with that default
-// triple purges an already-dead series at boot — so the default path does start a
-// working cleaner, not a dormant one.
+// (no grace — B-71 Stage 5; proven in config.TestOAuthCleanerConfig_Defaults), and
+// main.go wires exactly that into StartCleaner. Starting the cleaner with that config
+// purges an already-dead series at boot — so the default path starts a working
+// cleaner, not a dormant one.
 func TestStartCleaner_DefaultConfigSweepsAtBoot(t *testing.T) {
 	s := openTemp(t)
-	// The documented config defaults (Enabled=true, 1h, 24h).
-	defaults := CleanerConfig{Enabled: true, Interval: time.Hour, Grace: 24 * time.Hour}
-	_, _, deadID := seedSeriesByAge(t, s, defaults.Grace)
+	// The documented config defaults (Enabled=true, 1h; no grace).
+	defaults := CleanerConfig{Enabled: true, Interval: time.Hour}
+	_, _, deadID := seedSeriesByAge(t, s)
 
 	s.StartCleaner(t.Context(), defaults)
 
 	if remainingIDs(t, s)[deadID] {
-		t.Fatalf("default-config cleaner left fully-dead series %s present after boot", deadID)
+		t.Fatalf("default-config cleaner left the refresh-expired series %s present after boot", deadID)
 	}
 }
 
@@ -226,12 +261,12 @@ func TestStartCleaner_DisabledOrZeroIntervalNoOp(t *testing.T) {
 		name string
 		cfg  CleanerConfig
 	}{
-		{"disabled", CleanerConfig{Enabled: false, Interval: time.Hour, Grace: time.Hour}},
-		{"zero interval", CleanerConfig{Enabled: true, Interval: 0, Grace: time.Hour}},
+		{"disabled", CleanerConfig{Enabled: false, Interval: time.Hour}},
+		{"zero interval", CleanerConfig{Enabled: true, Interval: 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openTemp(t)
-			_, _, deadID := seedSeriesByAge(t, s, tc.cfg.Grace)
+			_, _, deadID := seedSeriesByAge(t, s)
 
 			// Must not start a goroutine, panic, block — or run the boot sweep.
 			s.StartCleaner(t.Context(), tc.cfg)
