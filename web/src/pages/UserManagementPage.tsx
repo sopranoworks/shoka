@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   listUsers,
@@ -246,7 +246,9 @@ function ScopeEditor({
           + Add namespace
         </button>
         {!grants.some((g) => g.target === '*') && (
-          <button className={styles.btn} onClick={() => setGrants((g) => [...g, { target: '*', level: 'admin' }])}>
+          // A wildcard *:admin subsumes every per-namespace grant (authz max-wins), so
+          // adding "All namespaces" REPLACES the individual rows with the single wildcard.
+          <button className={styles.btn} onClick={() => setGrants([{ target: '*', level: 'admin' }])}>
             + Wildcard (all)
           </button>
         )}
@@ -284,6 +286,27 @@ function InviteSection({
   const [email, setEmail] = useState('')
   const [grants, setGrants] = useState<Grant[]>([{ target: '', level: 'rw' }])
   const [created, setCreated] = useState<InviteCreated | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  // Belt-and-braces for the displayed code: the one-shot code lives only in `created`
+  // (it cannot be re-derived — the list carries the hash, never the code), so the only
+  // correct action when its backing invite vanishes is to clear it. seenRef guards the
+  // create-time race: the freshly-minted invite is not in the (stale) list until the
+  // refetch lands, so we clear ONLY a code we have already observed present and which
+  // then disappears (revoked elsewhere / used / expired). The same-page revoke is
+  // cleared synchronously in onRevoke below.
+  const seenRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!created) {
+      seenRef.current = null
+      return
+    }
+    if (invites.some((inv) => inv.code_hash === created.code_hash)) {
+      seenRef.current = created.code_hash
+    } else if (seenRef.current === created.code_hash) {
+      setCreated(null)
+    }
+  }, [invites, created])
 
   function setGrant(idx: number, patch: Partial<Grant>) {
     setGrants((g) => g.map((x, i) => (i === idx ? { ...x, ...patch } : x)))
@@ -299,6 +322,7 @@ function InviteSection({
     try {
       const inv = await createInvite(email.trim(), scope)
       setCreated(inv)
+      setCopied(false)
       setEmail('')
       onCreated()
     } catch (err) {
@@ -309,11 +333,29 @@ function InviteSection({
   async function onRevoke(codeHash: string) {
     try {
       await revokeInvite(codeHash)
+      // The displayed one-shot code belongs to a pending invite; if that is the invite
+      // just revoked, the code is now invalid (and not redeemable) — clear it so a stale
+      // code can never linger on screen.
+      if (created && created.code_hash === codeHash) setCreated(null)
       onRevoked()
     } catch (err) {
       toast({ level: 'warn', text: msg(err) })
     }
   }
+
+  // Copy the one-shot invite code to the clipboard (the ConnectionsPage IssuedTokenPanel
+  // idiom): optimistic "Copied" label, a toast on the rare clipboard failure.
+  function copyCode() {
+    if (!created) return
+    void navigator.clipboard
+      ?.writeText(created.code)
+      .then(() => setCopied(true))
+      .catch(() => toast({ level: 'warn', text: 'Could not copy — select and copy manually.' }))
+  }
+
+  // A non-wildcard grant row with an empty namespace is invalid; surface it BEFORE
+  // submit (red frame on the input, disabled submit) instead of only erroring on submit.
+  const hasEmptyNs = grants.some((g) => g.target !== '*' && g.target.trim() === '')
 
   return (
     <section className={styles.invites}>
@@ -337,12 +379,13 @@ function InviteSection({
                 <span className={styles.wildcard}>All namespaces (*)</span>
               ) : (
                 <input
-                  className={styles.nsInput}
+                  className={`${styles.nsInput} ${g.target.trim() === '' ? styles.invalid : ''}`}
                   list="ns-options-invite"
                   value={g.target}
                   placeholder="namespace"
                   onChange={(e) => setGrant(i, { target: e.target.value.trim() })}
                   aria-label="namespace"
+                  aria-invalid={g.target.trim() === '' || undefined}
                 />
               )}
               <select value={g.level} onChange={(e) => setGrant(i, { level: e.target.value as Level })} aria-label="level">
@@ -367,13 +410,20 @@ function InviteSection({
               + Add namespace
             </button>
             {!grants.some((g) => g.target === '*') && (
-              <button type="button" className={styles.btn} onClick={() => setGrants((g) => [...g, { target: '*', level: 'admin' }])}>
+              // "All namespaces" (*:admin) subsumes every per-namespace grant, so adding
+              // it REPLACES the individual rows with the single wildcard row.
+              <button type="button" className={styles.btn} onClick={() => setGrants([{ target: '*', level: 'admin' }])}>
                 + Wildcard (all)
               </button>
             )}
           </div>
         </div>
-        <button type="submit" className={`${styles.btn} ${styles.primary}`}>
+        <button
+          type="submit"
+          className={`${styles.btn} ${styles.primary}`}
+          disabled={hasEmptyNs}
+          title={hasEmptyNs ? 'Fill in every namespace, or remove the empty row' : ''}
+        >
           Generate invite code
         </button>
       </form>
@@ -383,7 +433,17 @@ function InviteSection({
           <div>
             Invite for <strong>{created.email}</strong> ({describeScope(created.scope)}):
           </div>
-          <code className={styles.code}>{created.code}</code>
+          <div className={styles.codeRow}>
+            <code className={styles.code}>{created.code}</code>
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={copyCode}
+              aria-label="Copy invite code"
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
           <div className={styles.muted}>Copy this now — it is shown only once.</div>
         </div>
       )}

@@ -193,3 +193,129 @@ test('invite → logout → redeem creates a scoped account', async ({ page }) =
   expect(status.principal.email).toBe('invitee@example.com')
   expect(status.principal.is_admin).toBe(false)
 })
+
+// ---------------------------------------------------------------------------
+// 2026-06-19 user-management UI: two bug fixes + two improvements (frontend).
+// Each reaches the page the way a super-user does — log in, click the Settings
+// gear, click the User management item — NOT a page.goto to a deep route.
+// ---------------------------------------------------------------------------
+
+// Reach user management through the activity-rail gear (the super-user path), not a
+// deep settings route.
+async function openUserManagement(page: Page) {
+  await page.goto(`${BASE}/p/demo/docs`)
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('link', { name: 'User management' }).click()
+  await expect(page.getByRole('heading', { name: 'User management' })).toBeVisible()
+}
+
+// Create a non-super-user via the real invite→redeem flow, then return to the admin
+// session — so the user list is non-empty and the per-user ScopeEditor can be opened.
+async function createSecondUser(page: Page, email: string) {
+  await openUserManagement(page)
+  await page.getByLabel('invitee email').fill(email)
+  await page.getByRole('form', { name: 'Create invite' }).getByLabel('namespace').first().fill('demo')
+  await page.getByRole('button', { name: 'Generate invite code' }).click()
+  const code = await page.locator('code').first().innerText()
+  await page.context().clearCookies()
+  await page.goto(BASE)
+  await page.getByRole('button', { name: 'Have an invite code?' }).click()
+  await page.locator('#rd-code').fill(code)
+  await page.getByRole('button', { name: 'Continue' }).click()
+  await expect(page.getByRole('heading', { name: 'Set up your account' })).toBeVisible()
+  await page.locator('#rd-pw').fill('secondpw1234')
+  await page.locator('#rd-pw2').fill('secondpw1234')
+  await page.getByRole('button', { name: 'Create account' }).click()
+  await expect(page.getByRole('heading', { name: 'Set up your account' })).toBeHidden({ timeout: 15000 })
+  // Back to the admin session.
+  await page.context().clearCookies()
+  await loginOrRegister(page, { accept: false })
+}
+
+test('Bug 1: "All namespaces" replaces the per-namespace rows in the invite form', async ({ page }) => {
+  await loginOrRegister(page, { accept: false })
+  await openUserManagement(page)
+  const form = page.getByRole('form', { name: 'Create invite' })
+  await form.getByLabel('namespace').first().fill('demo')
+  await form.getByRole('button', { name: /Add namespace/ }).click()
+  await form.getByLabel('namespace').nth(1).fill('other')
+  await expect(form.getByLabel('namespace')).toHaveCount(2)
+  await form.getByRole('button', { name: /Wildcard/ }).click()
+  // Replace-on-add: only the single wildcard row remains, the individual rows are gone.
+  await expect(form.getByLabel('namespace')).toHaveCount(0)
+  await expect(form.getByText('All namespaces (*)')).toBeVisible()
+})
+
+test('Bug 1: "All namespaces" replaces the per-namespace rows in the scope editor', async ({ page }) => {
+  await loginOrRegister(page, { accept: false })
+  await createSecondUser(page, 'scopeuser@example.com')
+  await openUserManagement(page)
+  await page
+    .getByRole('row', { name: /scopeuser@example.com/ })
+    .getByRole('button', { name: 'Edit permissions' })
+    .click()
+  const editor = page.getByLabel('Scope editor')
+  await expect(editor.getByLabel('namespace')).toHaveCount(1)
+  await editor.getByRole('button', { name: /Add namespace/ }).click()
+  await expect(editor.getByLabel('namespace')).toHaveCount(2)
+  await editor.getByRole('button', { name: /Wildcard/ }).click()
+  await expect(editor.getByLabel('namespace')).toHaveCount(0)
+  await expect(editor.getByText('All namespaces (*)')).toBeVisible()
+})
+
+test('Bug 2: revoking the backing pending invite clears the displayed code', async ({ page }) => {
+  await loginOrRegister(page, { accept: false })
+  await openUserManagement(page)
+  await page.getByLabel('invitee email').fill('bug2@example.com')
+  await page.getByRole('form', { name: 'Create invite' }).getByLabel('namespace').first().fill('demo')
+  await page.getByRole('button', { name: 'Generate invite code' }).click()
+  // The one-shot code box is shown (its <code> is the only one on the page).
+  await expect(page.locator('code')).toHaveCount(1)
+  // Revoke that pending invite → its code is now invalid and must clear from the screen.
+  await page
+    .getByRole('row', { name: /bug2@example.com/ })
+    .getByRole('button', { name: 'Revoke' })
+    .click()
+  await expect(page.locator('code')).toHaveCount(0)
+})
+
+test('Improvement 3: an empty namespace is flagged invalid before submit', async ({ page }) => {
+  await loginOrRegister(page, { accept: false })
+  await openUserManagement(page)
+  const form = page.getByRole('form', { name: 'Create invite' })
+  const ns = form.getByLabel('namespace').first()
+  // The default empty row is flagged BEFORE any submit, and submit is disabled.
+  await expect(ns).toHaveAttribute('aria-invalid', 'true')
+  await expect(page.getByRole('button', { name: 'Generate invite code' })).toBeDisabled()
+  // Filling it clears the invalid state and enables submit.
+  await ns.fill('demo')
+  await expect(ns).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(page.getByRole('button', { name: 'Generate invite code' })).toBeEnabled()
+})
+
+test('Improvement 4: the copy button copies the invite code', async ({ page }) => {
+  // Stub the clipboard before the app loads so the copy is observable and deterministic.
+  await page.addInitScript(() => {
+    ;(window as unknown as { __copied: string[] }).__copied = []
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: (t: string) => {
+          ;(window as unknown as { __copied: string[] }).__copied.push(t)
+          return Promise.resolve()
+        },
+      },
+    })
+  })
+  await loginOrRegister(page, { accept: false })
+  await openUserManagement(page)
+  await page.getByLabel('invitee email').fill('copy@example.com')
+  await page.getByRole('form', { name: 'Create invite' }).getByLabel('namespace').first().fill('demo')
+  await page.getByRole('button', { name: 'Generate invite code' }).click()
+  const code = await page.locator('code').first().innerText()
+  const copyBtn = page.getByRole('button', { name: 'Copy invite code' })
+  await copyBtn.click()
+  await expect(copyBtn).toHaveText('Copied')
+  const copied = await page.evaluate(() => (window as unknown as { __copied: string[] }).__copied)
+  expect(copied).toContain(code)
+})

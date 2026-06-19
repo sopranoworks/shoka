@@ -125,6 +125,12 @@
   min-width: 12rem;
 }
 
+/* Pre-submit invalid state for an empty namespace input (Improvement 3). */
+.invalid {
+  border-color: #dc4646;
+  box-shadow: 0 0 0 1px rgba(220, 70, 70, 0.45);
+}
+
 .wildcard {
   min-width: 12rem;
   font-weight: 600;
@@ -181,4 +187,17 @@
   padding: 0.4rem 0.5rem;
   background: var(--color-bg, #161616);
   border-radius: 5px;
+}
+
+/* Lay the one-shot code beside its Copy button (Improvement 4). */
+.codeRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.codeRow .code {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
 }
