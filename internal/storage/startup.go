@@ -162,6 +162,13 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 		"projects_dangerous", dangerous,
 	)
 
+	// One-time cleanup of OLD JUNK deleted-logs (2026-06-18): remove only unmarked + empty
+	// <p>.deleted.db files left by the retired over-broad lazy-create. Runs here, inside the
+	// blocking gate before the listeners open, so the server owns every handle (no live race);
+	// guarded by a done-flag so it does NOT re-scan every boot, and it is O(1) per existing
+	// .deleted.db (a marker lookup + an emptiness probe) — never a git walk, never a full scan.
+	s.deletedLogCleanupOnce()
+
 	// Non-blocking (D4 / B-38.1): quarantine repo-less leftovers to lost+found AFTER
 	// the blocking gate has done its work. This runs in a goroutine so a whole-tree
 	// move never delays server readiness — the synchronous body above (the latency
