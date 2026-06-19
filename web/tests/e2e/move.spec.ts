@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { backendWrite, backendMove } from './control'
+import { backendWrite, backendMove, backendRead, backendCreateProject } from './control'
 
 // Move / rename (Obsidian-model), against the real binary + /ws/ui. Each test
 // seeds its OWN files under _e2e/ via the control socket. A move is a PURE PATH
@@ -218,6 +218,50 @@ test('drag a file leaf onto a directory moves it there', async ({ page }) => {
   await expect(page).toHaveURL(new RegExp('/blob/_e2e/dropdir/source.md$'), {
     timeout: 10_000,
   })
+})
+
+test('REJECTION (drag): dropping onto a folder that already holds the name → collision warning, Cancel leaves it put (real browser)', async ({
+  page,
+}) => {
+  // Own throwaway project so the tree stays SMALL — the click-through reach below
+  // navigates a virtualized tree, and the shared demo/docs _e2e/ is polluted by
+  // the other move tests (the source row would virtualize out of view).
+  const RNS = 'default'
+  const RPROJ = 'move-reject-test'
+  await backendCreateProject(RNS, RPROJ)
+  // A root file to land on neutrally (no expand-to-active), then two sibling
+  // folders: a source holding `dragme.md` and an occupied dest also holding it.
+  await backendWrite(RNS, RPROJ, 'README.md', '# Root\n')
+  await backendWrite(RNS, RPROJ, 'dcsrc/dragme.md', '# DRAG SOURCE\n')
+  await backendWrite(RNS, RPROJ, 'dcdst/dragme.md', '# OCCUPIED\n')
+
+  // Reach the source THROUGH THE NORMAL UI PATH: open the neutral root file (so
+  // expand-to-active does NOT auto-open the folders) and navigate the rendered
+  // tree by CLICKING to expand — not a deep page.goto to the source blob.
+  await page.goto(`/p/${RNS}/${RPROJ}/blob/README.md`)
+  const sidebar = page.locator('#sidebar')
+  await sidebar.getByText('dcsrc', { exact: true }).first().click() // expand dcsrc
+  const source = sidebar.getByText('dragme.md', { exact: true })
+  const target = sidebar.getByText('dcdst', { exact: true }).first() // collapsed dest folder
+  await expect(source).toBeVisible()
+  await expect(target).toBeVisible()
+
+  // The real offending drop.
+  await htmlDragAndDrop(page, source, target)
+
+  // Refused: the three-action collision warning appears (no silent overwrite).
+  const warn = page.getByRole('alertdialog')
+  await expect(warn).toContainText('already exists', { timeout: 10_000 })
+  await expectNoLinkSurface(page)
+  await warn.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+
+  // Backend unchanged: the dest keeps its content and the source still exists at
+  // its original path (nothing moved, nothing overwritten). On a broken
+  // no-overwrite guard (the RED) the warning never shows and the dest is silently
+  // replaced.
+  expect(await backendRead(RNS, RPROJ, 'dcdst/dragme.md')).toContain('OCCUPIED')
+  expect(await backendRead(RNS, RPROJ, 'dcsrc/dragme.md')).toContain('DRAG SOURCE')
 })
 
 // react-dnd's HTML5 backend listens to native HTML5 drag events, which

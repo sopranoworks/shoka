@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Locator } from '@playwright/test'
-import { backendCreateProject, backendWrite } from './control'
+import { backendCreateProject, backendWrite, backendRead } from './control'
 
 // B-31 (RE-OPEN) — drag-to-trash, PROVEN in a REAL browser. The 5be545d fix passed
 // only a jsdom unit seam (which can't render react-arborist rows); on a real browser
@@ -99,6 +99,43 @@ test('drag a row onto a FOLDER is an in-tree move, NOT a trash enqueue (no colla
   })
   // … and was NOT enqueued for deletion (no countdown, trash empty).
   await expect(page.getByText(/Deleting in \d+s/)).toHaveCount(0)
+})
+
+test('REJECTION: a FOLDER cannot be dragged onto the trash → no enqueue, folder intact (real browser)', async ({
+  page,
+}) => {
+  // Reached the way a user reaches it: open the project, the root folder row
+  // `dropdir` is rendered in the tree, the trash box is on the rail — no deep
+  // page.goto to the offending row. Folders are NOT draggable (FileTree
+  // disableDrag={!isFile}); react-arborist gates this in canDrag, so a real drag
+  // of a folder never begins and the trash never receives a NODE — the refusal is
+  // behavioural (no enqueue), not a DOM attribute (every row carries draggable=true).
+  await openProject(page, 'junk.md')
+  const sidebar = page.locator('#sidebar')
+  const folder = sidebar.getByText('dropdir', { exact: true }).first()
+  const trash = page.getByRole('button', { name: 'Trash' })
+  await expect(folder).toBeVisible()
+  await expect(trash).toBeVisible()
+  // Idle: nothing queued.
+  await expect(page.getByText(/Deleting in \d+s/)).toHaveCount(0)
+
+  // Attempt the offending drag: the folder onto the trash box.
+  await folder.dragTo(trash)
+  // Settle: give any (wrongful) enqueue round-trip + toast time to surface, so the
+  // negative assertions below are not racing an async event that hasn't fired yet.
+  await page.waitForTimeout(1000)
+
+  // Refused at the SOURCE: the folder is not draggable, so the drag never begins
+  // and the trash never even ATTEMPTS an enqueue — no countdown, and crucially no
+  // "Could not queue" toast (which the enqueue guard would emit if a folder path
+  // ever reached it). On a relaxed disableDrag (the RED) the folder becomes
+  // draggable → the drag reaches enqueuePath → readFileFresh rejects the directory
+  // → the "Could not queue …" toast appears, flipping this assertion.
+  await expect(page.getByText(/Deleting in \d+s/)).toHaveCount(0)
+  await expect(page.getByText(/Could not queue .* for deletion/i)).toHaveCount(0)
+  await expect(sidebar.getByText('dropdir', { exact: true }).first()).toBeVisible()
+  // Backend unchanged: the folder's file is still there (no deletion happened).
+  expect(await backendRead(NS, PROJ, 'dropdir/keep.md')).toContain('anchor')
 })
 
 test('the trash box shows its drop affordance while a valid drag hovers it', async ({

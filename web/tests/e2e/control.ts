@@ -43,6 +43,24 @@ export function backendWrite(
   })
 }
 
+// Read a file's current content straight off /ws/ui, for an authoritative
+// "backend state unchanged" check after a refusal (a rejected drop must leave the
+// real file untouched). READ_FILE errors (rejects) for a missing path.
+export function backendRead(
+  namespace: string,
+  project: string,
+  path: string,
+): Promise<string> {
+  return withWs(async (ws) => {
+    const p = (await rpc(ws, 'READ_FILE', {
+      namespace,
+      projectName: project,
+      path,
+    })) as { content: string }
+    return p.content
+  })
+}
+
 export function backendCreateProject(
   namespace: string,
   project: string,
