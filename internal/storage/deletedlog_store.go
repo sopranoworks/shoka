@@ -85,6 +85,27 @@ func (s *FSGitStorage) deletedLogForRead(namespace, projectName string) *deleted
 	return st
 }
 
+// deletedLogHasOriginMarker reports whether an EXISTING <p>.deleted.db carries the origin
+// marker — a no-create, O(1) single key lookup (no record scan). Returns (false, nil) when no
+// log exists or it cannot be opened (an absent/unreadable file has no verifiable marker).
+func (s *FSGitStorage) deletedLogHasOriginMarker(namespace, projectName string) (bool, error) {
+	st := s.deletedLogForRead(namespace, projectName)
+	if st == nil {
+		return false, nil
+	}
+	return st.HasOriginMarker()
+}
+
+// deletedLogRecordsEmpty reports whether an EXISTING <p>.deleted.db holds zero deletion
+// records — a no-create, O(1) first-key probe. Returns (true, nil) when no log exists.
+func (s *FSGitStorage) deletedLogRecordsEmpty(namespace, projectName string) (bool, error) {
+	st := s.deletedLogForRead(namespace, projectName)
+	if st == nil {
+		return true, nil
+	}
+	return st.IsEmpty()
+}
+
 // deletedLogExists reports whether a project's deleted-log DB file is present on
 // disk. It is the trigger-(a) discriminator: an absent file means "never built"
 // (rebuild it); a present file is trusted as-is, even if empty (no proactive scan).

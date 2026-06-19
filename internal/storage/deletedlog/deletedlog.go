@@ -56,7 +56,20 @@ const (
 	MetaCreatedAt     = "created_at"     // RFC3339Nano UTC
 	MetaNamespace     = "namespace"      //
 	MetaProjectName   = "project_name"   //
+	// MetaOrigin is the ORIGIN MARKER (2026-06-18). Its PRESENCE (any value) means the log
+	// was created by this marker-aware build — i.e. legitimately, via the create path now
+	// reached only by a real deletion — as opposed to a pre-marker file made by the retired
+	// over-broad lazy-create (those have no origin key). It lives in the _meta bucket (NEVER
+	// the deleted bucket), so it can never collide with a stored deletion path and never
+	// affects List/Count; it is written ONCE at create and is never touched by record
+	// updates or revives. Existing pre-marker files are NOT migrated — their absence of this
+	// key is exactly what marks them as old, cleanable junk.
+	MetaOrigin = "origin"
 )
+
+// OriginDeletion is the MetaOrigin value written at create. The discriminator is the key's
+// PRESENCE, not the value; the value documents intent.
+const OriginDeletion = "deletion"
 
 // CurrentSchemaVersion is the schema version this build writes and requires. Since
 // the store is disposable, an incompatible bump simply triggers a rebuild.
@@ -144,6 +157,7 @@ func Create(p, namespace, projectName string) (*Store, error) {
 			{MetaCreatedAt, now},
 			{MetaNamespace, namespace},
 			{MetaProjectName, projectName},
+			{MetaOrigin, OriginDeletion}, // the one-time origin marker (set once, at create)
 		}
 		for _, r := range rows {
 			if err := meta.Put([]byte(r.k), []byte(r.v)); err != nil {
@@ -315,6 +329,33 @@ func (st *Store) ReplaceAll(records []DeletedRecord, maxEntries int) error {
 		}
 		return nil
 	})
+}
+
+// HasOriginMarker reports whether the log carries the origin marker — an O(1) single key
+// lookup in the _meta bucket (NO scan of the deleted bucket, NO create). A pre-marker (old)
+// file returns false; that is the discriminator the cleanup uses to spot old junk.
+func (st *Store) HasOriginMarker() (bool, error) {
+	v, err := st.meta(MetaOrigin)
+	if err != nil {
+		return false, err
+	}
+	return v != "", nil
+}
+
+// IsEmpty reports whether the deleted bucket holds zero records — an O(1) first-key probe,
+// not a full materialise. It is the no-data-loss gate for the cleanup.
+func (st *Store) IsEmpty() (bool, error) {
+	empty := true
+	err := st.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(deletedBucket))
+		if b == nil {
+			return nil // no bucket ⇒ no records
+		}
+		k, _ := b.Cursor().First()
+		empty = k == nil
+		return nil
+	})
+	return empty, err
 }
 
 func (st *Store) meta(key string) (string, error) {
