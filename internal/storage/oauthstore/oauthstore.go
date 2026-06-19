@@ -65,12 +65,13 @@ var (
 )
 
 const (
-	codesBucket   = "codes"
-	seriesBucket  = "series"
-	accessBucket  = "access"
-	refreshBucket = "refresh"
-	clientsBucket = "clients" // DCR-registered public clients (B-63, RFC 7591)
-	metaBucket    = "meta"    // store metadata (schema/migration markers, B-71 Stage 0)
+	codesBucket         = "codes"
+	seriesBucket        = "series"
+	accessBucket        = "access"
+	refreshBucket       = "refresh"
+	clientsBucket       = "clients"       // DCR-registered public clients (B-63, RFC 7591)
+	metaBucket          = "meta"          // store metadata (schema/migration markers, B-71 Stage 0)
+	registrationsBucket = "registrations" // dynamic OAuth registration entries (B-71 Stage 1)
 )
 
 // migrationKeyTokensHashed marks that the one-time B-71 Stage 0 re-key (raw token →
@@ -204,7 +205,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("oauthstore: open %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{codesBucket, seriesBucket, accessBucket, refreshBucket, clientsBucket, metaBucket} {
+		for _, b := range []string{codesBucket, seriesBucket, accessBucket, refreshBucket, clientsBucket, metaBucket, registrationsBucket} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
