@@ -79,9 +79,26 @@ func (s *FSGitStorage) ReviveFile(ctx context.Context, namespace, projectName, p
 	}
 
 	// Forward-only re-create as a new commit (the existing overwrite-as-new-commit
-	// write path). The commit-land hook drops rel from the deleted set when it lands.
+	// write path). The commit-land hook also drops rel from the deleted set when the
+	// commit lands.
 	if _, werr := s.Write(ctx, "", namespace, projectName, rel, content, nil); werr != nil {
 		return fmt.Errorf("revive write failed: %w", werr)
+	}
+	// Drop rel from the currently-deleted set NOW, synchronously, instead of waiting for
+	// the async commit-land hook (deletedLogApply, op "write") to do it. Write returns at
+	// WAL-append — BEFORE the background worker commits — so a LIST_DELETED read taken on
+	// the REVIVE_FILE ack (the Web UI refetches the deleted list immediately on success and
+	// never again) would otherwise still see rel as deleted, leaving a revived file stuck in
+	// the list until the next manual refresh. Dropping here makes the set correct the instant
+	// revive returns; the later commit-land Drop is then an idempotent no-op. Best-effort and
+	// counted, mirroring the hook — it never fails the revive, and the bounded repair remains
+	// the safety net. deletedLogForRead is non-nil here (a log exists: rel was deleted).
+	if st := s.deletedLogForRead(namespace, projectName); st != nil {
+		if derr := st.Drop(rel); derr != nil {
+			s.log().Warn("deleted-log revive drop failed",
+				"namespace", namespace, "project", projectName, "path", rel, "err", derr)
+			s.dlUpdateFailed.Add(1)
+		}
 	}
 	return nil
 }

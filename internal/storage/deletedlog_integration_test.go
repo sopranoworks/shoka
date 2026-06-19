@@ -125,6 +125,52 @@ func hasOpTrailer(message, op, path, from string) bool {
 	return ok && m.Op == op && m.Path == path && m.From == from
 }
 
+// TestReviveFile_DropsFromDeletedSetSynchronouslyAtAckTime guards the revive→LIST_DELETED
+// race (deleted-revive.spec was red since 8536bcc): ReviveFile must drop the revived path
+// from the currently-deleted set BY THE TIME IT RETURNS — not only when the async WAL commit
+// later lands — so a LIST_DELETED read taken on the REVIVE_FILE ack (the Web UI refetches the
+// deleted list immediately on success and never again) is correct.
+//
+// Determinism: the WAL pool is Shutdown AFTER the delete commits and BEFORE the revive, so the
+// revive-write can NEVER commit and the async commit-land Drop can NEVER run. The only thing
+// that can clear a.md from the set is therefore ReviveFile's synchronous drop. The WALPending
+// assertion proves the commit did not land. RED proof: delete the synchronous-drop block in
+// ReviveFile and a.md lingers in the set here (with no commit to drop it).
+func TestReviveFile_DropsFromDeletedSetSynchronouslyAtAckTime(t *testing.T) {
+	s := newDeletedLogStorage(t, DeletedLogOptions{})
+
+	mustWrite(t, s, "a.md", "alpha")
+	drainWAL(t, s)
+	if err := s.DeleteFile("ns", "proj", "a.md"); err != nil {
+		t.Fatal(err)
+	}
+	drainWAL(t, s)
+	if deletedSet(t, s)["a.md"] == "" {
+		t.Fatalf("precondition: a.md must be in the deleted set after its delete commits")
+	}
+
+	// Stop the worker: no WAL entry can commit now, so the async commit-land hook can never
+	// run. Any subsequent drop of a.md is necessarily ReviveFile's synchronous one. (Close's
+	// second Shutdown in t.Cleanup is a no-op — Shutdown is once-only.)
+	if err := s.pool.Shutdown(10 * time.Second); err != nil {
+		t.Fatalf("pool shutdown: %v", err)
+	}
+
+	if err := s.ReviveFile(context.Background(), "ns", "proj", "a.md", ""); err != nil {
+		t.Fatalf("ReviveFile: %v", err)
+	}
+
+	// The revive-write is still pending (worker down) — so the commit DID NOT land, and the
+	// drop checked below can only be the synchronous one.
+	if s.WALPending() == 0 {
+		t.Fatalf("expected the revive-write to be pending with the worker stopped; WALPending=0")
+	}
+	if _, ok := deletedSet(t, s)["a.md"]; ok {
+		t.Fatalf("revived a.md must be dropped from the deleted set synchronously at ack-time, " +
+			"before any commit lands — it is still present")
+	}
+}
+
 // --- Mandatory test #2: cheap list + FIFO cap ---
 
 func TestDeletedLog_List_FIFOCap(t *testing.T) {
