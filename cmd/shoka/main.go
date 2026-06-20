@@ -339,7 +339,7 @@ func main() {
 				return "", time.Time{}, berr
 			}
 			rec, nerr := oauthStore.NewSeries(
-				"shoka-cli",
+				oauthstore.SelfIssuedClientID,
 				oauthstore.Principal{Name: cfg.Identity.User.Name, Email: cfg.Identity.User.Email},
 				serverurl.ResourceURL(base),
 				"*", // the operator's self-issued CLI token is all-access, like any DCR token

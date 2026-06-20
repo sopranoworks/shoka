@@ -161,7 +161,18 @@ type RegisteredClient struct {
 	GrantTypes              []string  `json:"grant_types,omitempty"`
 	ResponseTypes           []string  `json:"response_types,omitempty"`
 	ClientIDIssuedAt        time.Time `json:"client_id_issued_at"`
+	// Domain is the DCR client's attributed trusted domain (B-71 Stage 2a), derived from
+	// its redirect_uris host at registration so a DCR-issued series can be grouped under a
+	// domain like a CIMD one. omitempty + decode-safe: a record written before Stage 2a (or
+	// a multi-host/unparseable client) has "" and is derived lazily by SeriesDomain. No
+	// migration. RECORD-ONLY this stage — it gates/groups nothing yet.
+	Domain string `json:"domain,omitempty"`
 }
+
+// SelfIssuedClientID is the client_id of the operator's own self-issued CLI token
+// (cmd/shoka OAUTH_ISSUE_SELF). It is neither a CIMD URL nor a DCR handle — it belongs to
+// the pre-issued/confidential world, not a domain, so SeriesDomain reports it unattributed.
+const SelfIssuedClientID = "shoka-cli"
 
 // SeriesInfo is the enumerable view of a live connection for the (c) management
 // surface — never carries the secret token handles.

@@ -154,6 +154,10 @@ func (s *AuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		GrantTypes:              grantTypes,
 		ResponseTypes:           responseTypes,
 		ClientIDIssuedAt:        issuedAt,
+		// B-71 Stage 2a: attribute this DCR client a trusted domain (its redirect_uris host)
+		// so its series can be grouped under a domain like a CIMD one. RECORD-ONLY — it adds
+		// no gate; a multi-host/unparseable client records "" and is derived lazily later.
+		Domain: oauthstore.DomainFromRedirectURIs(req.RedirectURIs),
 	}
 	if err := s.store.PutClient(rec); err != nil {
 		lg.Error("oauth register failed", "reason", "client-persist-failed")

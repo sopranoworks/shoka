@@ -221,3 +221,18 @@ func TestToken_UnknownDCRClientReturns401InvalidClient(t *testing.T) {
 		t.Fatalf("want invalid_client, got %s", rec.Body.String())
 	}
 }
+
+// TestRegister_RecordsDomainFromRedirectURIs (B-71 Stage 2a): a DCR registration records the
+// client's trusted domain (the redirect_uris host) on the RegisteredClient, so its series can
+// later be grouped under a domain like a CIMD one. Record-only — no gate is added.
+func TestRegister_RecordsDomainFromRedirectURIs(t *testing.T) {
+	h := newTestAS(t)
+	clientID := h.registerClient(t, []string{"https://connector.example/cb"})
+	client, err := h.store.GetClient(clientID)
+	if err != nil {
+		t.Fatalf("GetClient: %v", err)
+	}
+	if client.Domain != "connector.example" {
+		t.Fatalf("DCR /register must record the redirect_uri host as the domain; got %q", client.Domain)
+	}
+}
