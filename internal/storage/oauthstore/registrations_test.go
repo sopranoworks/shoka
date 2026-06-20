@@ -112,11 +112,10 @@ func TestRegistrations_InvalidModeRejectedNoWrite(t *testing.T) {
 	}
 }
 
-// TestRegistrations_LenientDecodeReservedFields proves later stages can add/use the
-// reserved TTL/Consent/Secret fields (and any field) without a breaking migration:
-//   - a minimal record (no reserved fields) decodes with them nil;
-//   - a record carrying populated reserved fields round-trips them verbatim;
-//   - a "future" record with an UNKNOWN extra key still decodes (lenient), core intact.
+// TestRegistrations_LenientDecodeReservedFields proves the TTL/Consent fields (now typed,
+// B-71 Stage 2b) and the still-reserved Secret field round-trip, an entry without them
+// decodes with them nil (decode-safe — Stage 1/2a vintage), and a "future" record with an
+// UNKNOWN extra key still decodes (lenient), core intact.
 //
 // RED proof: make GetRegistration's decode strict (DisallowUnknownFields) → the future
 // record fails to decode → this test fails.
@@ -124,26 +123,32 @@ func TestRegistrations_LenientDecodeReservedFields(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 
-	// Minimal record (no reserved fields) → reserved decode to nil.
+	// Minimal record (no TTL/Consent/Secret) → they decode to nil.
 	e, err := s.CreateRegistration(RegistrationModeDomain, "d.example", now)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	got, _ := s.GetRegistration(e.ID)
 	if got.TTL != nil || got.Consent != nil || got.Secret != nil {
-		t.Fatalf("reserved fields must decode to nil when absent: %+v", got)
+		t.Fatalf("TTL/Consent/Secret must decode to nil when absent: %+v", got)
 	}
 
-	// Populated reserved fields round-trip verbatim (Stage 2/3 will set them).
-	got.TTL = json.RawMessage(`{"access_seconds":3600}`)
-	got.Consent = json.RawMessage(`{"required":true}`)
-	got.Secret = json.RawMessage(`{"hash":"deadbeef"}`)
+	// Populated fields round-trip (TTL/Consent typed; Secret still a reserved raw placeholder).
+	got.TTL = &EntryTTL{AccessSeconds: 3600, RefreshSeconds: 7_776_000}
+	got.SetConsent("the-domain-consent-secret")
+	got.Secret = json.RawMessage(`{"placeholder":"stage3"}`)
 	if err := s.UpdateRegistration(got); err != nil {
 		t.Fatalf("update with reserved fields: %v", err)
 	}
 	reread, _ := s.GetRegistration(e.ID)
-	if string(reread.TTL) != `{"access_seconds":3600}` || string(reread.Consent) != `{"required":true}` || string(reread.Secret) != `{"hash":"deadbeef"}` {
-		t.Fatalf("reserved fields not preserved: %+v", reread)
+	if reread.TTL == nil || reread.TTL.AccessSeconds != 3600 || reread.TTL.RefreshSeconds != 7_776_000 {
+		t.Fatalf("TTL not preserved: %+v", reread.TTL)
+	}
+	if reread.Consent == nil || reread.Consent.Hash == "" {
+		t.Fatalf("Consent hash not preserved: %+v", reread.Consent)
+	}
+	if string(reread.Secret) != `{"placeholder":"stage3"}` {
+		t.Fatalf("Secret not preserved: %s", reread.Secret)
 	}
 
 	// A "future" record with an unknown key, written directly, still decodes (forward-compat).

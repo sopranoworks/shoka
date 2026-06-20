@@ -1,6 +1,7 @@
 package oauthstore
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -46,9 +47,73 @@ type RegistrationEntry struct {
 	RegistrationMode string          `json:"registration_mode"` // "dcr" | "confidential"
 	Identifier       string          `json:"identifier"`        // domain mode: the trusted domain; confidential: the client identifier
 	CreatedAt        time.Time       `json:"created_at"`
-	TTL              json.RawMessage `json:"ttl,omitempty"`     // RESERVED — Stage 2 per-entry token lifetimes
-	Consent          json.RawMessage `json:"consent,omitempty"` // RESERVED — Stage 2 per-entry consent
+	TTL              *EntryTTL       `json:"ttl,omitempty"`     // B-71 Stage 2b: per-domain access/refresh TTL
+	Consent          *EntryConsent   `json:"consent,omitempty"` // B-71 Stage 2b: per-domain consent (HASHED)
 	Secret           json.RawMessage `json:"secret,omitempty"`  // RESERVED — Stage 3 confidential material (hashed)
+}
+
+// EntryTTL is a "domain" entry's per-domain token lifetime (B-71 Stage 2b), in whole
+// seconds (JSON-friendly, decoupled from config's Duration). A zero/absent field means
+// "unset" — EffectiveTTL falls back to the global finite default, never to infinity (Stage
+// 5's no-indefinite rule). The code TTL stays global this stage.
+type EntryTTL struct {
+	AccessSeconds  int64 `json:"access_seconds,omitempty"`
+	RefreshSeconds int64 `json:"refresh_seconds,omitempty"`
+}
+
+// EntryConsent is a "domain" entry's per-domain consent (B-71 Stage 2b). Only the HASH of
+// the consent secret is stored (Stage 0 discipline — hashHandle/SHA-256); the raw value is
+// never persisted. It is presented at consent time and compared by hash (constant-time).
+type EntryConsent struct {
+	Hash string `json:"hash,omitempty"` // hashHandle(secret); NEVER the raw consent value
+}
+
+// EffectiveTTL resolves a domain entry's per-domain access/refresh TTL against the global
+// finite defaults (B-71 Stage 2b; reuses Stage 5's finite-floor): a positive per-domain
+// value wins; a 0/unset/negative per-domain value falls back to the global default; the
+// result is NEVER non-positive (no-indefinite). Pure — no runtime caller this stage (2c
+// wires it). The defaults passed in are assumed finite (the config layer guarantees them).
+func (e RegistrationEntry) EffectiveTTL(defaultAccess, defaultRefresh time.Duration) (access, refresh time.Duration) {
+	access, refresh = defaultAccess, defaultRefresh
+	if e.TTL != nil {
+		// The floor: a positive per-domain value overrides; a 0/unset/negative one falls back
+		// to the finite default — so the result is never the per-domain 0 (immediate) nor
+		// infinite. Defaults are assumed finite (the config layer guarantees them).
+		if d := time.Duration(e.TTL.AccessSeconds) * time.Second; d > 0 {
+			access = d
+		}
+		if d := time.Duration(e.TTL.RefreshSeconds) * time.Second; d > 0 {
+			refresh = d
+		}
+	}
+	return access, refresh
+}
+
+// SetConsent sets a domain entry's per-domain consent secret, stored HASHED (hashHandle;
+// Stage 0). An empty secret CLEARS the per-domain consent. The raw value is never persisted.
+func (e *RegistrationEntry) SetConsent(secret string) {
+	if secret == "" {
+		e.Consent = nil
+		return
+	}
+	e.Consent = &EntryConsent{Hash: hashHandle(secret)}
+}
+
+// VerifyConsent reports whether presented matches the entry's stored per-domain consent
+// hash (constant-time). NO-CONSENT POLICY (explicit, never silently allow): an entry with no
+// per-domain consent set returns FALSE for any presented value — this helper grants ONLY on
+// an explicit, matching per-domain consent. Whether a domain WITHOUT per-domain consent
+// should instead inherit the global consent or require none is the live-path fallback Stage
+// 2c decides; this helper never grants against an unset consent. An empty presented value
+// never verifies.
+func (e RegistrationEntry) VerifyConsent(presented string) bool {
+	if e.Consent == nil || e.Consent.Hash == "" {
+		return false
+	}
+	if presented == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(hashHandle(presented)), []byte(e.Consent.Hash)) == 1
 }
 
 func validRegistrationMode(m string) bool {
