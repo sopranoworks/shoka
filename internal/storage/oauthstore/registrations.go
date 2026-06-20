@@ -48,7 +48,7 @@ type RegistrationEntry struct {
 	Identifier       string        `json:"identifier"`        // domain mode: the trusted domain; confidential: the issued client_id
 	CreatedAt        time.Time     `json:"created_at"`
 	TTL              *EntryTTL     `json:"ttl,omitempty"`     // B-71 Stage 2b: per-domain access/refresh TTL
-	Consent          *EntryConsent `json:"consent,omitempty"` // B-71 Stage 2b: per-domain consent (HASHED)
+	Consent          *EntryConsent `json:"consent,omitempty"` // per-domain consent (PLAINTEXT since 2026-06-20)
 	// B-71 Stage 3 — confidential-client material. Secret holds the HASHED client secret (never
 	// raw, Stage 0 discipline); Scope is the pre-issued authorization grant that drives the
 	// tools/call namespace gate; ExpiresAt is the credential's FINITE validity (no indefinite —
@@ -68,11 +68,15 @@ type EntryTTL struct {
 	RefreshSeconds int64 `json:"refresh_seconds,omitempty"`
 }
 
-// EntryConsent is a "domain" entry's per-domain consent (B-71 Stage 2b). Only the HASH of
-// the consent secret is stored (Stage 0 discipline — hashHandle/SHA-256); the raw value is
-// never persisted. It is presented at consent time and compared by hash (constant-time).
+// EntryConsent is a "domain" entry's per-domain consent. As of the 2026-06-20 consent-secrecy
+// threat model it is stored PLAINTEXT and is operator-readable: under default-deny trusted domains
+// + redirect binding a stolen consent is not directly usable (unlike a bearer token), so hashing it
+// added recurring inconvenience for no real protection. The value is server-GENERATED (NewHandle)
+// and REFRESHABLE; the operator never crafts it and reads it off the card to type at /authorize.
+// A pre-2026-06-20 record stored only a hash (the old `"hash"` key); it decodes here with Value ""
+// (the hash cannot be un-hashed), so such a domain shows no value until the operator regenerates.
 type EntryConsent struct {
-	Hash string `json:"hash,omitempty"` // hashHandle(secret); NEVER the raw consent value
+	Value string `json:"value,omitempty"` // the plaintext consent value (operator-readable)
 }
 
 // EffectiveTTL resolves a domain entry's per-domain access/refresh TTL against the global
@@ -96,31 +100,35 @@ func (e RegistrationEntry) EffectiveTTL(defaultAccess, defaultRefresh time.Durat
 	return access, refresh
 }
 
-// SetConsent sets a domain entry's per-domain consent secret, stored HASHED (hashHandle;
-// Stage 0). An empty secret CLEARS the per-domain consent. The raw value is never persisted.
-func (e *RegistrationEntry) SetConsent(secret string) {
-	if secret == "" {
+// SetConsent sets a domain entry's per-domain consent value, stored PLAINTEXT (operator-readable;
+// the 2026-06-20 threat model). An empty value CLEARS the per-domain consent.
+func (e *RegistrationEntry) SetConsent(value string) {
+	if value == "" {
 		e.Consent = nil
 		return
 	}
-	e.Consent = &EntryConsent{Hash: hashHandle(secret)}
+	e.Consent = &EntryConsent{Value: value}
 }
 
-// VerifyConsent reports whether presented matches the entry's stored per-domain consent
-// hash (constant-time). NO-CONSENT POLICY (explicit, never silently allow): an entry with no
-// per-domain consent set returns FALSE for any presented value — this helper grants ONLY on
-// an explicit, matching per-domain consent. Whether a domain WITHOUT per-domain consent
-// should instead inherit the global consent or require none is the live-path fallback Stage
-// 2c decides; this helper never grants against an unset consent. An empty presented value
+// ConsentValue returns the entry's plaintext per-domain consent, or "" if none is set (including a
+// pre-2026-06-20 hash-only record, which decodes with Value "").
+func (e RegistrationEntry) ConsentValue() string {
+	if e.Consent == nil {
+		return ""
+	}
+	return e.Consent.Value
+}
+
+// VerifyConsent reports whether presented matches the entry's stored per-domain consent value
+// (constant-time — retained to avoid a timing oracle even though the value is now readable).
+// NO-CONSENT POLICY (explicit, never silently allow): an entry with no per-domain consent set
+// returns FALSE for any presented value (so none ⇒ deny at /authorize). An empty presented value
 // never verifies.
 func (e RegistrationEntry) VerifyConsent(presented string) bool {
-	if e.Consent == nil || e.Consent.Hash == "" {
+	if e.Consent == nil || e.Consent.Value == "" || presented == "" {
 		return false
 	}
-	if presented == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(hashHandle(presented)), []byte(e.Consent.Hash)) == 1
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(e.Consent.Value)) == 1
 }
 
 // EntrySecret is a confidential entry's client secret (B-71 Stage 3). Only the HASH is stored
@@ -318,6 +326,29 @@ func (s *Store) UpdateRegistration(entry RegistrationEntry) error {
 		}
 		return b.Put([]byte(entry.ID), val)
 	})
+}
+
+// GenerateDomainConsent mints a fresh high-entropy per-domain consent value for a "domain" entry,
+// stores it PLAINTEXT (the 2026-06-20 model), and returns it. Calling it again REGENERATES (re-rolls)
+// — the previous value stops verifying, so a connection using the old value must reconnect with the
+// new one (like rotating a credential). Errors on an unknown id (ErrNotFound) or a non-domain entry.
+func (s *Store) GenerateDomainConsent(id string) (string, error) {
+	entry, err := s.GetRegistration(id)
+	if err != nil {
+		return "", err
+	}
+	if entry.RegistrationMode != RegistrationModeDomain {
+		return "", fmt.Errorf("oauthstore: not a domain entry")
+	}
+	value, err := NewHandle()
+	if err != nil {
+		return "", err
+	}
+	entry.SetConsent(value)
+	if err := s.UpdateRegistration(entry); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 // DeleteRegistration removes an entry by id. Idempotent: deleting an unknown id is a no-op

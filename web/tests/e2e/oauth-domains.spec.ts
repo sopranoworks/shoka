@@ -5,7 +5,7 @@ import crypto from 'node:crypto'
 // operator (single-user admin) drives the OAuth settings screen to:
 //   • see the config-seeded trusted domain (example.com) with its consent SET,
 //   • CREATE a new trusted domain (with per-domain TTLs),
-//   • EDIT its TTL and SET its write-only consent (set-indicator only, value never shown),
+//   • EDIT its TTL; GENERATE a plaintext consent value (shown always, copyable, re-rollable),
 //   • SEE a live connection grouped beneath its domain (and a self-issued token in its own
 //     section),
 //   • DELETE a domain (its tokens revoked) and watch it disappear.
@@ -94,17 +94,81 @@ async function connectUnderExampleCom(
   return 'app.example.com'
 }
 
+// dcrConnect drives a real DCR register → /authorize (submitting `consent`) → /token under
+// `redirectHost`, returning the issued access token. Used to prove a GENERATED consent value
+// actually authorizes a real connect through the consent page.
+async function dcrConnect(
+  page: Page,
+  request: APIRequestContext,
+  redirectHost: string,
+  consent: string,
+): Promise<string> {
+  const prm = await request.get(`${OAUTH_BASE}/.well-known/oauth-protected-resource/mcp`)
+  const resource = (await prm.json()).resource as string
+  const redirectURI = `https://${redirectHost}/cb`
+  const reg = await request.post(`${OAUTH_BASE}/register`, {
+    headers: { 'Content-Type': 'application/json' },
+    data: {
+      redirect_uris: [redirectURI],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      client_name: 'E2E generated-consent client',
+    },
+  })
+  expect(reg.status(), `register: ${await reg.text()}`).toBe(201)
+  const clientID = (await reg.json()).client_id as string
+  const codeVerifier = b64url(crypto.randomBytes(32))
+  const codeChallenge = b64url(crypto.createHash('sha256').update(codeVerifier).digest())
+
+  const cb = await page.context().newPage()
+  await cb.route(
+    (url) => url.href.startsWith(`https://${redirectHost}/`),
+    (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<html>cb</html>' }),
+  )
+  const authURL =
+    `${OAUTH_BASE}/authorize?` +
+    new URLSearchParams({
+      client_id: clientID,
+      redirect_uri: redirectURI,
+      response_type: 'code',
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      resource,
+      state: 'gen-state',
+    }).toString()
+  await cb.goto(authURL)
+  await cb.fill('input[name="consent_credential"]', consent)
+  const [redirectReq] = await Promise.all([
+    cb.waitForRequest((req) => req.url().includes(`${redirectHost}/cb`)),
+    cb.click('button[name="approve"]'),
+  ])
+  const code = new URL(redirectReq.url()).searchParams.get('code')
+  expect(code, 'authorization code in the redirect').toBeTruthy()
+  await cb.close()
+
+  const tok = await request.post(`${OAUTH_BASE}/token`, {
+    form: {
+      grant_type: 'authorization_code',
+      code: code!,
+      client_id: clientID,
+      redirect_uri: redirectURI,
+      code_verifier: codeVerifier,
+    },
+  })
+  expect(tok.status(), `token: ${await tok.text()}`).toBe(200)
+  return (await tok.json()).access_token as string
+}
+
 test.describe.serial('B-71 Stage 2d — domain-mode OAuth management (through the UI)', () => {
-  test('the config-seeded domain shows consent SET, with no consent value on screen', async ({
+  test('the config-seeded domain shows its consent value in plaintext (operator-readable)', async ({
     page,
   }) => {
     await page.goto('/settings?item=oauth')
     await expect(page.getByTestId('domain-row-example.com')).toBeVisible()
-    // Write-only consent: only a Set/Not-set indicator is ever rendered.
-    await expect(page.getByTestId('domain-consent-example.com')).toHaveText(/Set/)
-    // The seeded consent secret never reaches the screen.
-    const body = (await page.locator('body').textContent()) ?? ''
-    expect(body).not.toContain(CONSENT)
+    // Consent is plaintext + always visible (2026-06-20): the seeded value is shown so the operator
+    // can read/copy it to type at the /authorize callback.
+    await expect(page.getByTestId('domain-consent-value-example.com')).toHaveText(CONSENT)
   })
 
   test('create a trusted domain — it appears with its TTLs and an empty token group', async ({
@@ -120,7 +184,8 @@ test.describe.serial('B-71 Stage 2d — domain-mode OAuth management (through th
     await expect(card).toBeVisible()
     await expect(card).toContainText('access 1h')
     await expect(card).toContainText('refresh 1d')
-    await expect(page.getByTestId('domain-consent-partner.test')).toHaveText(/Not set/)
+    // No consent yet — the card shows a Generate CTA (none ⇒ deny), not a value.
+    await expect(page.getByTestId('domain-consent-generate-partner.test')).toBeVisible()
     await expect(page.getByTestId('domain-tokens-partner.test')).toContainText(
       'No active tokens',
     )
@@ -140,18 +205,49 @@ test.describe.serial('B-71 Stage 2d — domain-mode OAuth management (through th
     await expect(page.getByTestId('domain-add-submit')).toBeDisabled()
   })
 
-  test('edit the TTL and SET the write-only consent on the new domain', async ({ page }) => {
+  test('edit the TTL on the new domain (consent is managed separately)', async ({ page }) => {
     await page.goto('/settings?item=oauth')
     await page.getByTestId('domain-edit-partner.test').click()
     await page.getByTestId('domain-edit-access-ttl-partner.test').fill('7200')
-    await page.getByTestId('domain-edit-consent-partner.test').fill('partner-secret')
     await page.getByTestId('domain-edit-save-partner.test').click()
+    await expect(page.getByTestId('domain-row-partner.test')).toContainText('access 2h')
+  })
 
-    const card = page.getByTestId('domain-row-partner.test')
-    await expect(card).toContainText('access 2h')
-    await expect(page.getByTestId('domain-consent-partner.test')).toHaveText(/Set/)
-    // The consent value is never echoed back to the screen.
-    expect((await page.locator('body').textContent()) ?? '').not.toContain('partner-secret')
+  test('generate then regenerate a plaintext consent value on the new domain', async ({
+    page,
+  }) => {
+    await page.goto('/settings?item=oauth')
+    // Generate mints a value, shown in plaintext (always visible — no reveal panel).
+    await page.getByTestId('domain-consent-generate-partner.test').click()
+    const value = page.getByTestId('domain-consent-value-partner.test')
+    await expect(value).toBeVisible()
+    const first = ((await value.textContent()) ?? '').trim()
+    expect(first).toBeTruthy()
+    // Regenerate re-rolls it (the value changes).
+    await page.getByTestId('domain-consent-generate-partner.test').click()
+    await expect
+      .poll(async () => ((await value.textContent()) ?? '').trim())
+      .not.toBe(first)
+  })
+
+  test('a generated consent value completes a real connect through the consent page', async ({
+    page,
+    request,
+  }) => {
+    // Add a fresh trusted domain and GENERATE its consent through the UI.
+    await page.goto('/settings?item=oauth')
+    await page.getByTestId('domain-add-identifier').fill('genc.example')
+    await page.getByTestId('domain-add-submit').click()
+    await expect(page.getByTestId('domain-row-genc.example')).toBeVisible()
+    await page.getByTestId('domain-consent-generate-genc.example').click()
+    const value = page.getByTestId('domain-consent-value-genc.example')
+    await expect(value).toBeVisible()
+    const consent = ((await value.textContent()) ?? '').trim()
+    expect(consent).toBeTruthy()
+
+    // The SHOWN generated value authorizes a real connect (DCR under app.genc.example).
+    const token = await dcrConnect(page, request, 'app.genc.example', consent)
+    expect(token, 'the generated consent value must authorize a real connect').toBeTruthy()
   })
 
   test('a live connection groups beneath its domain; a self-issued token sits apart', async ({

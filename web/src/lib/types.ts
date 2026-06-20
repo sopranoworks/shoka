@@ -120,12 +120,21 @@ export interface DomainInfo {
   domain: string
   access_ttl_seconds: number
   refresh_ttl_seconds: number
-  consent_set: boolean
+  // The per-domain consent VALUE (PLAINTEXT, operator-readable — the 2026-06-20 model). "" means no
+  // consent is set, so the domain cannot authorize connections until the operator generates one.
+  consent: string
 }
 
 // The DOMAIN_LIST response payload (mirrors Go's ui.DomainListPayload).
 export interface DomainListPayload {
   domains: DomainInfo[]
+}
+
+// The DOMAIN_GENERATE_CONSENT response payload (mirrors Go's ui.DomainGenerateConsentPayload): the
+// freshly minted plaintext consent value for a domain (re-rolled on each call).
+export interface DomainGenerateConsentPayload {
+  id: string
+  consent: string
 }
 
 // ConfidentialClientInfo is the no-secret view of a "confidential" RegistrationEntry (B-71 Stage

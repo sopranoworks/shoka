@@ -149,6 +149,9 @@ const (
 	MsgDomainCreate MessageType = "DOMAIN_CREATE"
 	MsgDomainUpdate MessageType = "DOMAIN_UPDATE"
 	MsgDomainDelete MessageType = "DOMAIN_DELETE"
+	// MsgDomainGenerateConsent mints (or re-rolls) a domain's per-domain consent value and returns
+	// it PLAINTEXT (2026-06-20 model — operator-readable, refreshable).
+	MsgDomainGenerateConsent MessageType = "DOMAIN_GENERATE_CONSENT"
 	// B-71 Stage 3: confidential-mode management — issue / list / revoke pre-issued client
 	// credentials (Client ID + Secret), admin-gated. The secret is shown ONCE on issue, never
 	// returned by list.
@@ -498,6 +501,9 @@ type OAuthConnectionStore interface {
 	GetRegistration(id string) (oauthstore.RegistrationEntry, error)
 	UpdateRegistration(entry oauthstore.RegistrationEntry) error
 	DeleteRegistration(id string) error
+	// GenerateDomainConsent mints (or re-rolls) a domain entry's plaintext per-domain consent and
+	// returns it (2026-06-20 model — operator-readable, refreshable).
+	GenerateDomainConsent(id string) (string, error)
 	// RevokeByDomain revokes every token series under a domain (the Stage 2d domain-delete
 	// cascade). Returns the number revoked.
 	RevokeByDomain(domain string) (int, error)
@@ -691,13 +697,14 @@ var wsLevels = map[MessageType]wsOp{
 	MsgOAuthIssueSelf: {authz.LevelAdmin, true},
 
 	// Domain-mode management (B-71 Stage 2d): admin, global.
-	MsgDomainList:   {authz.LevelAdmin, true},
-	MsgDomainCreate: {authz.LevelAdmin, true},
-	MsgDomainUpdate: {authz.LevelAdmin, true},
-	MsgDomainDelete: {authz.LevelAdmin, true},
-	MsgClientIssue:  {authz.LevelAdmin, true},
-	MsgClientList:   {authz.LevelAdmin, true},
-	MsgClientRevoke: {authz.LevelAdmin, true},
+	MsgDomainList:            {authz.LevelAdmin, true},
+	MsgDomainCreate:          {authz.LevelAdmin, true},
+	MsgDomainUpdate:          {authz.LevelAdmin, true},
+	MsgDomainDelete:          {authz.LevelAdmin, true},
+	MsgDomainGenerateConsent: {authz.LevelAdmin, true},
+	MsgClientIssue:           {authz.LevelAdmin, true},
+	MsgClientList:            {authz.LevelAdmin, true},
+	MsgClientRevoke:          {authz.LevelAdmin, true},
 
 	MsgAdminListUsers:      {authz.LevelAdmin, true},
 	MsgAdminSetUserScope:   {authz.LevelAdmin, true},
@@ -914,6 +921,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleDomainUpdate(client, wsMsg.Payload)
 		case MsgDomainDelete:
 			m.handleDomainDelete(client, wsMsg.Payload)
+		case MsgDomainGenerateConsent:
+			m.handleDomainGenerateConsent(client, wsMsg.Payload)
 		case MsgClientList:
 			m.handleConfidentialList(client)
 		case MsgClientIssue:
@@ -1625,14 +1634,16 @@ func (m *Manager) handleOAuthRevoke(client *wsClient, payload json.RawMessage) {
 // --- B-71 Stage 2d: domain-mode management (DOMAIN_* ws ops) ---
 
 // DomainInfo is the no-secret view of a "domain" RegistrationEntry: its identifier, per-domain
-// TTL (seconds; 0 = unset → the finite global default), and whether a per-domain consent is
-// set. The consent VALUE/hash is NEVER returned — only the set/unset indicator (Stage 0/2b).
+// TTL (seconds; 0 = unset → the finite global default), and its per-domain consent VALUE. The
+// consent is PLAINTEXT and intentionally operator-readable (the 2026-06-20 threat model) — it is
+// returned here so the card can always show it; "" means no consent is set (⇒ the domain cannot
+// authorize connections until the operator generates one).
 type DomainInfo struct {
 	ID                string `json:"id"`
 	Domain            string `json:"domain"`
 	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
 	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
-	ConsentSet        bool   `json:"consent_set"`
+	Consent           string `json:"consent"`
 }
 
 // DomainListPayload is the DOMAIN_LIST response (sorted by identifier).
@@ -1640,21 +1651,29 @@ type DomainListPayload struct {
 	Domains []DomainInfo `json:"domains"`
 }
 
-// DomainCreateRequest creates a "domain" entry; Consent (optional) is hashed on write.
+// DomainCreateRequest creates a "domain" entry. Consent is NOT set here — the operator generates it
+// afterwards via DOMAIN_GENERATE_CONSENT (the 2026-06-20 plaintext/generate model).
 type DomainCreateRequest struct {
 	Domain            string `json:"domain"`
 	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
 	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
-	Consent           string `json:"consent"`
 }
 
-// DomainUpdateRequest edits a domain's TTL and optionally sets/clears its consent: SetConsent
-// nil = leave unchanged; "" = clear; non-empty = set (hashed).
+// DomainUpdateRequest edits a domain's TTL. Consent is managed by DOMAIN_GENERATE_CONSENT, not here.
 type DomainUpdateRequest struct {
-	ID                string  `json:"id"`
-	AccessTTLSeconds  int64   `json:"access_ttl_seconds"`
-	RefreshTTLSeconds int64   `json:"refresh_ttl_seconds"`
-	SetConsent        *string `json:"set_consent"`
+	ID                string `json:"id"`
+	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
+	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
+}
+
+// DomainGenerateConsentRequest / DomainGenerateConsentPayload — mint (or re-roll) a domain's
+// per-domain consent value and return it. The value is PLAINTEXT and operator-readable.
+type DomainGenerateConsentRequest struct {
+	ID string `json:"id"`
+}
+type DomainGenerateConsentPayload struct {
+	ID      string `json:"id"`
+	Consent string `json:"consent"`
 }
 
 // DomainDeleteRequest / DomainDeletePayload — delete a domain (revoking its tokens).
@@ -1668,7 +1687,7 @@ type DomainDeletePayload struct {
 }
 
 func domainInfoOf(e oauthstore.RegistrationEntry) DomainInfo {
-	di := DomainInfo{ID: e.ID, Domain: e.Identifier, ConsentSet: e.Consent != nil && e.Consent.Hash != ""}
+	di := DomainInfo{ID: e.ID, Domain: e.Identifier, Consent: e.ConsentValue()}
 	if e.TTL != nil {
 		di.AccessTTLSeconds = e.TTL.AccessSeconds
 		di.RefreshTTLSeconds = e.TTL.RefreshSeconds
@@ -1719,13 +1738,10 @@ func (m *Manager) handleDomainCreate(client *wsClient, payload json.RawMessage) 
 	}
 	if p.AccessTTLSeconds > 0 || p.RefreshTTLSeconds > 0 {
 		entry.TTL = &oauthstore.EntryTTL{AccessSeconds: p.AccessTTLSeconds, RefreshSeconds: p.RefreshTTLSeconds}
-	}
-	if p.Consent != "" {
-		entry.SetConsent(p.Consent)
-	}
-	if err := m.oauth.UpdateRegistration(entry); err != nil {
-		client.sendError(fmt.Sprintf("Failed to set domain TTL/consent: %v", err))
-		return
+		if err := m.oauth.UpdateRegistration(entry); err != nil {
+			client.sendError(fmt.Sprintf("Failed to set domain TTL: %v", err))
+			return
+		}
 	}
 	client.sendResponse(MsgDomainCreate, domainInfoOf(entry))
 }
@@ -1761,14 +1777,35 @@ func (m *Manager) handleDomainUpdate(client *wsClient, payload json.RawMessage) 
 	} else {
 		entry.TTL = nil // both 0 ⇒ unset → the finite global default
 	}
-	if p.SetConsent != nil {
-		entry.SetConsent(*p.SetConsent) // "" clears; non-empty sets (hashed — never returned)
-	}
 	if err := m.oauth.UpdateRegistration(entry); err != nil {
 		client.sendError(fmt.Sprintf("Failed to update domain: %v", err))
 		return
 	}
 	client.sendResponse(MsgDomainUpdate, domainInfoOf(entry))
+}
+
+// handleDomainGenerateConsent mints (or re-rolls) a domain's per-domain consent value and returns
+// the PLAINTEXT value once in the response. Calling it again regenerates (the old value stops
+// verifying). Admin-gated like the other DOMAIN_* ops.
+func (m *Manager) handleDomainGenerateConsent(client *wsClient, payload json.RawMessage) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	var p DomainGenerateConsentRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for DOMAIN_GENERATE_CONSENT")
+		return
+	}
+	if p.ID == "" {
+		client.sendError("DOMAIN_GENERATE_CONSENT requires an id")
+		return
+	}
+	value, err := m.oauth.GenerateDomainConsent(p.ID)
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to generate consent: %v", err))
+		return
+	}
+	client.sendResponse(MsgDomainGenerateConsent, DomainGenerateConsentPayload{ID: p.ID, Consent: value})
 }
 
 func (m *Manager) handleDomainDelete(client *wsClient, payload json.RawMessage) {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -36,48 +35,61 @@ func decodeDomainList(t *testing.T, resp WSMessage) DomainListPayload {
 	return out
 }
 
-// TestWSUI_DomainCRUD: create → list → update (TTL + clear consent) → delete, through the ws
-// ops. The per-domain consent VALUE never appears in any payload (only a set/unset indicator).
+// TestWSUI_DomainCRUD: create → generate consent → list → update (TTL) → delete, through the ws
+// ops. The 2026-06-20 model: a domain is created with NO consent; the operator GENERATES a
+// plaintext consent value that is returned + listed (operator-readable, intentionally).
 func TestWSUI_DomainCRUD(t *testing.T) {
-	const secret = "the-per-domain-consent-secret"
 	conn := newOAuthManager(t, "", realOAuthStore(t))
 
-	// CREATE with TTL + consent.
+	// CREATE with TTL, no consent.
 	resp := roundTrip(t, conn, MsgDomainCreate,
-		fmt.Sprintf(`{"domain":"connector.example","access_ttl_seconds":3600,"refresh_ttl_seconds":86400,"consent":%q}`, secret))
+		`{"domain":"connector.example","access_ttl_seconds":3600,"refresh_ttl_seconds":86400}`)
 	if resp.Type != MsgDomainCreate {
 		t.Fatalf("create type = %s (%s)", resp.Type, resp.Payload)
 	}
-	if strings.Contains(string(resp.Payload), secret) {
-		t.Fatal("the consent secret must NEVER appear in a DOMAIN payload")
-	}
 	var created DomainInfo
 	_ = json.Unmarshal(resp.Payload, &created)
-	if created.Domain != "connector.example" || created.AccessTTLSeconds != 3600 || created.RefreshTTLSeconds != 86400 || !created.ConsentSet {
-		t.Fatalf("created: %+v", created)
+	if created.Domain != "connector.example" || created.AccessTTLSeconds != 3600 || created.RefreshTTLSeconds != 86400 || created.Consent != "" {
+		t.Fatalf("created (should have no consent yet): %+v", created)
 	}
 	id := created.ID
 
-	// LIST shows it; consent SET indicator true; no consent value.
-	resp = roundTrip(t, conn, MsgDomainList, `{}`)
-	if strings.Contains(string(resp.Payload), secret) {
-		t.Fatal("DOMAIN_LIST must not carry the consent secret")
+	// GENERATE CONSENT — returns a plaintext value (operator-readable).
+	resp = roundTrip(t, conn, MsgDomainGenerateConsent, fmt.Sprintf(`{"id":%q}`, id))
+	if resp.Type != MsgDomainGenerateConsent {
+		t.Fatalf("generate type = %s (%s)", resp.Type, resp.Payload)
 	}
-	list := decodeDomainList(t, resp)
-	if len(list.Domains) != 1 || list.Domains[0].ID != id || !list.Domains[0].ConsentSet {
-		t.Fatalf("list: %+v", list.Domains)
+	var gen DomainGenerateConsentPayload
+	_ = json.Unmarshal(resp.Payload, &gen)
+	if gen.ID != id || gen.Consent == "" {
+		t.Fatalf("generate must return a plaintext consent value: %+v", gen)
+	}
+	consent := gen.Consent
+
+	// Regenerate yields a DIFFERENT value (re-roll).
+	resp = roundTrip(t, conn, MsgDomainGenerateConsent, fmt.Sprintf(`{"id":%q}`, id))
+	var gen2 DomainGenerateConsentPayload
+	_ = json.Unmarshal(resp.Payload, &gen2)
+	if gen2.Consent == "" || gen2.Consent == consent {
+		t.Fatalf("regenerate must re-roll the value: %q vs %q", consent, gen2.Consent)
 	}
 
-	// UPDATE: change the access TTL, leave refresh unset (0 ⇒ global default), CLEAR consent.
+	// LIST shows the domain WITH its plaintext consent value (the whole point — readable).
+	list := decodeDomainList(t, roundTrip(t, conn, MsgDomainList, `{}`))
+	if len(list.Domains) != 1 || list.Domains[0].ID != id || list.Domains[0].Consent != gen2.Consent {
+		t.Fatalf("list must carry the plaintext consent value: %+v", list.Domains)
+	}
+
+	// UPDATE: change the access TTL, leave refresh unset (0 ⇒ global default); consent untouched.
 	resp = roundTrip(t, conn, MsgDomainUpdate,
-		fmt.Sprintf(`{"id":%q,"access_ttl_seconds":7200,"refresh_ttl_seconds":0,"set_consent":""}`, id))
+		fmt.Sprintf(`{"id":%q,"access_ttl_seconds":7200,"refresh_ttl_seconds":0}`, id))
 	if resp.Type != MsgDomainUpdate {
 		t.Fatalf("update type = %s (%s)", resp.Type, resp.Payload)
 	}
 	var updated DomainInfo
 	_ = json.Unmarshal(resp.Payload, &updated)
-	if updated.AccessTTLSeconds != 7200 || updated.RefreshTTLSeconds != 0 || updated.ConsentSet {
-		t.Fatalf("updated: %+v", updated)
+	if updated.AccessTTLSeconds != 7200 || updated.RefreshTTLSeconds != 0 || updated.Consent != gen2.Consent {
+		t.Fatalf("updated (consent must survive a TTL edit): %+v", updated)
 	}
 
 	// DELETE.
@@ -156,7 +168,7 @@ func TestWSUI_OAuthListGroupsByDomain(t *testing.T) {
 // authz gate (PERMISSION_DENIED), before the handler runs.
 func TestWSUI_DomainOpsAdminGated(t *testing.T) {
 	conn := newOAuthManager(t, "namespace:foo:r", realOAuthStore(t))
-	for _, mt := range []MessageType{MsgDomainList, MsgDomainCreate, MsgDomainUpdate, MsgDomainDelete} {
+	for _, mt := range []MessageType{MsgDomainList, MsgDomainCreate, MsgDomainUpdate, MsgDomainDelete, MsgDomainGenerateConsent} {
 		resp := roundTrip(t, conn, mt, `{}`)
 		if resp.Type != MsgPermissionDenied {
 			t.Fatalf("%s by a non-admin: type = %s, want PERMISSION_DENIED", mt, resp.Type)

@@ -255,7 +255,7 @@
 
 /* B-71 Stage 2d — domain-mode management: the Trusted-domains section (Add form +
    per-domain cards with grouped tokens beneath) and the separate self-issued
-   section. Consent is write-only: only a Set/Not-set indicator is ever rendered. */
+   section. Consent is plaintext + always visible (the 2026-06-20 model). */
 .domainsSection,
 .selfSection {
   margin-bottom: var(--sp-6);
@@ -357,6 +357,42 @@
 }
 .domainTokens {
   padding: var(--sp-2) var(--sp-3);
+}
+
+/* Labeled form field (the 2026-06-20 visible-label fix for Add/Edit). */
+.field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fieldLabel {
+  font-size: var(--fs-xs);
+  color: var(--c-text-faint);
+}
+
+/* Per-domain consent row: PLAINTEXT value + Copy + Generate/Regenerate (2026-06-20). */
+.consentRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+}
+.consentLabel {
+  font-size: var(--fs-xs);
+  color: var(--c-text-faint);
+}
+.consentValue {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  background: var(--c-bg-inset);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--sp-2);
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
 /* B-71 Stage 4: the self-issue control pairs a finite days picker with the Generate button. */

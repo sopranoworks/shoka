@@ -72,6 +72,7 @@ func (f *fakeOAuthStore) GetRegistration(string) (oauthstore.RegistrationEntry, 
 func (f *fakeOAuthStore) UpdateRegistration(oauthstore.RegistrationEntry) error { return nil }
 func (f *fakeOAuthStore) DeleteRegistration(string) error                       { return nil }
 func (f *fakeOAuthStore) RevokeByDomain(string) (int, error)                    { return 0, nil }
+func (f *fakeOAuthStore) GenerateDomainConsent(string) (string, error)          { return "", nil }
 func (f *fakeOAuthStore) DomainEntryForClient(string) (oauthstore.RegistrationEntry, bool) {
 	return oauthstore.RegistrationEntry{}, false
 }

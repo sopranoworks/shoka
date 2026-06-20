@@ -1,12 +1,17 @@
 import { wsClient } from './wsClient'
 import { OAuthDeniedError } from './oauthOps'
-import type { DomainInfo, DomainListPayload, OAuthDenied } from './types'
+import type {
+  DomainInfo,
+  DomainListPayload,
+  DomainGenerateConsentPayload,
+  OAuthDenied,
+} from './types'
 
-// B-71 Stage 2d — the admin-only DOMAIN_* /ws/ui ops for domain-mode management: CRUD over
-// the dynamic "domain" registration store (trusted domain + per-domain TTL + per-domain
-// consent). The per-domain CONSENT is write-only: a raw value is accepted on create/update
-// and hashed at rest by the server; it is NEVER returned (only a consent_set indicator).
-// Refusals come back as an OAUTH_DENIED frame, surfaced as OAuthDeniedError (mirrors oauthOps).
+// The admin-only DOMAIN_* /ws/ui ops for domain-mode management: CRUD over the dynamic "domain"
+// registration store (trusted domain + per-domain TTL + per-domain consent). Per the 2026-06-20
+// threat model, per-domain CONSENT is now PLAINTEXT and operator-readable: it is server-GENERATED
+// (DOMAIN_GENERATE_CONSENT, re-rollable), returned + listed (so the card can always show it), and
+// never typed. Refusals come back as an OAUTH_DENIED frame, surfaced as OAuthDeniedError.
 
 function throwIfDenied(type: string, payload: unknown): void {
   if (type === 'OAUTH_DENIED') {
@@ -25,7 +30,6 @@ export interface DomainCreateInput {
   domain: string
   accessTtlSeconds?: number
   refreshTtlSeconds?: number
-  consent?: string // optional; hashed on write; never returned
 }
 
 export async function createDomain(input: DomainCreateInput): Promise<DomainInfo> {
@@ -33,7 +37,6 @@ export async function createDomain(input: DomainCreateInput): Promise<DomainInfo
     domain: input.domain,
     access_ttl_seconds: input.accessTtlSeconds ?? 0,
     refresh_ttl_seconds: input.refreshTtlSeconds ?? 0,
-    consent: input.consent ?? '',
   })
   throwIfDenied(frame.type, frame.payload)
   return frame.payload as DomainInfo
@@ -43,21 +46,26 @@ export interface DomainUpdateInput {
   id: string
   accessTtlSeconds: number
   refreshTtlSeconds: number
-  // setConsent: undefined = leave unchanged; '' = CLEAR the per-domain consent; a value = SET
-  // it (hashed). The raw value is never read back.
-  setConsent?: string
 }
 
 export async function updateDomain(input: DomainUpdateInput): Promise<DomainInfo> {
-  const payload: Record<string, unknown> = {
+  const frame = await wsClient().requestFrame('DOMAIN_UPDATE', {
     id: input.id,
     access_ttl_seconds: input.accessTtlSeconds,
     refresh_ttl_seconds: input.refreshTtlSeconds,
-  }
-  if (input.setConsent !== undefined) payload.set_consent = input.setConsent
-  const frame = await wsClient().requestFrame('DOMAIN_UPDATE', payload)
+  })
   throwIfDenied(frame.type, frame.payload)
   return frame.payload as DomainInfo
+}
+
+// generateDomainConsent mints (or re-rolls) a domain's per-domain consent value and returns the
+// fresh PLAINTEXT value. Calling it again replaces the value (the old one stops working).
+export async function generateDomainConsent(
+  id: string,
+): Promise<DomainGenerateConsentPayload> {
+  const frame = await wsClient().requestFrame('DOMAIN_GENERATE_CONSENT', { id })
+  throwIfDenied(frame.type, frame.payload)
+  return frame.payload as DomainGenerateConsentPayload
 }
 
 export async function deleteDomain(id: string): Promise<void> {

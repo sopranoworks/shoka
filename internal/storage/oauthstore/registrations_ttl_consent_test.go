@@ -42,46 +42,47 @@ func TestEntryTTL_EffectiveTTL(t *testing.T) {
 	}
 }
 
-// TestEntryConsent_HashedAndVerify: SetConsent stores a HASH, not the raw secret (no raw
-// bytes anywhere in the stored entry); VerifyConsent accepts the correct value and rejects a
-// wrong/empty one; a no-consent entry denies (explicit). RED proof: store the raw consent (or
-// compare the raw value) → the raw appears at rest / a wrong value is accepted → this fails.
-func TestEntryConsent_HashedAndVerify(t *testing.T) {
+// TestEntryConsent_PlaintextAndVerify (2026-06-20 model): SetConsent stores the value PLAINTEXT
+// (operator-readable — the threat model found consent secrecy redundant), ConsentValue returns it,
+// and it IS present at rest; VerifyConsent (constant-time) accepts the correct value and rejects a
+// wrong/empty one; a no-consent entry denies (explicit). RED proof: hash it / hide it from
+// ConsentValue → the value is not readable → this fails.
+func TestEntryConsent_PlaintextAndVerify(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
-	const secret = "the-per-domain-consent-secret"
+	const value = "the-per-domain-consent-value"
 
 	e, err := s.CreateRegistration(RegistrationModeDomain, "d.example", now)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	e.SetConsent(secret)
-	if e.Consent == nil || e.Consent.Hash != hashHandle(secret) {
-		t.Fatalf("SetConsent must store hashHandle(secret), got %+v", e.Consent)
-	}
-	if e.Consent.Hash == secret {
-		t.Fatal("the consent hash must not equal the raw secret")
+	e.SetConsent(value)
+	if e.Consent == nil || e.Consent.Value != value || e.ConsentValue() != value {
+		t.Fatalf("SetConsent must store the value plaintext, got %+v", e.Consent)
 	}
 	if err := s.UpdateRegistration(e); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
-	// The raw secret must not appear anywhere in the stored entry bytes.
+	// The value IS readable at rest (intentional, the whole point) and survives the round-trip.
 	var stored string
 	_ = s.db.View(func(tx *bolt.Tx) error {
 		stored = string(tx.Bucket([]byte(registrationsBucket)).Get([]byte(e.ID)))
 		return nil
 	})
-	if strings.Contains(stored, secret) {
-		t.Fatalf("the raw consent secret must not be stored at rest")
+	if !strings.Contains(stored, value) {
+		t.Fatalf("the plaintext consent value must be stored readable")
 	}
 
 	reread, _ := s.GetRegistration(e.ID)
-	if !reread.VerifyConsent(secret) {
-		t.Fatal("VerifyConsent must accept the correct presented secret")
+	if reread.ConsentValue() != value {
+		t.Fatalf("the consent value must be readable back, got %q", reread.ConsentValue())
 	}
-	if reread.VerifyConsent("wrong-secret") {
-		t.Fatal("VerifyConsent must reject a wrong secret")
+	if !reread.VerifyConsent(value) {
+		t.Fatal("VerifyConsent must accept the correct presented value")
+	}
+	if reread.VerifyConsent("wrong-value") {
+		t.Fatal("VerifyConsent must reject a wrong value")
 	}
 	if reread.VerifyConsent("") {
 		t.Fatal("VerifyConsent must reject an empty presented value")
@@ -89,12 +90,12 @@ func TestEntryConsent_HashedAndVerify(t *testing.T) {
 
 	// No-consent policy: an entry without per-domain consent denies any presented value.
 	noConsent, _ := s.CreateRegistration(RegistrationModeDomain, "nc.example", now)
-	if noConsent.VerifyConsent(secret) || noConsent.VerifyConsent("") {
+	if noConsent.VerifyConsent(value) || noConsent.VerifyConsent("") {
 		t.Fatal("a no-consent entry must deny (never silently allow)")
 	}
 	// SetConsent("") clears it back to no-consent.
 	e.SetConsent("")
-	if e.Consent != nil || e.VerifyConsent(secret) {
+	if e.Consent != nil || e.VerifyConsent(value) {
 		t.Fatal("SetConsent(\"\") must clear the per-domain consent")
 	}
 }
@@ -121,5 +122,77 @@ func TestRegistrations_DecodeSafe_NoTTLConsent(t *testing.T) {
 	}
 	if e.VerifyConsent("anything") {
 		t.Fatal("VerifyConsent must deny on a no-consent entry")
+	}
+}
+
+// TestGenerateDomainConsent (2026-06-20): mints a plaintext value, persists it readable, re-rolls
+// on a second call, and errors on an unknown/non-domain id. RED proof: have it hash the value (or
+// not persist) → the value is not readable back / VerifyConsent fails → this fails.
+func TestGenerateDomainConsent(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	dom, err := s.CreateRegistration(RegistrationModeDomain, "connector.example", now)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	v1, err := s.GenerateDomainConsent(dom.ID)
+	if err != nil || v1 == "" {
+		t.Fatalf("generate: v=%q err=%v", v1, err)
+	}
+	// Persisted PLAINTEXT and readable; verifies the generated value.
+	reread, _ := s.GetRegistration(dom.ID)
+	if reread.ConsentValue() != v1 {
+		t.Fatalf("generated value must be readable back: got %q want %q", reread.ConsentValue(), v1)
+	}
+	if !reread.VerifyConsent(v1) {
+		t.Fatal("the generated value must verify at /authorize")
+	}
+
+	// Regenerate re-rolls: a different value, and the OLD value stops verifying.
+	v2, err := s.GenerateDomainConsent(dom.ID)
+	if err != nil || v2 == v1 {
+		t.Fatalf("regenerate must re-roll: v2=%q v1=%q err=%v", v2, v1, err)
+	}
+	reread, _ = s.GetRegistration(dom.ID)
+	if reread.VerifyConsent(v1) || !reread.VerifyConsent(v2) {
+		t.Fatal("after re-roll the old value must stop verifying and the new one must verify")
+	}
+
+	// Unknown id → ErrNotFound; a confidential entry → error (not a domain).
+	if _, err := s.GenerateDomainConsent("no-such-id"); err != ErrNotFound {
+		t.Fatalf("unknown id: err=%v, want ErrNotFound", err)
+	}
+	conf, _, _ := s.IssueConfidentialClient("*", time.Hour, now)
+	if _, err := s.GenerateDomainConsent(conf.ID); err == nil {
+		t.Fatal("GenerateDomainConsent on a confidential entry must error")
+	}
+}
+
+// TestEntryConsent_HashedRecordMigratesToNoValue (2026-06-20 transition): a pre-change record that
+// stored only a hash decodes with Value "" (the hash cannot be un-hashed) — so the domain shows no
+// readable consent and denies at /authorize until the operator regenerates. Acceptable per the
+// threat model.
+func TestEntryConsent_HashedRecordMigratesToNoValue(t *testing.T) {
+	s := openTemp(t)
+	old := `{"id":"h","registration_mode":"domain","identifier":"h.example","created_at":"2026-06-19T00:00:00Z","consent":{"hash":"deadbeef"}}`
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(registrationsBucket)).Put([]byte("h"), []byte(old))
+	}); err != nil {
+		t.Fatalf("seed hashed entry: %v", err)
+	}
+	e, err := s.GetRegistration("h")
+	if err != nil {
+		t.Fatalf("a hashed-vintage entry must still decode: %v", err)
+	}
+	if e.ConsentValue() != "" {
+		t.Fatalf("a hash-only consent must decode with no readable value, got %q", e.ConsentValue())
+	}
+	if e.VerifyConsent("anything") {
+		t.Fatal("a hash-only (unmigrated) consent must deny until regenerated")
+	}
+	// Regenerating gives it a readable value again.
+	if v, err := s.GenerateDomainConsent("h"); err != nil || v == "" {
+		t.Fatalf("regenerate after migration: v=%q err=%v", v, err)
 	}
 }

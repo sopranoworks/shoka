@@ -5,13 +5,19 @@ vi.mock('./wsClient', () => ({
   wsClient: () => ({ requestFrame }),
 }))
 
-import { listDomains, createDomain, updateDomain, deleteDomain } from './domainOps'
+import {
+  listDomains,
+  createDomain,
+  updateDomain,
+  deleteDomain,
+  generateDomainConsent,
+} from './domainOps'
 import { OAuthDeniedError } from './oauthOps'
 
 beforeEach(() => requestFrame.mockReset())
 
 describe('listDomains', () => {
-  it('maps a DOMAIN_LIST frame to its domains array', async () => {
+  it('maps a DOMAIN_LIST frame to its domains array (with the plaintext consent value)', async () => {
     requestFrame.mockResolvedValue({
       type: 'DOMAIN_LIST',
       payload: {
@@ -21,7 +27,7 @@ describe('listDomains', () => {
             domain: 'example.com',
             access_ttl_seconds: 3600,
             refresh_ttl_seconds: 86400,
-            consent_set: true,
+            consent: 'the-plaintext-value',
           },
         ],
       },
@@ -29,7 +35,7 @@ describe('listDomains', () => {
     const out = await listDomains()
     expect(out).toHaveLength(1)
     expect(out[0].domain).toBe('example.com')
-    expect(out[0].consent_set).toBe(true)
+    expect(out[0].consent).toBe('the-plaintext-value')
     expect(requestFrame).toHaveBeenCalledWith('DOMAIN_LIST', {})
   })
 
@@ -48,31 +54,29 @@ describe('listDomains', () => {
 })
 
 describe('createDomain', () => {
-  it('sends the domain + TTLs, defaulting omitted TTL/consent to 0/""', async () => {
+  it('sends the domain + TTLs (defaulting omitted TTLs to 0); no consent is sent', async () => {
     requestFrame.mockResolvedValue({
       type: 'DOMAIN_CREATE',
-      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 0, refresh_ttl_seconds: 0, consent_set: false },
+      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 0, refresh_ttl_seconds: 0, consent: '' },
     })
     await createDomain({ domain: 'partner.test' })
     expect(requestFrame).toHaveBeenCalledWith('DOMAIN_CREATE', {
       domain: 'partner.test',
       access_ttl_seconds: 0,
       refresh_ttl_seconds: 0,
-      consent: '',
     })
   })
 
-  it('forwards an explicit consent value (hashed server-side, never read back)', async () => {
+  it('forwards explicit TTLs', async () => {
     requestFrame.mockResolvedValue({
       type: 'DOMAIN_CREATE',
-      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 60, refresh_ttl_seconds: 120, consent_set: true },
+      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 60, refresh_ttl_seconds: 120, consent: '' },
     })
-    await createDomain({ domain: 'partner.test', accessTtlSeconds: 60, refreshTtlSeconds: 120, consent: 's3cret' })
+    await createDomain({ domain: 'partner.test', accessTtlSeconds: 60, refreshTtlSeconds: 120 })
     expect(requestFrame).toHaveBeenCalledWith('DOMAIN_CREATE', {
       domain: 'partner.test',
       access_ttl_seconds: 60,
       refresh_ttl_seconds: 120,
-      consent: 's3cret',
     })
   })
 
@@ -85,36 +89,14 @@ describe('createDomain', () => {
   })
 })
 
-describe('updateDomain — write-only consent semantics', () => {
-  it('OMITS set_consent when setConsent is undefined (leave unchanged)', async () => {
+describe('updateDomain — TTL only (consent is managed by generate)', () => {
+  it('sends only the TTLs', async () => {
     requestFrame.mockResolvedValue({ type: 'DOMAIN_UPDATE', payload: { id: 'd1' } })
     await updateDomain({ id: 'd1', accessTtlSeconds: 7200, refreshTtlSeconds: 86400 })
     expect(requestFrame).toHaveBeenCalledWith('DOMAIN_UPDATE', {
       id: 'd1',
       access_ttl_seconds: 7200,
       refresh_ttl_seconds: 86400,
-    })
-  })
-
-  it('sends set_consent: "" to CLEAR the per-domain consent', async () => {
-    requestFrame.mockResolvedValue({ type: 'DOMAIN_UPDATE', payload: { id: 'd1' } })
-    await updateDomain({ id: 'd1', accessTtlSeconds: 0, refreshTtlSeconds: 0, setConsent: '' })
-    expect(requestFrame).toHaveBeenCalledWith('DOMAIN_UPDATE', {
-      id: 'd1',
-      access_ttl_seconds: 0,
-      refresh_ttl_seconds: 0,
-      set_consent: '',
-    })
-  })
-
-  it('sends set_consent: <value> to SET a new per-domain consent', async () => {
-    requestFrame.mockResolvedValue({ type: 'DOMAIN_UPDATE', payload: { id: 'd1' } })
-    await updateDomain({ id: 'd1', accessTtlSeconds: 0, refreshTtlSeconds: 0, setConsent: 'new-secret' })
-    expect(requestFrame).toHaveBeenCalledWith('DOMAIN_UPDATE', {
-      id: 'd1',
-      access_ttl_seconds: 0,
-      refresh_ttl_seconds: 0,
-      set_consent: 'new-secret',
     })
   })
 
@@ -126,6 +108,26 @@ describe('updateDomain — write-only consent semantics', () => {
     await expect(
       updateDomain({ id: 'd1', accessTtlSeconds: 0, refreshTtlSeconds: 0 }),
     ).rejects.toBeInstanceOf(OAuthDeniedError)
+  })
+})
+
+describe('generateDomainConsent', () => {
+  it('sends the id and returns the freshly minted plaintext consent value', async () => {
+    requestFrame.mockResolvedValue({
+      type: 'DOMAIN_GENERATE_CONSENT',
+      payload: { id: 'd1', consent: 'fresh-plaintext-value' },
+    })
+    const out = await generateDomainConsent('d1')
+    expect(out.consent).toBe('fresh-plaintext-value')
+    expect(requestFrame).toHaveBeenCalledWith('DOMAIN_GENERATE_CONSENT', { id: 'd1' })
+  })
+
+  it('throws OAuthDeniedError on a refusal', async () => {
+    requestFrame.mockResolvedValue({
+      type: 'OAUTH_DENIED',
+      payload: { reason: 'forbidden', message: 'admin only' },
+    })
+    await expect(generateDomainConsent('d1')).rejects.toBeInstanceOf(OAuthDeniedError)
   })
 })
 

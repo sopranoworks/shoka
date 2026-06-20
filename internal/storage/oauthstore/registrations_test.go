@@ -135,7 +135,7 @@ func TestRegistrations_LenientDecodeReservedFields(t *testing.T) {
 
 	// Populated fields round-trip (TTL/Consent/Secret all typed since B-71 Stage 3).
 	got.TTL = &EntryTTL{AccessSeconds: 3600, RefreshSeconds: 7_776_000}
-	got.SetConsent("the-domain-consent-secret")
+	got.SetConsent("the-domain-consent-value")
 	got.SetSecret("the-confidential-client-secret")
 	if err := s.UpdateRegistration(got); err != nil {
 		t.Fatalf("update with typed fields: %v", err)
@@ -144,8 +144,9 @@ func TestRegistrations_LenientDecodeReservedFields(t *testing.T) {
 	if reread.TTL == nil || reread.TTL.AccessSeconds != 3600 || reread.TTL.RefreshSeconds != 7_776_000 {
 		t.Fatalf("TTL not preserved: %+v", reread.TTL)
 	}
-	if reread.Consent == nil || reread.Consent.Hash == "" {
-		t.Fatalf("Consent hash not preserved: %+v", reread.Consent)
+	// Consent is PLAINTEXT (2026-06-20): the value round-trips readable.
+	if reread.ConsentValue() != "the-domain-consent-value" {
+		t.Fatalf("Consent value not preserved: %+v", reread.Consent)
 	}
 	// The secret round-trips as a HASH only (never the raw value) and verifies constant-time.
 	if reread.Secret == nil || reread.Secret.Hash == "" {
@@ -194,9 +195,9 @@ func TestRegistrations_SeedIdempotent(t *testing.T) {
 		if e.RegistrationMode != RegistrationModeDomain {
 			t.Fatalf("seeded entries must be domain mode: %+v", e)
 		}
-		// Consent carry: each seeded domain inherits the global consent (hashed) and verifies it.
+		// Consent carry: each seeded domain inherits the global consent (plaintext) and verifies it.
 		if !e.VerifyConsent(consent) {
-			t.Fatalf("seeded domain %q must carry the global consent (hashed)", e.Identifier)
+			t.Fatalf("seeded domain %q must carry the global consent (plaintext)", e.Identifier)
 		}
 		// TTL seed: each seeded domain carries the global finite defaults.
 		if e.TTL == nil || e.TTL.AccessSeconds != 3600 || e.TTL.RefreshSeconds != int64((90*24*time.Hour)/time.Second) {

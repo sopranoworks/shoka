@@ -15,7 +15,12 @@ import {
   clientDomain,
   OAuthDeniedError,
 } from '../lib/oauthOps'
-import { createDomain, updateDomain, deleteDomain } from '../lib/domainOps'
+import {
+  createDomain,
+  updateDomain,
+  deleteDomain,
+  generateDomainConsent,
+} from '../lib/domainOps'
 import {
   issueConfidentialClient,
   revokeConfidentialClient,
@@ -422,7 +427,6 @@ function AddDomainForm() {
   const [domain, setDomain] = useState('')
   const [accessTtl, setAccessTtl] = useState('')
   const [refreshTtl, setRefreshTtl] = useState('')
-  const [consent, setConsent] = useState('')
 
   const access = parseTtl(accessTtl)
   const refresh = parseTtl(refreshTtl)
@@ -434,7 +438,6 @@ function AddDomainForm() {
         domain: domain.trim(),
         accessTtlSeconds: access ?? 0,
         refreshTtlSeconds: refresh ?? 0,
-        consent: consent === '' ? undefined : consent,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
@@ -442,7 +445,6 @@ function AddDomainForm() {
       setDomain('')
       setAccessTtl('')
       setRefreshTtl('')
-      setConsent('')
     },
     onError: (e) => {
       addToast({
@@ -452,6 +454,8 @@ function AddDomainForm() {
     },
   })
 
+  // Consent is no longer typed here — after adding, the operator generates a consent value on the
+  // domain card (the 2026-06-20 plaintext/generate model).
   return (
     <form
       className={styles.domainForm}
@@ -460,42 +464,38 @@ function AddDomainForm() {
         if (valid) create.mutate()
       }}
     >
-      <input
-        className={styles.domainInput}
-        placeholder="trusted domain (e.g. connector.example.com)"
-        value={domain}
-        onChange={(e) => setDomain(e.target.value)}
-        data-testid="domain-add-identifier"
-        aria-label="Domain identifier"
-      />
-      <input
-        className={styles.ttlInput}
-        placeholder="access TTL (s)"
-        value={accessTtl}
-        onChange={(e) => setAccessTtl(e.target.value)}
-        data-testid="domain-add-access-ttl"
-        aria-label="Access TTL seconds"
-        aria-invalid={access === null}
-      />
-      <input
-        className={styles.ttlInput}
-        placeholder="refresh TTL (s)"
-        value={refreshTtl}
-        onChange={(e) => setRefreshTtl(e.target.value)}
-        data-testid="domain-add-refresh-ttl"
-        aria-label="Refresh TTL seconds"
-        aria-invalid={refresh === null}
-      />
-      <input
-        className={styles.consentInput}
-        type="password"
-        autoComplete="off"
-        placeholder="consent (optional, write-only)"
-        value={consent}
-        onChange={(e) => setConsent(e.target.value)}
-        data-testid="domain-add-consent"
-        aria-label="Per-domain consent (write-only)"
-      />
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Trusted domain</span>
+        <input
+          className={styles.domainInput}
+          placeholder="e.g. connector.example.com"
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+          data-testid="domain-add-identifier"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Access TTL (s)</span>
+        <input
+          className={styles.ttlInput}
+          placeholder="0 = default"
+          value={accessTtl}
+          onChange={(e) => setAccessTtl(e.target.value)}
+          data-testid="domain-add-access-ttl"
+          aria-invalid={access === null}
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Refresh TTL (s)</span>
+        <input
+          className={styles.ttlInput}
+          placeholder="0 = default"
+          value={refreshTtl}
+          onChange={(e) => setRefreshTtl(e.target.value)}
+          data-testid="domain-add-refresh-ttl"
+          aria-invalid={refresh === null}
+        />
+      </label>
       <button
         type="submit"
         className={styles.issue}
@@ -538,18 +538,31 @@ function DomainCard({ domain, tokens }: { domain: DomainInfo; tokens: OAuthConne
       addToast({ level: 'warn', text: e instanceof Error ? e.message : 'Delete failed.' }),
   })
 
+  const generate = useMutation({
+    mutationFn: () => generateDomainConsent(domain.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
+      addToast({ level: 'warn', text: `Generated a consent value for ${domain.domain}.` })
+    },
+    onError: (e) =>
+      addToast({ level: 'warn', text: e instanceof Error ? e.message : 'Generate failed.' }),
+  })
+
+  const copyConsent = () => {
+    void navigator.clipboard
+      ?.writeText(domain.consent)
+      .then(() => addToast({ level: 'warn', text: 'Consent value copied.' }))
+      .catch(() =>
+        addToast({ level: 'warn', text: 'Could not copy — select and copy manually.' }),
+      )
+  }
+
   return (
     <div className={styles.domainCard} data-testid={`domain-row-${domain.domain}`}>
       <div className={styles.domainHeader}>
         <span className={styles.domainName}>{domain.domain}</span>
         <span className={styles.domainTtl}>
           access {fmtTtl(domain.access_ttl_seconds)} · refresh {fmtTtl(domain.refresh_ttl_seconds)}
-        </span>
-        <span
-          className={domain.consent_set ? styles.consentSet : styles.consentUnset}
-          data-testid={`domain-consent-${domain.domain}`}
-        >
-          consent: {domain.consent_set ? 'Set' : 'Not set'}
         </span>
         <span className={styles.domainActions}>
           <button
@@ -585,6 +598,52 @@ function DomainCard({ domain, tokens }: { domain: DomainInfo; tokens: OAuthConne
         </span>
       </div>
 
+      {/* Per-domain consent — PLAINTEXT, always visible, server-generated, refreshable
+          (2026-06-20). The connecting party types this value on the /authorize consent page. */}
+      <div className={styles.consentRow} data-testid={`domain-consent-${domain.domain}`}>
+        {domain.consent === '' ? (
+          <>
+            <span className={styles.consentUnset}>
+              consent: none — clients cannot connect until you generate a consent value
+            </span>
+            <button
+              className={styles.issue}
+              disabled={generate.isPending}
+              onClick={() => generate.mutate()}
+              data-testid={`domain-consent-generate-${domain.domain}`}
+            >
+              {generate.isPending ? 'Generating…' : 'Generate consent'}
+            </button>
+          </>
+        ) : (
+          <>
+            <span className={styles.consentLabel}>consent:</span>
+            <code
+              className={styles.consentValue}
+              data-testid={`domain-consent-value-${domain.domain}`}
+            >
+              {domain.consent}
+            </code>
+            <button
+              className={styles.copy}
+              onClick={copyConsent}
+              aria-label="Copy consent value"
+              data-testid={`domain-consent-copy-${domain.domain}`}
+            >
+              Copy
+            </button>
+            <button
+              className={styles.cancel}
+              disabled={generate.isPending}
+              onClick={() => generate.mutate()}
+              data-testid={`domain-consent-generate-${domain.domain}`}
+            >
+              {generate.isPending ? 'Regenerating…' : 'Regenerate'}
+            </button>
+          </>
+        )}
+      </div>
+
       {editing && <EditDomainForm domain={domain} onDone={() => setEditing(false)} />}
 
       <div className={styles.domainTokens} data-testid={`domain-tokens-${domain.domain}`}>
@@ -598,13 +657,14 @@ function DomainCard({ domain, tokens }: { domain: DomainInfo; tokens: OAuthConne
   )
 }
 
+// EditDomainForm edits a domain's per-domain TTLs only — consent is managed on the card (Generate
+// / Regenerate), not here. The TTL fields carry visible labels (the 2026-06-20 fix for the
+// previously-unlabeled Edit fields).
 function EditDomainForm({ domain, onDone }: { domain: DomainInfo; onDone: () => void }) {
   const queryClient = useQueryClient()
   const { add: addToast } = useToast()
   const [accessTtl, setAccessTtl] = useState(String(domain.access_ttl_seconds || ''))
   const [refreshTtl, setRefreshTtl] = useState(String(domain.refresh_ttl_seconds || ''))
-  const [consent, setConsent] = useState('')
-  const [clear, setClear] = useState(false)
 
   const access = parseTtl(accessTtl)
   const refresh = parseTtl(refreshTtl)
@@ -616,8 +676,6 @@ function EditDomainForm({ domain, onDone }: { domain: DomainInfo; onDone: () => 
         id: domain.id,
         accessTtlSeconds: access ?? 0,
         refreshTtlSeconds: refresh ?? 0,
-        // write-only consent: cleared, set to a new value, or left unchanged.
-        setConsent: clear ? '' : consent === '' ? undefined : consent,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
@@ -636,43 +694,27 @@ function EditDomainForm({ domain, onDone }: { domain: DomainInfo; onDone: () => 
         if (valid) save.mutate()
       }}
     >
-      <input
-        className={styles.ttlInput}
-        value={accessTtl}
-        placeholder="access TTL (s)"
-        onChange={(e) => setAccessTtl(e.target.value)}
-        data-testid={`domain-edit-access-ttl-${domain.domain}`}
-        aria-label="Edit access TTL seconds"
-        aria-invalid={access === null}
-      />
-      <input
-        className={styles.ttlInput}
-        value={refreshTtl}
-        placeholder="refresh TTL (s)"
-        onChange={(e) => setRefreshTtl(e.target.value)}
-        data-testid={`domain-edit-refresh-ttl-${domain.domain}`}
-        aria-label="Edit refresh TTL seconds"
-        aria-invalid={refresh === null}
-      />
-      <input
-        className={styles.consentInput}
-        type="password"
-        autoComplete="off"
-        placeholder="new consent (write-only)"
-        value={consent}
-        disabled={clear}
-        onChange={(e) => setConsent(e.target.value)}
-        data-testid={`domain-edit-consent-${domain.domain}`}
-        aria-label="Set per-domain consent (write-only)"
-      />
-      <label className={styles.clearConsent}>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Access TTL (s)</span>
         <input
-          type="checkbox"
-          checked={clear}
-          onChange={(e) => setClear(e.target.checked)}
-          data-testid={`domain-edit-clear-consent-${domain.domain}`}
+          className={styles.ttlInput}
+          value={accessTtl}
+          placeholder="0 = default"
+          onChange={(e) => setAccessTtl(e.target.value)}
+          data-testid={`domain-edit-access-ttl-${domain.domain}`}
+          aria-invalid={access === null}
         />
-        clear consent
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Refresh TTL (s)</span>
+        <input
+          className={styles.ttlInput}
+          value={refreshTtl}
+          placeholder="0 = default"
+          onChange={(e) => setRefreshTtl(e.target.value)}
+          data-testid={`domain-edit-refresh-ttl-${domain.domain}`}
+          aria-invalid={refresh === null}
+        />
       </label>
       <button
         type="submit"
