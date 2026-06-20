@@ -9,15 +9,17 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// B-71 Stage 1 (the spine): registration_mode is a FIRST-CLASS, PER-ENTRY axis — it
-// determines both the registration/auth method and how the OAuth management screen will
-// compose. It is NOT one global server flag; each dynamic registration entry carries its
-// own mode. The two values:
+// B-71 Stage 1 (the spine): registration_mode is a FIRST-CLASS, PER-ENTRY MANAGEMENT axis
+// — DOMAIN-based vs CONFIDENTIAL — driving how the OAuth management screen composes. It is
+// the management AXIS, NOT the registration PROCEDURE: cimd vs dcr (HOW a client registers)
+// is only a discovery posture / procedure and is a per-series sub-detail (Stage 2,
+// derivable via isDCRClientID), never a value here. The two axis values:
 const (
-	// RegistrationModeDCR — Dynamic Client Registration / CIMD: the entry is a trusted
-	// DCR domain (per-domain management + TTL + consent land in Stage 2; tokens group
-	// under their domain).
-	RegistrationModeDCR = "dcr"
+	// RegistrationModeDomain — a trusted-DOMAIN entry: it configures the COMMON
+	// {domain, TTL, consent} for that domain, under which BOTH CIMD- and DCR-registered
+	// clients/tokens are managed (per-domain management + TTL + consent land in Stage 2;
+	// tokens group under their domain).
+	RegistrationModeDomain = "domain"
 	// RegistrationModeConfidential — pre-issued / confidential client (Client ID + Secret;
 	// the secret + /token auth land in Stage 3).
 	RegistrationModeConfidential = "confidential"
@@ -29,9 +31,9 @@ const (
 const migrationKeyRegistrationsSeeded = "registrations_seeded_v1"
 
 // RegistrationEntry is one dynamic OAuth registration entry (B-71 Stage 1). Its
-// RegistrationMode is the per-entry axis ("dcr" | "confidential"). Stage 1 only persists
-// and CRUDs entries — it attaches NO runtime behaviour (verification/consent/token issuance
-// are unchanged; nothing reads this store yet).
+// RegistrationMode is the per-entry management axis ("domain" | "confidential"). Stage 1
+// only persists and CRUDs entries — it attaches NO runtime behaviour (verification/consent/
+// token issuance are unchanged; nothing reads this store yet).
 //
 // TTL / Consent / Secret are RESERVED for later stages (Stage 2 attaches per-entry TTL +
 // consent; Stage 3 attaches confidential-client material — a HASHED secret, never raw, per
@@ -42,7 +44,7 @@ const migrationKeyRegistrationsSeeded = "registrations_seeded_v1"
 type RegistrationEntry struct {
 	ID               string          `json:"id"`
 	RegistrationMode string          `json:"registration_mode"` // "dcr" | "confidential"
-	Identifier       string          `json:"identifier"`        // dcr: the trusted domain; confidential: the client identifier
+	Identifier       string          `json:"identifier"`        // domain mode: the trusted domain; confidential: the client identifier
 	CreatedAt        time.Time       `json:"created_at"`
 	TTL              json.RawMessage `json:"ttl,omitempty"`     // RESERVED — Stage 2 per-entry token lifetimes
 	Consent          json.RawMessage `json:"consent,omitempty"` // RESERVED — Stage 2 per-entry consent
@@ -50,7 +52,7 @@ type RegistrationEntry struct {
 }
 
 func validRegistrationMode(m string) bool {
-	return m == RegistrationModeDCR || m == RegistrationModeConfidential
+	return m == RegistrationModeDomain || m == RegistrationModeConfidential
 }
 
 // CreateRegistration mints a new entry (opaque random ID) for the given per-entry mode and
@@ -150,17 +152,18 @@ func (s *Store) DeleteRegistration(id string) error {
 	})
 }
 
-// SeedDCRRegistrationsFromDomains is the one-time bridge from the static
+// SeedDomainRegistrationsFromDomains is the one-time bridge from the static
 // trusted_client_metadata_domains to the dynamic store (B-71 Stage 1): it creates a
-// "dcr"-mode entry per domain so Stage 2 can flip the CIMD verifier to read the dynamic
-// store with the entries already present. Idempotent + crash-safe: guarded by a marker in
-// metaBucket and run in ONE atomic transaction, so a re-run is a no-op and an empty list is
-// safe (the marker is still set, so a later non-empty call does not retro-seed).
+// "domain"-mode entry per domain (those values ARE trusted domains) so Stage 2 can flip the
+// CIMD verifier to read the dynamic store with the entries already present. Idempotent +
+// crash-safe: guarded by a marker in metaBucket and run in ONE atomic transaction, so a
+// re-run is a no-op and an empty list is safe (the marker is still set, so a later non-empty
+// call does not retro-seed).
 //
 // Stage 1 does NOT call this at runtime — no consumer reads the registrations store yet, so
 // runtime behaviour is UNCHANGED. It exists and is tested here so Stage 2 (which flips the
 // verifier onto the dynamic store) wires the call alongside its first reader.
-func (s *Store) SeedDCRRegistrationsFromDomains(domains []string, now time.Time) error {
+func (s *Store) SeedDomainRegistrationsFromDomains(domains []string, now time.Time) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		mb := tx.Bucket([]byte(metaBucket))
 		if mb.Get([]byte(migrationKeyRegistrationsSeeded)) != nil {
@@ -176,7 +179,7 @@ func (s *Store) SeedDCRRegistrationsFromDomains(domains []string, now time.Time)
 			if err != nil {
 				return err
 			}
-			entry := RegistrationEntry{ID: id, RegistrationMode: RegistrationModeDCR, Identifier: d, CreatedAt: now.UTC()}
+			entry := RegistrationEntry{ID: id, RegistrationMode: RegistrationModeDomain, Identifier: d, CreatedAt: now.UTC()}
 			val, err := json.Marshal(entry)
 			if err != nil {
 				return fmt.Errorf("oauthstore: encode registration: %w", err)

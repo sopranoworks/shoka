@@ -11,21 +11,21 @@ import (
 // B-71 Stage 1: the registration_mode axis + dynamic registration-entry store.
 
 // TestRegistrations_CRUDPerEntryMode: create/list/get/update/delete entries, and the
-// round-trip preserves registration_mode PER ENTRY — a "dcr" entry and a "confidential"
+// round-trip preserves registration_mode PER ENTRY — a "domain" entry and a "confidential"
 // entry coexist with distinct modes.
 func TestRegistrations_CRUDPerEntryMode(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 
-	dcr, err := s.CreateRegistration(RegistrationModeDCR, "connector.example", now)
+	dom, err := s.CreateRegistration(RegistrationModeDomain, "connector.example", now)
 	if err != nil {
-		t.Fatalf("create dcr: %v", err)
+		t.Fatalf("create domain: %v", err)
 	}
 	conf, err := s.CreateRegistration(RegistrationModeConfidential, "cli-integration", now)
 	if err != nil {
 		t.Fatalf("create confidential: %v", err)
 	}
-	if dcr.ID == "" || dcr.ID == conf.ID {
+	if dom.ID == "" || dom.ID == conf.ID {
 		t.Fatal("each entry must get a distinct opaque id")
 	}
 
@@ -38,14 +38,14 @@ func TestRegistrations_CRUDPerEntryMode(t *testing.T) {
 	for _, e := range infos {
 		modeByID[e.ID] = e.RegistrationMode
 	}
-	if modeByID[dcr.ID] != RegistrationModeDCR || modeByID[conf.ID] != RegistrationModeConfidential {
+	if modeByID[dom.ID] != RegistrationModeDomain || modeByID[conf.ID] != RegistrationModeConfidential {
 		t.Fatalf("per-entry modes not preserved: %v", modeByID)
 	}
 
 	// Get round-trips fields.
-	got, err := s.GetRegistration(dcr.ID)
-	if err != nil || got.Identifier != "connector.example" || got.RegistrationMode != RegistrationModeDCR {
-		t.Fatalf("get dcr: %+v err=%v", got, err)
+	got, err := s.GetRegistration(dom.ID)
+	if err != nil || got.Identifier != "connector.example" || got.RegistrationMode != RegistrationModeDomain {
+		t.Fatalf("get domain: %+v err=%v", got, err)
 	}
 	if _, err := s.GetRegistration("no-such-id"); err != ErrNotFound {
 		t.Fatalf("get unknown: err=%v, want ErrNotFound", err)
@@ -56,19 +56,19 @@ func TestRegistrations_CRUDPerEntryMode(t *testing.T) {
 	if err := s.UpdateRegistration(got); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	reread, _ := s.GetRegistration(dcr.ID)
-	if reread.Identifier != "renamed.example" || reread.RegistrationMode != RegistrationModeDCR {
+	reread, _ := s.GetRegistration(dom.ID)
+	if reread.Identifier != "renamed.example" || reread.RegistrationMode != RegistrationModeDomain {
 		t.Fatalf("update not persisted: %+v", reread)
 	}
 
 	// Delete removes only that entry (idempotent).
-	if err := s.DeleteRegistration(dcr.ID); err != nil {
+	if err := s.DeleteRegistration(dom.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if err := s.DeleteRegistration(dcr.ID); err != nil {
+	if err := s.DeleteRegistration(dom.ID); err != nil {
 		t.Fatalf("delete is idempotent: %v", err)
 	}
-	if _, err := s.GetRegistration(dcr.ID); err != ErrNotFound {
+	if _, err := s.GetRegistration(dom.ID); err != ErrNotFound {
 		t.Fatalf("deleted entry must be gone: err=%v", err)
 	}
 	if _, err := s.GetRegistration(conf.ID); err != nil {
@@ -86,7 +86,14 @@ func TestRegistrations_InvalidModeRejectedNoWrite(t *testing.T) {
 	if _, err := s.CreateRegistration("bogus-mode", "x", now); err == nil {
 		t.Fatal("an invalid registration_mode must be rejected")
 	}
-	if _, err := s.CreateRegistration(RegistrationModeDCR, "  ", now); err == nil {
+	// "dcr" is the registration PROCEDURE, NOT a management-axis value (B-71 Stage 1
+	// value-set correction): it must be rejected. The axis values are "domain"/"confidential"
+	// (both accepted — proven in TestRegistrations_CRUDPerEntryMode). RED proof: leave the
+	// validation accepting "dcr" and this assertion fails.
+	if _, err := s.CreateRegistration("dcr", "connector.example", now); err == nil {
+		t.Fatal(`"dcr" is a procedure, not a management-axis mode — CreateRegistration("dcr") must be rejected`)
+	}
+	if _, err := s.CreateRegistration(RegistrationModeDomain, "  ", now); err == nil {
 		t.Fatal("an empty identifier must be rejected")
 	}
 	infos, _ := s.ListRegistrations()
@@ -95,7 +102,7 @@ func TestRegistrations_InvalidModeRejectedNoWrite(t *testing.T) {
 	}
 
 	// Update on a non-existent id: ErrNotFound, nothing written.
-	err := s.UpdateRegistration(RegistrationEntry{ID: "ghost", RegistrationMode: RegistrationModeDCR, Identifier: "d", CreatedAt: now})
+	err := s.UpdateRegistration(RegistrationEntry{ID: "ghost", RegistrationMode: RegistrationModeDomain, Identifier: "d", CreatedAt: now})
 	if err != ErrNotFound {
 		t.Fatalf("update unknown id: err=%v, want ErrNotFound", err)
 	}
@@ -118,7 +125,7 @@ func TestRegistrations_LenientDecodeReservedFields(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 
 	// Minimal record (no reserved fields) → reserved decode to nil.
-	e, err := s.CreateRegistration(RegistrationModeDCR, "d.example", now)
+	e, err := s.CreateRegistration(RegistrationModeDomain, "d.example", now)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -155,24 +162,24 @@ func TestRegistrations_LenientDecodeReservedFields(t *testing.T) {
 	}
 }
 
-// TestRegistrations_SeedIdempotent: seeding dcr entries from a static domain list creates
-// one "dcr" entry per domain, is idempotent (a re-run adds nothing), and is safe on an
-// empty list. RED proof: drop the marker guard in SeedDCRRegistrationsFromDomains → a
+// TestRegistrations_SeedIdempotent: seeding domain entries from a static domain list creates
+// one "domain"-mode entry per domain, is idempotent (a re-run adds nothing), and is safe on
+// an empty list. RED proof: drop the marker guard in SeedDomainRegistrationsFromDomains → a
 // second run duplicates the entries → this test fails.
 func TestRegistrations_SeedIdempotent(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 
-	if err := s.SeedDCRRegistrationsFromDomains([]string{"a.example", "b.example", "  "}, now); err != nil {
+	if err := s.SeedDomainRegistrationsFromDomains([]string{"a.example", "b.example", "  "}, now); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	first, _ := s.ListRegistrations()
 	if len(first) != 2 {
-		t.Fatalf("seed must create one dcr entry per non-empty domain; got %d", len(first))
+		t.Fatalf("seed must create one domain entry per non-empty domain; got %d", len(first))
 	}
 	for _, e := range first {
-		if e.RegistrationMode != RegistrationModeDCR {
-			t.Fatalf("seeded entries must be dcr mode: %+v", e)
+		if e.RegistrationMode != RegistrationModeDomain {
+			t.Fatalf("seeded entries must be domain mode: %+v", e)
 		}
 	}
 	ids := map[string]bool{}
@@ -184,7 +191,7 @@ func TestRegistrations_SeedIdempotent(t *testing.T) {
 	}
 
 	// Idempotent: a re-run (even with different domains) adds nothing — the marker guards it.
-	if err := s.SeedDCRRegistrationsFromDomains([]string{"a.example", "c.example"}, now); err != nil {
+	if err := s.SeedDomainRegistrationsFromDomains([]string{"a.example", "c.example"}, now); err != nil {
 		t.Fatalf("seed rerun: %v", err)
 	}
 	second, _ := s.ListRegistrations()
@@ -198,7 +205,7 @@ func TestRegistrations_SeedIdempotent(t *testing.T) {
 func TestRegistrations_SeedEmptyConfigSafe(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
-	if err := s.SeedDCRRegistrationsFromDomains(nil, now); err != nil {
+	if err := s.SeedDomainRegistrationsFromDomains(nil, now); err != nil {
 		t.Fatalf("seed empty: %v", err)
 	}
 	infos, _ := s.ListRegistrations()
@@ -206,7 +213,7 @@ func TestRegistrations_SeedEmptyConfigSafe(t *testing.T) {
 		t.Fatalf("empty-config seed must create no entries; got %d", len(infos))
 	}
 	// Marker set: a later call is still a no-op (the static config remains the source until Stage 2).
-	if err := s.SeedDCRRegistrationsFromDomains([]string{"late.example"}, now); err != nil {
+	if err := s.SeedDomainRegistrationsFromDomains([]string{"late.example"}, now); err != nil {
 		t.Fatalf("seed after empty: %v", err)
 	}
 	infos, _ = s.ListRegistrations()
