@@ -175,7 +175,8 @@ func TestRegistrations_SeedIdempotent(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 
-	if err := s.SeedDomainRegistrationsFromDomains([]string{"a.example", "b.example", "  "}, now); err != nil {
+	const consent = "the-global-consent-secret"
+	if err := s.SeedDomainRegistrationsFromDomains([]string{"a.example", "b.example", "  "}, consent, time.Hour, 90*24*time.Hour, now); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	first, _ := s.ListRegistrations()
@@ -185,6 +186,14 @@ func TestRegistrations_SeedIdempotent(t *testing.T) {
 	for _, e := range first {
 		if e.RegistrationMode != RegistrationModeDomain {
 			t.Fatalf("seeded entries must be domain mode: %+v", e)
+		}
+		// Consent carry: each seeded domain inherits the global consent (hashed) and verifies it.
+		if !e.VerifyConsent(consent) {
+			t.Fatalf("seeded domain %q must carry the global consent (hashed)", e.Identifier)
+		}
+		// TTL seed: each seeded domain carries the global finite defaults.
+		if e.TTL == nil || e.TTL.AccessSeconds != 3600 || e.TTL.RefreshSeconds != int64((90*24*time.Hour)/time.Second) {
+			t.Fatalf("seeded domain %q must carry the global TTL defaults: %+v", e.Identifier, e.TTL)
 		}
 	}
 	ids := map[string]bool{}
@@ -196,7 +205,7 @@ func TestRegistrations_SeedIdempotent(t *testing.T) {
 	}
 
 	// Idempotent: a re-run (even with different domains) adds nothing — the marker guards it.
-	if err := s.SeedDomainRegistrationsFromDomains([]string{"a.example", "c.example"}, now); err != nil {
+	if err := s.SeedDomainRegistrationsFromDomains([]string{"a.example", "c.example"}, consent, time.Hour, 90*24*time.Hour, now); err != nil {
 		t.Fatalf("seed rerun: %v", err)
 	}
 	second, _ := s.ListRegistrations()
@@ -210,7 +219,7 @@ func TestRegistrations_SeedIdempotent(t *testing.T) {
 func TestRegistrations_SeedEmptyConfigSafe(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
-	if err := s.SeedDomainRegistrationsFromDomains(nil, now); err != nil {
+	if err := s.SeedDomainRegistrationsFromDomains(nil, "", time.Hour, 90*24*time.Hour, now); err != nil {
 		t.Fatalf("seed empty: %v", err)
 	}
 	infos, _ := s.ListRegistrations()
@@ -218,7 +227,7 @@ func TestRegistrations_SeedEmptyConfigSafe(t *testing.T) {
 		t.Fatalf("empty-config seed must create no entries; got %d", len(infos))
 	}
 	// Marker set: a later call is still a no-op (the static config remains the source until Stage 2).
-	if err := s.SeedDomainRegistrationsFromDomains([]string{"late.example"}, now); err != nil {
+	if err := s.SeedDomainRegistrationsFromDomains([]string{"late.example"}, "", time.Hour, 90*24*time.Hour, now); err != nil {
 		t.Fatalf("seed after empty: %v", err)
 	}
 	infos, _ = s.ListRegistrations()

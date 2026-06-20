@@ -63,16 +63,24 @@ func DomainFromRedirectURIs(redirectURIs []string) string {
 //   - the operator self-issued "shoka-cli" series: ("", "", false) — not a domain.
 //
 // Procedure is determined by the ClientID shape (an https URL ⇒ cimd; an opaque handle ⇒
-// dcr), mirroring oauth.isDCRClientID. RECORD-ONLY: no caller gates/groups on this yet.
+// dcr), mirroring oauth.isDCRClientID.
 func (s *Store) SeriesDomain(rec SeriesRecord) (domain, procedure string, ok bool) {
-	if rec.ClientID == SelfIssuedClientID {
+	return s.clientDomain(rec.ClientID)
+}
+
+// clientDomain is the core of SeriesDomain, keyed on a client_id: CIMD ⇒ (URL host, "cimd");
+// DCR ⇒ (recorded RegisteredClient.Domain, else lazy from redirect_uris, "dcr"); the operator
+// self-issued client ⇒ ("","",false). It backs both SeriesDomain (per-series grouping) and
+// DomainEntryForClient (per-domain consent/TTL at /authorize and /token, B-71 Stage 2c).
+func (s *Store) clientDomain(clientID string) (domain, procedure string, ok bool) {
+	if clientID == SelfIssuedClientID {
 		return "", "", false // operator self-issued — belongs to the confidential world, not a domain
 	}
-	if h := cimdHost(rec.ClientID); h != "" {
+	if h := cimdHost(clientID); h != "" {
 		return h, "cimd", true // CIMD: client_id is the metadata URL, domain = its host
 	}
 	// DCR: the opaque client_id resolves to a RegisteredClient carrying the recorded domain.
-	client, err := s.GetClient(rec.ClientID)
+	client, err := s.GetClient(clientID)
 	if err != nil {
 		return "", "", false
 	}
@@ -84,4 +92,57 @@ func (s *Store) SeriesDomain(rec SeriesRecord) (domain, procedure string, ok boo
 		return "", "", false
 	}
 	return d, "dcr", true
+}
+
+// DomainEntryForHost returns the "domain" RegistrationEntry whose Identifier is host or a
+// parent domain of host (exact-or-subdomain — preserving the pre-B-71 static-allowlist
+// semantics), and whether one was found. On multiple matches the most specific (longest
+// identifier) wins. B-71 Stage 2c: the dynamic store is the source of truth.
+func (s *Store) DomainEntryForHost(host string) (RegistrationEntry, bool) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return RegistrationEntry{}, false
+	}
+	entries, err := s.ListRegistrations()
+	if err != nil {
+		return RegistrationEntry{}, false
+	}
+	var best RegistrationEntry
+	found := false
+	for _, e := range entries {
+		if e.RegistrationMode != RegistrationModeDomain {
+			continue
+		}
+		d := strings.ToLower(strings.TrimSpace(e.Identifier))
+		if d == "" {
+			continue
+		}
+		if host == d || strings.HasSuffix(host, "."+d) {
+			if !found || len(d) > len(best.Identifier) {
+				best, found = e, true
+			}
+		}
+	}
+	return best, found
+}
+
+// TrustedDomain reports whether host is covered by a "domain" RegistrationEntry (exact or
+// subdomain). The CIMD verifier and the DCR /register trust gate consult this instead of the
+// static trusted_client_metadata_domains list (B-71 Stage 2c). Default-deny when no entry
+// matches.
+func (s *Store) TrustedDomain(host string) bool {
+	_, ok := s.DomainEntryForHost(host)
+	return ok
+}
+
+// DomainEntryForClient returns the "domain" RegistrationEntry a client_id belongs to — the
+// seam the /authorize consent gate (VerifyConsent) and /token issuance (EffectiveTTL) use to
+// apply per-domain policy (B-71 Stage 2c). false when the client has no domain (operator
+// self-issued) or no matching domain entry.
+func (s *Store) DomainEntryForClient(clientID string) (RegistrationEntry, bool) {
+	domain, _, ok := s.clientDomain(clientID)
+	if !ok {
+		return RegistrationEntry{}, false
+	}
+	return s.DomainEntryForHost(domain)
 }

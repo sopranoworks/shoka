@@ -158,6 +158,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       `      listen: ":${MCP_PORT - 1}"`,
       '      trusted_client_metadata_domains:',
       '        - "example.com"',
+      // B-71 Stage 2c: a consent credential so the /authorize approval can succeed
+      // (the oauth-connect.spec drives the real consent page). Seeded into the
+      // example.com "domain" entry's per-domain consent at startup.
+      '      consent_credential: "e2e-consent-secret"',
       '  log:',
       '    level: "warn"',
       '  auth:',

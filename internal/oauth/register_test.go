@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
 )
 
 // register POSTs a raw client-metadata body to /register and returns the recorder.
@@ -21,10 +23,24 @@ func (h testAS) register(t *testing.T, body, contentType string) *httptest.Respo
 	return rec
 }
 
-// registerClient performs a successful DCR registration and returns the issued
-// client_id (an opaque handle).
+// trustDomain seeds a trusted "domain" RegistrationEntry (B-71 Stage 2c) so a DCR client whose
+// redirect_uris host matches can register — mirroring how production seeds the dynamic store
+// from trusted_client_metadata_domains at startup.
+func (h testAS) trustDomain(t *testing.T, domain string) {
+	t.Helper()
+	if _, err := h.store.CreateRegistration(oauthstore.RegistrationModeDomain, domain, h.as.now()); err != nil {
+		t.Fatalf("trustDomain(%q): %v", domain, err)
+	}
+}
+
+// registerClient performs a successful DCR registration and returns the issued client_id (an
+// opaque handle). It first trusts the redirect host so the Stage 2c DCR gate admits the
+// registration (as production does via the startup seed).
 func (h testAS) registerClient(t *testing.T, redirectURIs []string) string {
 	t.Helper()
+	if d := oauthstore.DomainFromRedirectURIs(redirectURIs); d != "" {
+		h.trustDomain(t, d)
+	}
 	body, _ := json.Marshal(registrationRequest{
 		RedirectURIs:            redirectURIs,
 		TokenEndpointAuthMethod: "none",
@@ -46,6 +62,7 @@ func (h testAS) registerClient(t *testing.T, redirectURIs []string) string {
 // /register issues an opaque, persistent, PUBLIC (no secret) client_id per RFC 7591.
 func TestRegister_IssuesPersistentPublicClient(t *testing.T) {
 	h := newTestAS(t)
+	h.trustDomain(t, "app.example") // Stage 2c: the redirect host must be a trusted domain
 	body := `{"redirect_uris":["https://app.example/cb"],` +
 		`"token_endpoint_auth_method":"none",` +
 		`"grant_types":["authorization_code","refresh_token"],` +

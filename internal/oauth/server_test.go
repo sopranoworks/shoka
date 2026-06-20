@@ -35,6 +35,15 @@ type testAS struct {
 	as       *AuthServer
 	store    *oauthstore.Store
 	clientID string
+	verifier *Verifier // B-71 Stage 2c: so a test can switch trust onto the dynamic store
+	host     string    // the CIMD metadata server host (the trusted-domain under test)
+}
+
+// useDynamicTrust switches the verifier's DomainTrusted onto the dynamic "domain" store
+// (B-71 Stage 2c), exactly as production wires it. After this, a CIMD client_id host is
+// trusted iff a "domain" entry covers it.
+func (h testAS) useDynamicTrust() {
+	h.verifier.SetTrustedSource(h.store.TrustedDomain)
 }
 
 func newTestAS(t *testing.T) testAS {
@@ -69,7 +78,7 @@ func newTestAS(t *testing.T) testAS {
 			Principal:  oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
 		},
 	})
-	return testAS{as: as, store: store, clientID: clientID}
+	return testAS{as: as, store: store, clientID: clientID, verifier: v, host: host}
 }
 
 func (h testAS) authorize(t *testing.T, method string, form url.Values) *httptest.ResponseRecorder {

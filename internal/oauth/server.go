@@ -39,6 +39,10 @@ import (
 // user's principal. ok=false means the submission failed authentication.
 type PrincipalAuthenticator interface {
 	Authenticate(r *http.Request) (principal oauthstore.Principal, ok bool)
+	// BoundPrincipal returns the principal this authenticator grants on success, WITHOUT a
+	// credential check — used by the per-domain consent gate (B-71 Stage 2c) once a domain's
+	// own consent has already verified the submission.
+	BoundPrincipal() oauthstore.Principal
 }
 
 // ConsentCredentialAuth is the single-user-mode PrincipalAuthenticator: it
@@ -64,6 +68,9 @@ func (c ConsentCredentialAuth) Authenticate(r *http.Request) (oauthstore.Princip
 	}
 	return c.Principal, true
 }
+
+// BoundPrincipal returns the configured operator principal (the single-user-mode principal).
+func (c ConsentCredentialAuth) BoundPrincipal() oauthstore.Principal { return c.Principal }
 
 // AuthServerConfig configures the AuthServer.
 type AuthServerConfig struct {
@@ -163,6 +170,34 @@ type authRequest struct {
 	Scope               string
 }
 
+// authorizeConsent runs the /authorize approval gate (B-71 Stage 2c). If the connecting
+// client's domain has a per-domain consent configured, the submitted consent_credential is
+// verified against THAT (hashed, constant-time) and the operator principal is returned.
+// Otherwise it FALLS BACK to the single global consent_credential (the stated transitional
+// default — inherit global; never silently allow). The principal is the operator principal in
+// both cases (single-user mode). After the startup seed (which carries the global consent into
+// each domain), the common path is a real per-domain match.
+func (s *AuthServer) authorizeConsent(r *http.Request, clientID string) (oauthstore.Principal, bool) {
+	if entry, ok := s.store.DomainEntryForClient(clientID); ok && entry.Consent != nil {
+		if entry.VerifyConsent(r.PostFormValue("consent_credential")) {
+			return s.principalAuth.BoundPrincipal(), true
+		}
+		return oauthstore.Principal{}, false
+	}
+	return s.principalAuth.Authenticate(r)
+}
+
+// issuanceTTL returns the access/refresh TTL for a token issued to clientID (B-71 Stage 2c):
+// the connecting domain's EffectiveTTL when its "domain" entry exists, else the global finite
+// defaults (Stage 5). A self-issued/confidential client (no domain) uses the global defaults.
+// Never indefinite — EffectiveTTL floors to the finite default.
+func (s *AuthServer) issuanceTTL(clientID string) (access, refresh time.Duration) {
+	if entry, ok := s.store.DomainEntryForClient(clientID); ok {
+		return entry.EffectiveTTL(s.accessTTL, s.refreshTTL)
+	}
+	return s.accessTTL, s.refreshTTL
+}
+
 func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	lg := s.reqLogger(r)
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -253,7 +288,7 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.redirectError(w, r, req, "access_denied", "the operator denied the request")
 		return
 	case r.PostFormValue("approve") != "":
-		principal, authed := s.principalAuth.Authenticate(r)
+		principal, authed := s.authorizeConsent(r, req.ClientID)
 		if !authed {
 			// Re-render the consent page with an error; do NOT redirect (the
 			// credential was wrong — treat like an unauthenticated retry). Logged as
@@ -582,7 +617,8 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	// DCR/CIMD tokens are all-access (Scope "*", the settled authz model — scoped
 	// access requires a future non-DCR pre-issued token). The tools/call authz gate
 	// reads this scope; "*" allows every namespace, today's behaviour.
-	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, "*", s.now(), s.accessTTL, s.refreshTTL)
+	access, refresh := s.issuanceTTL(rec.ClientID) // per-domain TTL else the global finite default
+	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, "*", s.now(), access, refresh)
 	if err != nil {
 		lg.Error("oauth token issuance failed",
 			"grant_type", "authorization_code", "client_id", rec.ClientID, "reason", "series-create-failed")
@@ -599,8 +635,8 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 		// SAME token reached Lookup (→ store reset/split); a different/absent one proves
 		// a different value arrived (→ proxy/stale token).
 		"token_fingerprint", tokenfp.Fingerprint(series.AccessToken),
-		"access_ttl_seconds", int(s.accessTTL/time.Second),
-		"refresh_ttl_seconds", int(s.refreshTTL/time.Second))
+		"access_ttl_seconds", int(access/time.Second),
+		"refresh_ttl_seconds", int(refresh/time.Second))
 	s.writeTokens(w, series)
 }
 
@@ -613,7 +649,11 @@ func (s *AuthServer) grantRefreshToken(w http.ResponseWriter, r *http.Request) {
 		s.tokenError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 		return
 	}
-	series, err := s.store.Rotate(refresh, s.now(), s.accessTTL, s.refreshTTL)
+	// Per-domain TTL on rotation too: resolve the series' client (without rotating) to find
+	// its domain's EffectiveTTL, else the global finite defaults (B-71 Stage 2c).
+	rotateClientID, _ := s.store.RefreshClientID(refresh)
+	accessTTL, refreshTTL := s.issuanceTTL(rotateClientID)
+	series, err := s.store.Rotate(refresh, s.now(), accessTTL, refreshTTL)
 	if err != nil {
 		// Unknown, already-rotated, revoked, or expired — all invalid_grant on the
 		// wire; logged with a discrete category (expired vs unknown/rotated).
@@ -631,13 +671,15 @@ func (s *AuthServer) grantRefreshToken(w http.ResponseWriter, r *http.Request) {
 	lg.Info("oauth token issued",
 		"grant_type", "refresh_token", "client_id", series.ClientID,
 		"token_fingerprint", tokenfp.Fingerprint(series.AccessToken), // B-54 discriminator (one-way; never the value)
-		"access_ttl_seconds", int(s.accessTTL/time.Second),
-		"refresh_ttl_seconds", int(s.refreshTTL/time.Second))
+		"access_ttl_seconds", int(accessTTL/time.Second),
+		"refresh_ttl_seconds", int(refreshTTL/time.Second))
 	s.writeTokens(w, series)
 }
 
 func (s *AuthServer) writeTokens(w http.ResponseWriter, series oauthstore.SeriesRecord) {
-	expiresIn := int(s.accessTTL / time.Second)
+	// expires_in reflects the ACTUAL issued access lifetime (the per-domain EffectiveTTL,
+	// B-71 Stage 2c), derived from the series' own AccessExpiry rather than the global default.
+	expiresIn := int(series.AccessExpiry.Sub(s.now()) / time.Second)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")

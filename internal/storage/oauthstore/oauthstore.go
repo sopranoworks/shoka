@@ -445,6 +445,34 @@ func (s *Store) Lookup(accessToken string, now time.Time) (SeriesRecord, error) 
 	return rec, nil
 }
 
+// RefreshClientID resolves a refresh token to its series' ClientID WITHOUT rotating, so the
+// /token refresh grant can compute the per-domain issuance TTL before Rotate (B-71 Stage 2c).
+// ok=false if the refresh handle is unknown/rotated-away. O(1): two gets, no scan. Compared by
+// hash (the raw refresh is never stored).
+func (s *Store) RefreshClientID(refreshToken string) (clientID string, ok bool) {
+	rh := hashHandle(refreshToken)
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		sidRaw := tx.Bucket([]byte(refreshBucket)).Get([]byte(rh))
+		if sidRaw == nil {
+			return nil
+		}
+		sraw := tx.Bucket([]byte(seriesBucket)).Get(sidRaw)
+		if sraw == nil {
+			return nil
+		}
+		var rec SeriesRecord
+		if err := json.Unmarshal(sraw, &rec); err != nil {
+			return nil
+		}
+		if rec.RefreshTokenHash != rh { // stale pointer that outlived a rotation
+			return nil
+		}
+		clientID, ok = rec.ClientID, true
+		return nil
+	})
+	return clientID, ok
+}
+
 // List enumerates every live series as SeriesInfo (no secret handles), for the
 // (c) management surface. Sorted by IssuedAt is the caller's concern; order here
 // is bbolt key order (the series id).

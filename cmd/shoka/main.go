@@ -310,6 +310,19 @@ func main() {
 				"all /authorize approvals will be denied until a consent credential is set")
 		}
 		verifier := oauth.NewVerifier(oc.TrustedClientMetadataDomains)
+		// B-71 Stage 2c: seed the dynamic "domain" store from the static config (idempotent,
+		// marker-guarded), carrying the single consent_credential into each domain's per-domain
+		// consent (hashed) and the finite global TTLs as each domain's TTL — so existing
+		// connections keep working. Then switch the CIMD verifier's trust onto the store. The
+		// static keys still load (removed only in Stage 2e) but the dynamic store is now the
+		// source of truth for trust/consent/TTL.
+		if serr := oauthStore.SeedDomainRegistrationsFromDomains(
+			oc.TrustedClientMetadataDomains, oc.ConsentCredential,
+			oc.AccessTokenTTL.Std(), oc.RefreshTokenTTL.Std(), time.Now(),
+		); serr != nil {
+			log.Fatalf("failed to seed oauth domain registrations: %v", serr)
+		}
+		verifier.SetTrustedSource(oauthStore.TrustedDomain)
 		authServer = oauth.NewAuthServer(oauthStore, verifier, oauth.AuthServerConfig{
 			ExternalURL: cfg.Server.MCP.OAuth.ExternalURL,
 			PrincipalAuth: oauth.ConsentCredentialAuth{

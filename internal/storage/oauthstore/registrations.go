@@ -217,18 +217,20 @@ func (s *Store) DeleteRegistration(id string) error {
 	})
 }
 
-// SeedDomainRegistrationsFromDomains is the one-time bridge from the static
-// trusted_client_metadata_domains to the dynamic store (B-71 Stage 1): it creates a
-// "domain"-mode entry per domain (those values ARE trusted domains) so Stage 2 can flip the
-// CIMD verifier to read the dynamic store with the entries already present. Idempotent +
-// crash-safe: guarded by a marker in metaBucket and run in ONE atomic transaction, so a
-// re-run is a no-op and an empty list is safe (the marker is still set, so a later non-empty
-// call does not retro-seed).
+// SeedDomainRegistrationsFromDomains is the one-time bridge from the static config to the
+// dynamic store (B-71 Stage 2c wires it at startup): it creates a "domain"-mode entry per
+// trusted_client_metadata_domain so the CIMD verifier / DCR gate / consent / TTL paths can
+// read the dynamic store with the entries already present and behaviour is preserved:
+//   - CONSENT CARRY: each seeded domain inherits the single global consentSecret as its
+//     per-domain consent (hashed via SetConsent) — so a connection that satisfied the global
+//     consent still satisfies its domain's consent after the switch. An empty consentSecret
+//     leaves no per-domain consent (the live path then falls back to the global, also empty).
+//   - TTL SEED: each seeded domain gets per-domain access/refresh TTL = the current finite
+//     global defaults, so the issued lifetime is identical until the operator edits a domain.
 //
-// Stage 1 does NOT call this at runtime — no consumer reads the registrations store yet, so
-// runtime behaviour is UNCHANGED. It exists and is tested here so Stage 2 (which flips the
-// verifier onto the dynamic store) wires the call alongside its first reader.
-func (s *Store) SeedDomainRegistrationsFromDomains(domains []string, now time.Time) error {
+// Idempotent + crash-safe: guarded by metaBucket["registrations_seeded_v1"] in ONE atomic
+// transaction — a re-run is a no-op, an empty list is safe (the marker is still set).
+func (s *Store) SeedDomainRegistrationsFromDomains(domains []string, consentSecret string, accessTTL, refreshTTL time.Duration, now time.Time) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		mb := tx.Bucket([]byte(metaBucket))
 		if mb.Get([]byte(migrationKeyRegistrationsSeeded)) != nil {
@@ -245,6 +247,13 @@ func (s *Store) SeedDomainRegistrationsFromDomains(domains []string, now time.Ti
 				return err
 			}
 			entry := RegistrationEntry{ID: id, RegistrationMode: RegistrationModeDomain, Identifier: d, CreatedAt: now.UTC()}
+			entry.SetConsent(consentSecret) // carry the global consent (hashed); "" clears it
+			if accessTTL > 0 || refreshTTL > 0 {
+				entry.TTL = &EntryTTL{
+					AccessSeconds:  int64(accessTTL / time.Second),
+					RefreshSeconds: int64(refreshTTL / time.Second),
+				}
+			}
 			val, err := json.Marshal(entry)
 			if err != nil {
 				return fmt.Errorf("oauthstore: encode registration: %w", err)

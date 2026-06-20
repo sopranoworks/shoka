@@ -139,6 +139,20 @@ func (s *AuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Trusted-domain gate (B-71 Stage 2c, the enforcement deferred from Stage 2a): a DCR
+	// client is registered only if its derived domain (the redirect_uris host) is a trusted
+	// "domain" entry — REJECT otherwise, consistent with how the CIMD verifier rejects an
+	// untrusted client_id host (ErrUntrustedDomain). A multi-host / unparseable client has no
+	// single domain and is likewise rejected. After the startup seed, exactly the domains that
+	// were trusted via static config are trusted here.
+	domain := oauthstore.DomainFromRedirectURIs(req.RedirectURIs)
+	if domain == "" || !s.store.TrustedDomain(domain) {
+		lg.Warn("oauth register rejected", "error", "invalid_client_metadata", "reason", "untrusted-domain")
+		s.registerError(w, http.StatusBadRequest, "invalid_client_metadata",
+			"the client's redirect_uris host is not a trusted domain")
+		return
+	}
+
 	clientID, err := oauthstore.NewHandle()
 	if err != nil {
 		lg.Error("oauth register failed", "reason", "handle-generation-failed")
@@ -154,10 +168,9 @@ func (s *AuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		GrantTypes:              grantTypes,
 		ResponseTypes:           responseTypes,
 		ClientIDIssuedAt:        issuedAt,
-		// B-71 Stage 2a: attribute this DCR client a trusted domain (its redirect_uris host)
-		// so its series can be grouped under a domain like a CIMD one. RECORD-ONLY — it adds
-		// no gate; a multi-host/unparseable client records "" and is derived lazily later.
-		Domain: oauthstore.DomainFromRedirectURIs(req.RedirectURIs),
+		// B-71 Stage 2a recorded the domain; Stage 2c gated on it above (so it is non-empty
+		// and trusted here). The series issued for this client groups under this domain.
+		Domain: domain,
 	}
 	if err := s.store.PutClient(rec); err != nil {
 		lg.Error("oauth register failed", "reason", "client-persist-failed")

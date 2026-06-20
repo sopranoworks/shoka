@@ -2,6 +2,7 @@ package oauthstore
 
 import (
 	"testing"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -103,5 +104,71 @@ func TestSeriesDomain(t *testing.T) {
 	// Operator self-issued ⇒ not a domain.
 	if _, _, ok := s.SeriesDomain(SeriesRecord{ClientID: SelfIssuedClientID}); ok {
 		t.Fatal("the operator self-issued series must be unattributed (not a domain)")
+	}
+}
+
+// B-71 Stage 2c: TrustedDomain + DomainEntryForHost/ForClient read the dynamic "domain" store.
+
+func TestTrustedDomain_AndEntryForHost(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if _, err := s.CreateRegistration(RegistrationModeDomain, "trusted.example", now); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A non-domain (confidential) entry must NOT make a host trusted.
+	if _, err := s.CreateRegistration(RegistrationModeConfidential, "conf.example", now); err != nil {
+		t.Fatalf("create conf: %v", err)
+	}
+	// Exact + subdomain trusted; unrelated + the confidential identifier not.
+	for host, want := range map[string]bool{
+		"trusted.example":          true,
+		"sub.trusted.example":      true,
+		"deep.sub.trusted.example": true,
+		"nottrusted.example":       false,
+		"trusted.example.evil":     false,
+		"conf.example":             false, // confidential entry is not a trusted domain
+		"":                         false,
+	} {
+		if got := s.TrustedDomain(host); got != want {
+			t.Errorf("TrustedDomain(%q) = %v, want %v", host, got, want)
+		}
+	}
+	// Most-specific entry wins.
+	if _, err := s.CreateRegistration(RegistrationModeDomain, "sub.trusted.example", now); err != nil {
+		t.Fatalf("create sub: %v", err)
+	}
+	e, ok := s.DomainEntryForHost("x.sub.trusted.example")
+	if !ok || e.Identifier != "sub.trusted.example" {
+		t.Fatalf("most-specific match: got %q ok=%v", e.Identifier, ok)
+	}
+}
+
+func TestDomainEntryForClient(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	dom, err := s.CreateRegistration(RegistrationModeDomain, "connector.example", now)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// CIMD client_id (the metadata URL) → the entry covering its host.
+	if e, ok := s.DomainEntryForClient("https://connector.example/meta"); !ok || e.ID != dom.ID {
+		t.Fatalf("CIMD client must resolve to its domain entry: ok=%v id=%q", ok, e.ID)
+	}
+	// DCR client whose recorded domain matches.
+	dcrID, _ := NewHandle()
+	if err := s.PutClient(RegisteredClient{ClientID: dcrID, RedirectURIs: []string{"https://connector.example/cb"}, Domain: "connector.example"}); err != nil {
+		t.Fatalf("PutClient: %v", err)
+	}
+	if e, ok := s.DomainEntryForClient(dcrID); !ok || e.ID != dom.ID {
+		t.Fatalf("DCR client must resolve to its domain entry: ok=%v id=%q", ok, e.ID)
+	}
+	// A client whose domain has no entry → not found.
+	if _, ok := s.DomainEntryForClient("https://unknown.example/meta"); ok {
+		t.Fatal("a client whose domain has no entry must not resolve")
+	}
+	// Operator self-issued → not found.
+	if _, ok := s.DomainEntryForClient(SelfIssuedClientID); ok {
+		t.Fatal("the self-issued client must not resolve to a domain entry")
 	}
 }

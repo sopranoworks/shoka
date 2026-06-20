@@ -63,12 +63,13 @@ const (
 // can relax it for an in-process server while the real policy is exercised by the
 // SSRF tests.
 type Verifier struct {
-	trusted     []string // lowercased trusted domains from config
+	trusted     []string // lowercased trusted domains from static config (seed source / fallback)
 	maxBytes    int64
 	timeout     time.Duration
 	resolver    *net.Resolver
 	isBlockedIP func(net.IP) bool
-	tlsConfig   *tls.Config // nil in production (system roots); set by tests
+	tlsConfig   *tls.Config            // nil in production (system roots); set by tests
+	trustedSrc  func(host string) bool // B-71 Stage 2c: dynamic trusted-domain source; nil ⇒ static list
 }
 
 // NewVerifier builds a Verifier trusting exactly the given client-metadata
@@ -99,12 +100,26 @@ func (v *Verifier) TrustedCount() int {
 	return len(v.trusted)
 }
 
-// DomainTrusted reports whether host (no port) is allowed by the allowlist: an
-// exact match or a subdomain of a trusted entry. Default-deny on an empty list.
+// SetTrustedSource switches DomainTrusted onto a dynamic trusted-domain source (B-71 Stage
+// 2c): the production wiring injects oauthstore.Store.TrustedDomain, so a domain is trusted
+// iff a "domain" RegistrationEntry covers it (exact-or-subdomain — same semantics as the
+// static list). With no source set, the static config allowlist (NewVerifier) is used — the
+// path tests exercise. The dynamic store is seeded from the static config at startup, so the
+// switch preserves exactly the previously-trusted set.
+func (v *Verifier) SetTrustedSource(fn func(host string) bool) {
+	v.trustedSrc = fn
+}
+
+// DomainTrusted reports whether host (no port) is allowed: an exact match or a subdomain of a
+// trusted entry. The dynamic source (when set) is the source of truth (B-71 Stage 2c);
+// otherwise the static config allowlist. Default-deny.
 func (v *Verifier) DomainTrusted(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return false
+	}
+	if v.trustedSrc != nil {
+		return v.trustedSrc(host)
 	}
 	for _, d := range v.trusted {
 		if host == d || strings.HasSuffix(host, "."+d) {

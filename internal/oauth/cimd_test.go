@@ -196,3 +196,27 @@ func TestRedirectURIAllowed(t *testing.T) {
 		}
 	}
 }
+
+// TestDomainTrusted_DynamicSource (B-71 Stage 2c): when a dynamic trusted source is set,
+// DomainTrusted consults it (the dynamic "domain" store) instead of the static list, with the
+// same exact-or-subdomain semantics. RED-shape: a deny-all source (e.g. the seed was skipped)
+// trusts nothing — the regression the seed prevents.
+func TestDomainTrusted_DynamicSource(t *testing.T) {
+	v := NewVerifier([]string{"static.example"})
+	if !v.DomainTrusted("static.example") {
+		t.Fatal("static list must trust static.example before a source is set")
+	}
+	v.SetTrustedSource(func(host string) bool {
+		return host == "dyn.example" || strings.HasSuffix(host, ".dyn.example")
+	})
+	if !v.DomainTrusted("dyn.example") || !v.DomainTrusted("sub.dyn.example") {
+		t.Fatal("the dynamic source must make dyn.example (and subdomains) trusted")
+	}
+	if v.DomainTrusted("static.example") {
+		t.Fatal("once a dynamic source is set, the static list is no longer consulted")
+	}
+	v.SetTrustedSource(func(string) bool { return false })
+	if v.DomainTrusted("dyn.example") {
+		t.Fatal("a deny-all source (seed skipped) must trust nothing")
+	}
+}
