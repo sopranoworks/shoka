@@ -8,9 +8,40 @@ vi.mock('./wsClient', () => ({
 import {
   listConnections,
   revokeConnection,
+  issueSelfToken,
   clientDomain,
   OAuthDeniedError,
 } from './oauthOps'
+
+describe('issueSelfToken', () => {
+  beforeEach(() => requestFrame.mockReset())
+
+  it('sends the chosen per-issuance finite expiry (B-71 Stage 4)', async () => {
+    requestFrame.mockResolvedValue({
+      type: 'OAUTH_ISSUE_SELF',
+      payload: { access_token: 'tok', access_expiry: '2026-07-01T00:00:00Z' },
+    })
+    await issueSelfToken(604800)
+    expect(requestFrame).toHaveBeenCalledWith('OAUTH_ISSUE_SELF', { validity_seconds: 604800 })
+  })
+
+  it('defaults to 0 (the finite global default sentinel) when omitted', async () => {
+    requestFrame.mockResolvedValue({
+      type: 'OAUTH_ISSUE_SELF',
+      payload: { access_token: 'tok', access_expiry: '2026-07-01T00:00:00Z' },
+    })
+    await issueSelfToken()
+    expect(requestFrame).toHaveBeenCalledWith('OAUTH_ISSUE_SELF', { validity_seconds: 0 })
+  })
+
+  it('throws OAuthDeniedError on a refusal', async () => {
+    requestFrame.mockResolvedValue({
+      type: 'OAUTH_DENIED',
+      payload: { reason: 'forbidden', message: 'admin only' },
+    })
+    await expect(issueSelfToken()).rejects.toBeInstanceOf(OAuthDeniedError)
+  })
+})
 
 describe('listConnections', () => {
   beforeEach(() => requestFrame.mockReset())

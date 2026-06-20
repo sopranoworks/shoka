@@ -365,10 +365,17 @@ func main() {
 		// /authorize does — so a CLI token is indistinguishable from any other. All
 		// oauth/serverurl/identity wiring stays here in main; the manager only
 		// admin-gates and calls. The minted token is never logged on this path.
-		uim.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(r *http.Request) (string, time.Time, error) {
+		uim.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
 			base, berr := serverurl.Base(cfg.Server.MCP.OAuth.ExternalURL, r)
 			if berr != nil {
 				return "", time.Time{}, berr
+			}
+			// B-71 Stage 4 — the operator's per-issuance FINITE expiry sets the issued token's
+			// lifetime. A 0/non-positive choice falls back to the finite global default (never
+			// infinite); a chosen positive value bounds BOTH access and refresh so the whole
+			// series expires at the chosen time (the CLI uses the access token as a static bearer).
+			if accessTTL <= 0 {
+				accessTTL = oc.AccessTokenTTL.Std()
 			}
 			rec, nerr := oauthStore.NewSeries(
 				oauthstore.SelfIssuedClientID,
@@ -376,8 +383,8 @@ func main() {
 				serverurl.ResourceURL(base),
 				"*", // the operator's self-issued CLI token is all-access, like any DCR token
 				time.Now(),
-				oc.AccessTokenTTL.Std(),
-				oc.RefreshTokenTTL.Std(),
+				accessTTL,
+				accessTTL,
 			)
 			if nerr != nil {
 				return "", time.Time{}, nerr

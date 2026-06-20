@@ -90,13 +90,16 @@ func TestEndToEndCredentialPath(t *testing.T) {
 	}
 	m := ui.NewManager(s, dm, nil)
 	m.SetOAuthStore(store) // *oauthstore.Store satisfies OAuthConnectionStore
-	m.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(*http.Request) (string, time.Time, error) {
+	m.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+		if accessTTL <= 0 {
+			accessTTL = time.Hour
+		}
 		rec, nerr := store.NewSeries(
 			"shoka-cli",
 			oauthstore.Principal{Name: "Osamu Takahashi", Email: "forte.nit@gmail.com"},
 			"https://example.invalid/mcp",
 			"*",
-			time.Now(), time.Hour, 24*time.Hour,
+			time.Now(), accessTTL, 24*time.Hour,
 		)
 		if nerr != nil {
 			return "", time.Time{}, nerr

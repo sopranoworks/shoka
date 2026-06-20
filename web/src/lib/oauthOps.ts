@@ -54,10 +54,15 @@ export async function revokeConnection(seriesId: string): Promise<void> {
 
 // issueSelfToken mints a fresh access token for the operator (the "token to self"
 // path) and returns it ONCE. This is the only op that receives a secret — the
-// caller must show it once for copy and never persist it. Throws OAuthDeniedError
-// on an admin/oauth-disabled refusal.
-export async function issueSelfToken(): Promise<OAuthIssueSelfPayload> {
-  const frame = await wsClient().requestFrame('OAUTH_ISSUE_SELF', {})
+// caller must show it once for copy and never persist it. validitySeconds is the
+// operator's per-issuance FINITE expiry (B-71 Stage 4); omit/0 ⇒ the finite global
+// default (never infinite). Throws OAuthDeniedError on an admin/oauth-disabled refusal.
+export async function issueSelfToken(
+  validitySeconds = 0,
+): Promise<OAuthIssueSelfPayload> {
+  const frame = await wsClient().requestFrame('OAUTH_ISSUE_SELF', {
+    validity_seconds: validitySeconds,
+  })
   if (frame.type === 'OAUTH_DENIED') {
     const p = frame.payload as OAuthDenied
     throw new OAuthDeniedError(p.reason, p.message)

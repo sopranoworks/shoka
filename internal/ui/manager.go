@@ -371,6 +371,13 @@ type OAuthIssueSelfPayload struct {
 	AccessExpiry time.Time `json:"access_expiry"`
 }
 
+// OAuthIssueSelfRequest carries the operator's per-issuance FINITE expiry (B-71 Stage 4):
+// validity_seconds is the chosen token lifetime in whole seconds. 0/absent ⇒ the finite global
+// default (never infinite); a NEGATIVE value is rejected (no indefinite).
+type OAuthIssueSelfRequest struct {
+	ValiditySeconds int64 `json:"validity_seconds"`
+}
+
 // SearchResultPayload is the SEARCH_RESULT frame's body: the matches, each a
 // {path, snippet}. The slice is always non-nil so the client receives [] rather
 // than null on a no-match query.
@@ -511,18 +518,22 @@ type OAuthConnectionStore interface {
 // wiring: the concrete issuer is built in cmd/shoka (it holds the store, the
 // operator principal, the TTLs, and the resource deriver) and injected via
 // SetOAuthSelfIssuer. The request is passed so the issuer can derive the RFC 8707
-// resource exactly as /authorize does (forwarded-header aware). It returns the
-// access token and its expiry; the manager never sees how it is minted. nil when
-// OAuth is disabled.
+// resource exactly as /authorize does (forwarded-header aware). accessTTL is the
+// operator's per-issuance FINITE lifetime chosen at issue time (B-71 Stage 4); a
+// 0/non-positive value means "use the finite global default" — never infinite. It
+// returns the access token and its expiry; the manager never sees how it is minted.
+// nil when OAuth is disabled.
 type OAuthSelfIssuer interface {
-	IssueSelf(r *http.Request) (accessToken string, accessExpiry time.Time, err error)
+	IssueSelf(r *http.Request, accessTTL time.Duration) (accessToken string, accessExpiry time.Time, err error)
 }
 
 // OAuthSelfIssuerFunc adapts a function to OAuthSelfIssuer.
-type OAuthSelfIssuerFunc func(r *http.Request) (string, time.Time, error)
+type OAuthSelfIssuerFunc func(r *http.Request, accessTTL time.Duration) (string, time.Time, error)
 
 // IssueSelf calls f.
-func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request) (string, time.Time, error) { return f(r) }
+func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+	return f(r, accessTTL)
+}
 
 // UserAdminStore is the narrow capability the super-user-only user-management ops
 // (B-28 stage 3) depend on — exactly the userstore admin/invite methods. The Manager
@@ -894,7 +905,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case MsgOAuthRevoke:
 			m.handleOAuthRevoke(client, wsMsg.Payload)
 		case MsgOAuthIssueSelf:
-			m.handleOAuthIssueSelf(client)
+			m.handleOAuthIssueSelf(client, wsMsg.Payload)
 		case MsgDomainList:
 			m.handleDomainList(client)
 		case MsgDomainCreate:
@@ -1929,7 +1940,7 @@ func (m *Manager) handleConfidentialRevoke(client *wsClient, payload json.RawMes
 // NOT logged (no log statement carries it) and is persisted only in the normal
 // token store. Administrator-only via the dispatch authz gate, like List/Revoke; the
 // issuer being nil (OAuth disabled) is reported as oauth_disabled.
-func (m *Manager) handleOAuthIssueSelf(client *wsClient) {
+func (m *Manager) handleOAuthIssueSelf(client *wsClient, payload json.RawMessage) {
 	if !m.oauthAvailable(client) {
 		return
 	}
@@ -1940,7 +1951,21 @@ func (m *Manager) handleOAuthIssueSelf(client *wsClient) {
 		})
 		return
 	}
-	token, expiry, err := m.selfIssuer.IssueSelf(client.req)
+	// B-71 Stage 4 — the operator chooses a per-issuance FINITE expiry. An absent/empty payload
+	// (validity_seconds 0) falls back to the finite global default; a NEGATIVE value is rejected
+	// (no indefinite). A positive value sets the issued token's lifetime.
+	var p OAuthIssueSelfRequest
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &p); err != nil {
+			client.sendError("Invalid payload for OAUTH_ISSUE_SELF")
+			return
+		}
+	}
+	if p.ValiditySeconds < 0 {
+		client.sendError("OAUTH_ISSUE_SELF validity must not be negative (no indefinite)")
+		return
+	}
+	token, expiry, err := m.selfIssuer.IssueSelf(client.req, time.Duration(p.ValiditySeconds)*time.Second)
 	if err != nil {
 		// The error is generic on the wire; the token never appears in it.
 		client.sendError("Failed to issue a token")

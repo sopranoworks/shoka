@@ -66,8 +66,10 @@ func TestWSUI_OAuthIssueSelfReturnsToken(t *testing.T) {
 	const want = "fresh-access-token-value"
 	exp := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	var gotReq bool
-	issuer := OAuthSelfIssuerFunc(func(r *http.Request) (string, time.Time, error) {
+	var gotTTL time.Duration
+	issuer := OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
 		gotReq = r != nil // the request must reach the issuer (for resource derivation)
+		gotTTL = accessTTL
 		return want, exp, nil
 	})
 	conn := newOAuthIssueSelfManager(t, "", &fakeOAuthStore{}, issuer)
@@ -89,11 +91,44 @@ func TestWSUI_OAuthIssueSelfReturnsToken(t *testing.T) {
 	if !gotReq {
 		t.Fatal("issuer did not receive the request")
 	}
+	// An empty payload ⇒ the 0 "use the finite default" sentinel reaches the issuer.
+	if gotTTL != 0 {
+		t.Fatalf("empty payload must pass 0 (default sentinel), got %v", gotTTL)
+	}
+}
+
+// TestWSUI_OAuthIssueSelfThreadsChosenExpiry (B-71 Stage 4): the operator's chosen per-issuance
+// finite expiry reaches the issuer; a NEGATIVE value is rejected. RED proof: drop the
+// validity_seconds threading (always pass the old fixed TTL) → gotTTL != the chosen value → fail.
+func TestWSUI_OAuthIssueSelfThreadsChosenExpiry(t *testing.T) {
+	var gotTTL time.Duration
+	issuer := OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+		gotTTL = accessTTL
+		return "tok", time.Unix(1, 0), nil
+	})
+	conn := newOAuthIssueSelfManager(t, "", &fakeOAuthStore{}, issuer)
+
+	// A chosen 7-day expiry is threaded through to the issuer.
+	if resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{"validity_seconds":604800}`); resp.Type != MsgOAuthIssueSelf {
+		t.Fatalf("issue with chosen expiry: %s (%s)", resp.Type, resp.Payload)
+	}
+	if gotTTL != 7*24*time.Hour {
+		t.Fatalf("chosen expiry not threaded: got %v, want 168h", gotTTL)
+	}
+
+	// A negative validity is rejected (no indefinite) and the issuer is NOT called.
+	gotTTL = -1
+	if resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{"validity_seconds":-5}`); resp.Type != Error {
+		t.Fatalf("a negative validity must error, got %s", resp.Type)
+	}
+	if gotTTL != -1 {
+		t.Fatal("the issuer must not be called for a rejected (negative) validity")
+	}
 }
 
 func TestWSUI_OAuthIssueSelfRefusedForNonAdmin(t *testing.T) {
 	var called bool
-	issuer := OAuthSelfIssuerFunc(func(*http.Request) (string, time.Time, error) {
+	issuer := OAuthSelfIssuerFunc(func(*http.Request, time.Duration) (string, time.Time, error) {
 		called = true
 		return "should-not-be-minted", time.Time{}, nil
 	})

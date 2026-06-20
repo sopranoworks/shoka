@@ -359,6 +359,17 @@
   padding: var(--sp-2) var(--sp-3);
 }
 
+/* B-71 Stage 4: the self-issue control pairs a finite days picker with the Generate button. */
+.selfIssue {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.selfIssue .ttlInput {
+  width: 72px;
+}
+
 @media (max-width: 640px) {
   .toolbar {
     padding: var(--sp-2) var(--sp-3);

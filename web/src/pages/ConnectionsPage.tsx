@@ -755,9 +755,11 @@ export function fmtScope(scope: string): string {
   return scope === '*' || scope === '' ? 'all access' : scope
 }
 
-// IssueTokenButton mints a "token to self" for the CLI (B-46b §2.2). The minted
-// token is the one secret that crosses /ws/ui; on success it is handed up to the
-// page (onIssued) for a display-once panel, never stored or toasted.
+// IssueTokenButton mints a "token to self" for the CLI (B-46b §2.2). The minted token is the one
+// secret that crosses /ws/ui; on success it is handed up to the page (onIssued) for a display-once
+// panel, never stored or toasted. B-71 Stage 4: the operator chooses a per-issuance FINITE expiry
+// (GitHub-PAT-style, whole positive days — no indefinite option) via the SAME no-indefinite rule
+// as confidential issuance (parseValidityDays); the chosen lifetime bounds the token.
 function IssueTokenButton({
   disabled,
   onIssued,
@@ -766,8 +768,10 @@ function IssueTokenButton({
   onIssued: (t: OAuthIssueSelfPayload) => void
 }) {
   const { add: addToast } = useToast()
+  const [days, setDays] = useState('30')
+  const validDays = parseValidityDays(days)
   const issue = useMutation({
-    mutationFn: () => issueSelfToken(),
+    mutationFn: () => issueSelfToken((validDays ?? 0) * 86400),
     onSuccess: (t) => onIssued(t),
     onError: (e) =>
       addToast({
@@ -779,14 +783,26 @@ function IssueTokenButton({
       }),
   })
   return (
-    <button
-      className={styles.issue}
-      onClick={() => issue.mutate()}
-      disabled={disabled || issue.isPending}
-      aria-label="Generate a token for the CLI"
-    >
-      {issue.isPending ? 'Generating…' : 'Generate CLI token'}
-    </button>
+    <span className={styles.selfIssue}>
+      <input
+        className={styles.ttlInput}
+        value={days}
+        onChange={(e) => setDays(e.target.value)}
+        disabled={disabled}
+        data-testid="self-issue-days"
+        aria-label="CLI token validity in days"
+        aria-invalid={validDays === null}
+        title="Token validity in days (no indefinite)"
+      />
+      <button
+        className={styles.issue}
+        onClick={() => issue.mutate()}
+        disabled={disabled || validDays === null || issue.isPending}
+        aria-label="Generate a token for the CLI"
+      >
+        {issue.isPending ? 'Generating…' : 'Generate CLI token'}
+      </button>
+    </span>
   )
 }
 
