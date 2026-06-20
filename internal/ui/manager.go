@@ -142,6 +142,13 @@ const (
 	// generic ERROR frame so the client can recognise an authorization refusal
 	// (and hide the management surface) rather than treat it as a transport error.
 	MsgOAuthDenied MessageType = "OAUTH_DENIED"
+
+	// B-71 Stage 2d: domain-mode management — CRUD over the dynamic "domain" registration
+	// store (trusted domain + per-domain TTL + per-domain consent), admin-gated.
+	MsgDomainList   MessageType = "DOMAIN_LIST"
+	MsgDomainCreate MessageType = "DOMAIN_CREATE"
+	MsgDomainUpdate MessageType = "DOMAIN_UPDATE"
+	MsgDomainDelete MessageType = "DOMAIN_DELETE"
 	// MsgNotify carries one notify.Event pushed from the server to the browser
 	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
 	// {type,payload} envelope as every other message, so existing consumers that
@@ -318,6 +325,10 @@ type OAuthConnectionInfo struct {
 	// future pre-issued scoped token. It is non-secret routing metadata, shown in
 	// the admin connections table so the operator can see what each token may reach.
 	Scope string `json:"scope"`
+	// Domain is the trusted-"domain" entry this connection groups under (B-71 Stage 2d) —
+	// the matched entry's identifier (CIMD + DCR connections sit under their domain); "" for
+	// the operator self-issued / confidential / untrusted-leftover section. Non-secret.
+	Domain string `json:"domain"`
 }
 
 // OAuthListPayload is the OAUTH_LIST response body: the live connections. The
@@ -465,6 +476,21 @@ type OAuthConnectionStore interface {
 	// principal email — the cross-store access cut when a user is disabled or deleted
 	// (B-28). Returns the number of series revoked.
 	RevokeByPrincipalEmail(email string) (int, error)
+
+	// B-71 Stage 2d — the dynamic "domain" registration store the domain-mode management
+	// screen drives (DOMAIN_* ws ops) + the connection grouping. *oauthstore.Store already
+	// satisfies these.
+	ListRegistrations() ([]oauthstore.RegistrationEntry, error)
+	CreateRegistration(mode, identifier string, now time.Time) (oauthstore.RegistrationEntry, error)
+	GetRegistration(id string) (oauthstore.RegistrationEntry, error)
+	UpdateRegistration(entry oauthstore.RegistrationEntry) error
+	DeleteRegistration(id string) error
+	// RevokeByDomain revokes every token series under a domain (the Stage 2d domain-delete
+	// cascade). Returns the number revoked.
+	RevokeByDomain(domain string) (int, error)
+	// DomainEntryForClient returns the "domain" entry a connection's client_id belongs to (for
+	// grouping); ok=false for a self-issued/confidential or untrusted-leftover connection.
+	DomainEntryForClient(clientID string) (oauthstore.RegistrationEntry, bool)
 }
 
 // OAuthSelfIssuer mints a fresh access token bound to the current-mode operator
@@ -640,6 +666,12 @@ var wsLevels = map[MessageType]wsOp{
 	MsgOAuthList:      {authz.LevelAdmin, true},
 	MsgOAuthRevoke:    {authz.LevelAdmin, true},
 	MsgOAuthIssueSelf: {authz.LevelAdmin, true},
+
+	// Domain-mode management (B-71 Stage 2d): admin, global.
+	MsgDomainList:   {authz.LevelAdmin, true},
+	MsgDomainCreate: {authz.LevelAdmin, true},
+	MsgDomainUpdate: {authz.LevelAdmin, true},
+	MsgDomainDelete: {authz.LevelAdmin, true},
 
 	MsgAdminListUsers:      {authz.LevelAdmin, true},
 	MsgAdminSetUserScope:   {authz.LevelAdmin, true},
@@ -848,6 +880,14 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleOAuthRevoke(client, wsMsg.Payload)
 		case MsgOAuthIssueSelf:
 			m.handleOAuthIssueSelf(client)
+		case MsgDomainList:
+			m.handleDomainList(client)
+		case MsgDomainCreate:
+			m.handleDomainCreate(client, wsMsg.Payload)
+		case MsgDomainUpdate:
+			m.handleDomainUpdate(client, wsMsg.Payload)
+		case MsgDomainDelete:
+			m.handleDomainDelete(client, wsMsg.Payload)
 		case MsgAdminListUsers:
 			m.handleAdminListUsers(client)
 		case MsgAdminSetUserScope:
@@ -1512,7 +1552,14 @@ func (m *Manager) handleOAuthList(client *wsClient) {
 	})
 	conns := make([]OAuthConnectionInfo, 0, len(infos))
 	for _, s := range infos {
-		conns = append(conns, toOAuthConnectionInfo(s))
+		c := toOAuthConnectionInfo(s)
+		// B-71 Stage 2d: tag each connection with the trusted-"domain" entry it groups under
+		// (CIMD + DCR sit under their domain; self-issued/confidential/untrusted ⇒ ""). The
+		// UI groups by this; OAUTH_LIST stays a flat array so existing readers are unaffected.
+		if entry, ok := m.oauth.DomainEntryForClient(s.ClientID); ok {
+			c.Domain = entry.Identifier
+		}
+		conns = append(conns, c)
 	}
 	client.sendResponse(MsgOAuthList, OAuthListPayload{Connections: conns})
 }
@@ -1541,6 +1588,183 @@ func (m *Manager) handleOAuthRevoke(client *wsClient, payload json.RawMessage) {
 		return
 	}
 	client.sendResponse(MsgOAuthRevoke, OAuthRevokePayload{SeriesID: p.SeriesID, Status: "ok"})
+}
+
+// --- B-71 Stage 2d: domain-mode management (DOMAIN_* ws ops) ---
+
+// DomainInfo is the no-secret view of a "domain" RegistrationEntry: its identifier, per-domain
+// TTL (seconds; 0 = unset → the finite global default), and whether a per-domain consent is
+// set. The consent VALUE/hash is NEVER returned — only the set/unset indicator (Stage 0/2b).
+type DomainInfo struct {
+	ID                string `json:"id"`
+	Domain            string `json:"domain"`
+	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
+	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
+	ConsentSet        bool   `json:"consent_set"`
+}
+
+// DomainListPayload is the DOMAIN_LIST response (sorted by identifier).
+type DomainListPayload struct {
+	Domains []DomainInfo `json:"domains"`
+}
+
+// DomainCreateRequest creates a "domain" entry; Consent (optional) is hashed on write.
+type DomainCreateRequest struct {
+	Domain            string `json:"domain"`
+	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
+	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
+	Consent           string `json:"consent"`
+}
+
+// DomainUpdateRequest edits a domain's TTL and optionally sets/clears its consent: SetConsent
+// nil = leave unchanged; "" = clear; non-empty = set (hashed).
+type DomainUpdateRequest struct {
+	ID                string  `json:"id"`
+	AccessTTLSeconds  int64   `json:"access_ttl_seconds"`
+	RefreshTTLSeconds int64   `json:"refresh_ttl_seconds"`
+	SetConsent        *string `json:"set_consent"`
+}
+
+// DomainDeleteRequest / DomainDeletePayload — delete a domain (revoking its tokens).
+type DomainDeleteRequest struct {
+	ID string `json:"id"`
+}
+type DomainDeletePayload struct {
+	ID            string `json:"id"`
+	RevokedTokens int    `json:"revoked_tokens"`
+	Status        string `json:"status"`
+}
+
+func domainInfoOf(e oauthstore.RegistrationEntry) DomainInfo {
+	di := DomainInfo{ID: e.ID, Domain: e.Identifier, ConsentSet: e.Consent != nil && e.Consent.Hash != ""}
+	if e.TTL != nil {
+		di.AccessTTLSeconds = e.TTL.AccessSeconds
+		di.RefreshTTLSeconds = e.TTL.RefreshSeconds
+	}
+	return di
+}
+
+func (m *Manager) handleDomainList(client *wsClient) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	entries, err := m.oauth.ListRegistrations()
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to list domains: %v", err))
+		return
+	}
+	out := make([]DomainInfo, 0)
+	for _, e := range entries {
+		if e.RegistrationMode == oauthstore.RegistrationModeDomain {
+			out = append(out, domainInfoOf(e))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Domain < out[j].Domain })
+	client.sendResponse(MsgDomainList, DomainListPayload{Domains: out})
+}
+
+func (m *Manager) handleDomainCreate(client *wsClient, payload json.RawMessage) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	var p DomainCreateRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for DOMAIN_CREATE")
+		return
+	}
+	if strings.TrimSpace(p.Domain) == "" {
+		client.sendError("DOMAIN_CREATE requires a domain")
+		return
+	}
+	if p.AccessTTLSeconds < 0 || p.RefreshTTLSeconds < 0 {
+		client.sendError("DOMAIN_CREATE TTL must not be negative")
+		return
+	}
+	entry, err := m.oauth.CreateRegistration(oauthstore.RegistrationModeDomain, p.Domain, time.Now())
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to create domain: %v", err))
+		return
+	}
+	if p.AccessTTLSeconds > 0 || p.RefreshTTLSeconds > 0 {
+		entry.TTL = &oauthstore.EntryTTL{AccessSeconds: p.AccessTTLSeconds, RefreshSeconds: p.RefreshTTLSeconds}
+	}
+	if p.Consent != "" {
+		entry.SetConsent(p.Consent)
+	}
+	if err := m.oauth.UpdateRegistration(entry); err != nil {
+		client.sendError(fmt.Sprintf("Failed to set domain TTL/consent: %v", err))
+		return
+	}
+	client.sendResponse(MsgDomainCreate, domainInfoOf(entry))
+}
+
+func (m *Manager) handleDomainUpdate(client *wsClient, payload json.RawMessage) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	var p DomainUpdateRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for DOMAIN_UPDATE")
+		return
+	}
+	if p.ID == "" {
+		client.sendError("DOMAIN_UPDATE requires an id")
+		return
+	}
+	if p.AccessTTLSeconds < 0 || p.RefreshTTLSeconds < 0 {
+		client.sendError("DOMAIN_UPDATE TTL must not be negative")
+		return
+	}
+	entry, err := m.oauth.GetRegistration(p.ID)
+	if err != nil {
+		client.sendError("Domain not found")
+		return
+	}
+	if entry.RegistrationMode != oauthstore.RegistrationModeDomain {
+		client.sendError("not a domain entry")
+		return
+	}
+	if p.AccessTTLSeconds > 0 || p.RefreshTTLSeconds > 0 {
+		entry.TTL = &oauthstore.EntryTTL{AccessSeconds: p.AccessTTLSeconds, RefreshSeconds: p.RefreshTTLSeconds}
+	} else {
+		entry.TTL = nil // both 0 ⇒ unset → the finite global default
+	}
+	if p.SetConsent != nil {
+		entry.SetConsent(*p.SetConsent) // "" clears; non-empty sets (hashed — never returned)
+	}
+	if err := m.oauth.UpdateRegistration(entry); err != nil {
+		client.sendError(fmt.Sprintf("Failed to update domain: %v", err))
+		return
+	}
+	client.sendResponse(MsgDomainUpdate, domainInfoOf(entry))
+}
+
+func (m *Manager) handleDomainDelete(client *wsClient, payload json.RawMessage) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	var p DomainDeleteRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for DOMAIN_DELETE")
+		return
+	}
+	if p.ID == "" {
+		client.sendError("DOMAIN_DELETE requires an id")
+		return
+	}
+	entry, err := m.oauth.GetRegistration(p.ID)
+	if err != nil {
+		client.sendError("Domain not found")
+		return
+	}
+	// Policy (B-71 Stage 2d): deleting a domain makes it untrusted AND revokes its live tokens
+	// (mirroring the user-delete OAuth-revoke cascade) — its connections cannot keep working.
+	revoked, _ := m.oauth.RevokeByDomain(entry.Identifier)
+	if err := m.oauth.DeleteRegistration(p.ID); err != nil {
+		client.sendError(fmt.Sprintf("Failed to delete domain: %v", err))
+		return
+	}
+	client.sendResponse(MsgDomainDelete, DomainDeletePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
 }
 
 // handleOAuthIssueSelf mints a fresh access token bound to the current-mode

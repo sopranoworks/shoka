@@ -1,8 +1,12 @@
 package oauthstore
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // B-71 Stage 2a — domain attribution. Every token series must be attributable to a domain
@@ -133,6 +137,73 @@ func (s *Store) DomainEntryForHost(host string) (RegistrationEntry, bool) {
 func (s *Store) TrustedDomain(host string) bool {
 	_, ok := s.DomainEntryForHost(host)
 	return ok
+}
+
+// clientDomainTx is the transaction-scoped form of clientDomain: it reads the clients bucket
+// via the passed tx, so it is safe INSIDE a db.Update (where a nested db.View — what clientDomain
+// uses via GetClient — would deadlock). CIMD ⇒ URL host; DCR ⇒ recorded/derived domain; the
+// self-issued client ⇒ "".
+func clientDomainTx(tx *bolt.Tx, clientID string) string {
+	if clientID == SelfIssuedClientID {
+		return ""
+	}
+	if h := cimdHost(clientID); h != "" {
+		return h
+	}
+	v := tx.Bucket([]byte(clientsBucket)).Get([]byte(clientID))
+	if v == nil {
+		return ""
+	}
+	var c RegisteredClient
+	if json.Unmarshal(v, &c) != nil {
+		return ""
+	}
+	if c.Domain != "" {
+		return strings.ToLower(c.Domain)
+	}
+	return strings.ToLower(DomainFromRedirectURIs(c.RedirectURIs))
+}
+
+// RevokeByDomain revokes every token series whose domain is the given domain or a subdomain of
+// it (B-71 Stage 2d: deleting a "domain" entry cuts its live tokens — the stated policy,
+// mirroring the user-delete OAuth-revoke cascade; the domain is also untrusted thereafter, so
+// it cannot reconnect). Returns the number revoked. One write transaction; records are
+// collected during the scan and deleted after it (the DeleteDeadSeries discipline).
+func (s *Store) RevokeByDomain(domain string) (int, error) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return 0, nil
+	}
+	var revoked int
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		var dead []SeriesRecord
+		if err := tx.Bucket([]byte(seriesBucket)).ForEach(func(_, v []byte) error {
+			var rec SeriesRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("oauthstore: decode series: %w", err)
+			}
+			if d := clientDomainTx(tx, rec.ClientID); d != "" && (d == domain || strings.HasSuffix(d, "."+domain)) {
+				dead = append(dead, rec)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, rec := range dead {
+			if err := deleteSeries(tx, rec); err != nil {
+				return err
+			}
+		}
+		revoked = len(dead)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if revoked > 0 {
+		s.revocations.Add(int64(revoked))
+	}
+	return revoked, nil
 }
 
 // DomainEntryForClient returns the "domain" RegistrationEntry a client_id belongs to — the

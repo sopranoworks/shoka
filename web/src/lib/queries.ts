@@ -2,6 +2,7 @@ import { useQuery, useQueries } from '@tanstack/react-query'
 import { wsClient } from './wsClient'
 import { flattenFilePaths } from './tree'
 import { listConnections } from './oauthOps'
+import { listDomains } from './domainOps'
 import type {
   ProjectInfo,
   FileNode,
@@ -25,6 +26,19 @@ export function useConnectionsQuery(enabled = true) {
     queryKey: OAUTH_CONNECTIONS_KEY,
     enabled,
     queryFn: () => listConnections(),
+  })
+}
+
+// B-71 Stage 2d: the dynamic "domain" entries (trusted domain + per-domain TTL + a
+// consent-set indicator) for the domain-mode management screen. Admin-gated like the
+// connections query; invalidated after a create/update/delete.
+export const OAUTH_DOMAINS_KEY = ['oauth-domains'] as const
+
+export function useDomainsQuery(enabled = true) {
+  return useQuery({
+    queryKey: OAUTH_DOMAINS_KEY,
+    enabled,
+    queryFn: () => listDomains(),
   })
 }
 

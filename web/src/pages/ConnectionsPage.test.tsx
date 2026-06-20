@@ -21,6 +21,15 @@ vi.mock('../lib/oauthOps', async (importOriginal) => {
   return { ...actual, listConnections, revokeConnection, issueSelfToken }
 })
 
+// B-71 Stage 2d: the page now also fetches the dynamic "domain" entries (the
+// Trusted-domains section). Mock the domain ops; tests default to "no domains" so
+// connections render in the self-issued section unless a test seeds a domain.
+const { listDomains } = vi.hoisted(() => ({ listDomains: vi.fn() }))
+vi.mock('../lib/domainOps', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/domainOps')>()
+  return { ...actual, listDomains }
+})
+
 import { ConnectionsPage } from './ConnectionsPage'
 import { OAuthDeniedError } from '../lib/oauthOps'
 
@@ -33,6 +42,7 @@ const sampleConn = {
   issued_at: '2026-06-03T12:00:00Z',
   access_expiry: '2026-06-03T13:00:00Z',
   scope: '*',
+  domain: '', // self-issued / unattributed → the self section
 }
 
 // isoFromNow builds an access_expiry relative to the current instant so the
@@ -61,6 +71,8 @@ describe('ConnectionsPage', () => {
     listConnections.mockReset()
     revokeConnection.mockReset()
     issueSelfToken.mockReset()
+    listDomains.mockReset()
+    listDomains.mockResolvedValue([]) // default: no trusted domains
   })
 
   it('lists connections by client domain, principal, and short series id (no secrets)', async () => {
@@ -79,12 +91,15 @@ describe('ConnectionsPage', () => {
     expect(container.textContent).not.toContain('series-aaaa-1111')
   })
 
-  it('shows the empty state when there are no connections', async () => {
+  it('shows the empty states when there are no domains and no connections', async () => {
     listConnections.mockResolvedValue([])
     renderPage()
+    // The grouped view (B-71 Stage 2d) composes two sections: trusted domains and
+    // self-issued/other — each with its own empty state.
     expect(
-      await screen.findByText('No active OAuth connections.'),
+      await screen.findByText(/No trusted domains configured/i),
     ).toBeInTheDocument()
+    expect(screen.getByText('No self-issued tokens.')).toBeInTheDocument()
   })
 
   it('hides the surface and does not query for a non-admin', async () => {
@@ -115,7 +130,7 @@ describe('ConnectionsPage', () => {
     })
 
     renderPage()
-    await screen.findByText('No active OAuth connections.')
+    await screen.findByText('No self-issued tokens.')
 
     // The token is not shown until generated.
     expect(screen.queryByText('minted-secret-value')).toBeNull()
@@ -142,7 +157,7 @@ describe('ConnectionsPage', () => {
     )
 
     renderPage()
-    await screen.findByText('No active OAuth connections.')
+    await screen.findByText('No self-issued tokens.')
     await user.click(
       screen.getByRole('button', { name: 'Generate a token for the CLI' }),
     )
@@ -218,8 +233,6 @@ describe('ConnectionsPage', () => {
     await waitFor(() =>
       expect(screen.queryByText('connector.example.com')).toBeNull(),
     )
-    expect(
-      screen.getByText('No active OAuth connections.'),
-    ).toBeInTheDocument()
+    expect(screen.getByText('No self-issued tokens.')).toBeInTheDocument()
   })
 })

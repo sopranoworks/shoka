@@ -172,3 +172,34 @@ func TestDomainEntryForClient(t *testing.T) {
 		t.Fatal("the self-issued client must not resolve to a domain entry")
 	}
 }
+
+// TestRevokeByDomain (B-71 Stage 2d): revokes series under a domain (exact + subdomain), leaves
+// other domains' and self-issued series alone.
+func TestRevokeByDomain(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	p := Principal{Name: "Op"}
+	a, _ := s.NewSeries("https://connector.example/meta", p, "r", "*", now, time.Hour, time.Hour)     // under connector.example
+	b, _ := s.NewSeries("https://sub.connector.example/meta", p, "r", "*", now, time.Hour, time.Hour) // subdomain, under it
+	other, _ := s.NewSeries("https://elsewhere.example/meta", p, "r", "*", now, time.Hour, time.Hour) // different domain
+	self, _ := s.NewSeries(SelfIssuedClientID, p, "r", "*", now, time.Hour, time.Hour)                // no domain
+	n, err := s.RevokeByDomain("connector.example")
+	if err != nil {
+		t.Fatalf("RevokeByDomain: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("revoked = %d, want 2 (exact + subdomain)", n)
+	}
+	if _, err := s.Lookup(a.AccessToken, now); err == nil {
+		t.Fatal("exact-domain series must be revoked")
+	}
+	if _, err := s.Lookup(b.AccessToken, now); err == nil {
+		t.Fatal("subdomain series must be revoked")
+	}
+	if _, err := s.Lookup(other.AccessToken, now); err != nil {
+		t.Fatal("other-domain series must survive")
+	}
+	if _, err := s.Lookup(self.AccessToken, now); err != nil {
+		t.Fatal("self-issued series must survive")
+	}
+}

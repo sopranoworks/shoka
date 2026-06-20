@@ -1,39 +1,47 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useIsAdmin } from '../lib/admin'
-import { useConnectionsQuery, OAUTH_CONNECTIONS_KEY } from '../lib/queries'
+import {
+  useConnectionsQuery,
+  useDomainsQuery,
+  OAUTH_CONNECTIONS_KEY,
+  OAUTH_DOMAINS_KEY,
+} from '../lib/queries'
 import {
   revokeConnection,
   issueSelfToken,
   clientDomain,
   OAuthDeniedError,
 } from '../lib/oauthOps'
+import { createDomain, updateDomain, deleteDomain } from '../lib/domainOps'
 import { useToast } from '../lib/toast'
-import type { OAuthConnection, OAuthIssueSelfPayload } from '../lib/types'
+import type {
+  OAuthConnection,
+  OAuthIssueSelfPayload,
+  DomainInfo,
+} from '../lib/types'
 import styles from './ConnectionsPage.module.css'
 
-// The administrator-only OAuth connection management view (the 2026-06-03 MCP
-// OAuth (c) directive §2.2). It lists the live MCP connections the built-in
-// authorization server holds — each shown by the connecting client's own
-// identity (its CIMD domain) and the principal it acts for, never by any secret —
-// and revokes any one with a confirm-gated, per-row action that cuts exactly that
-// connection and leaves the rest. The server-side gate is authoritative; the
-// useIsAdmin() check here only governs UI EXPOSURE (secondary). There is no oauth
-// NOTIFY, so the list refreshes manually (invalidate-on-revoke + a Refresh
-// button), not live.
+// The administrator-only OAuth management view. Per the B-71 binding principle the screen is
+// structured BY management mode; this is DOMAIN mode (B-71 Stage 2d): the operator manages
+// trusted domains + their per-domain TTL + per-domain consent FROM THE SCREEN (the settings
+// that used to live in static config — moved to the UI, not removed), and each domain's
+// tokens group beneath its entry. The per-domain consent is WRITE-ONLY: it is set or cleared,
+// never displayed (hashed at rest). Self-issued / confidential tokens sit in a separate
+// section. The server-side gate is authoritative; useIsAdmin() governs UI exposure only.
 export function ConnectionsPage() {
   const isAdmin = useIsAdmin()
   const [issued, setIssued] = useState<OAuthIssueSelfPayload | null>(null)
   const {
     data: connections,
-    isLoading,
+    isLoading: connLoading,
     isFetching,
     error,
     refetch,
   } = useConnectionsQuery(isAdmin)
+  const { data: domains, isLoading: domLoading, refetch: refetchDomains } =
+    useDomainsQuery(isAdmin)
 
-  // Secondary UI gate. The authoritative refusal is server-side, but a non-admin
-  // should not even see the surface.
   if (!isAdmin) {
     return (
       <div className={styles.page}>
@@ -54,12 +62,15 @@ export function ConnectionsPage() {
       <div className={styles.toolbar}>
         <span className={styles.scope}>
           <strong>OAuth connections</strong>
-          <span className={styles.sub}> · active MCP authorizations</span>
+          <span className={styles.sub}> · trusted domains &amp; active authorizations</span>
         </span>
         <IssueTokenButton disabled={oauthDisabled} onIssued={setIssued} />
         <button
           className={styles.refresh}
-          onClick={() => void refetch()}
+          onClick={() => {
+            void refetch()
+            void refetchDomains()
+          }}
           disabled={isFetching}
           aria-label="Refresh connections"
         >
@@ -72,45 +83,373 @@ export function ConnectionsPage() {
       )}
 
       <div className={styles.body} data-scroll-restoration-id="connections-body">
-        {isLoading ? (
-          <p className={styles.hint}>Loading connections…</p>
+        {connLoading || domLoading ? (
+          <p className={styles.hint}>Loading…</p>
         ) : oauthDisabled ? (
           <p className={styles.hint}>
-            OAuth is not enabled on this server, so there are no connections to
-            manage.
+            OAuth is not enabled on this server, so there is nothing to manage.
           </p>
         ) : error ? (
           <p className={styles.error}>Failed to load connections. Try Refresh.</p>
-        ) : !connections || connections.length === 0 ? (
-          <p className={styles.hint}>No active OAuth connections.</p>
         ) : (
-          <>
-            <div className={styles.count}>
-              {connections.length}{' '}
-              {connections.length === 1 ? 'connection' : 'connections'}
-            </div>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Client</th>
-                  <th>Principal</th>
-                  <th>Scope</th>
-                  <th>Issued</th>
-                  <th>Access expires</th>
-                  <th>Series</th>
-                  <th aria-label="Actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {connections.map((c) => (
-                  <ConnectionRow key={c.series_id} conn={c} />
-                ))}
-              </tbody>
-            </table>
-          </>
+          <DomainManagement
+            domains={domains ?? []}
+            connections={connections ?? []}
+          />
         )}
       </div>
     </div>
+  )
+}
+
+// DomainManagement is the domain-mode screen body: the Add-domain form, the list of trusted
+// "domain" entries (each with its grouped tokens), and the separate self-issued/other section.
+function DomainManagement({
+  domains,
+  connections,
+}: {
+  domains: DomainInfo[]
+  connections: OAuthConnection[]
+}) {
+  const grouped = new Map<string, OAuthConnection[]>()
+  const orphans: OAuthConnection[] = [] // domain === "" (self-issued/confidential)
+  for (const c of connections) {
+    if (!c.domain) {
+      orphans.push(c)
+      continue
+    }
+    const arr = grouped.get(c.domain) ?? []
+    arr.push(c)
+    grouped.set(c.domain, arr)
+  }
+
+  return (
+    <>
+      <section className={styles.domainsSection}>
+        <h3 className={styles.sectionTitle}>Trusted domains</h3>
+        <AddDomainForm />
+        {domains.length === 0 ? (
+          <p className={styles.hint} data-testid="domains-empty">
+            No trusted domains configured. Add one to allow connections from it.
+          </p>
+        ) : (
+          domains.map((d) => (
+            <DomainCard key={d.id} domain={d} tokens={grouped.get(d.domain) ?? []} />
+          ))
+        )}
+      </section>
+
+      <section className={styles.selfSection} data-testid="self-issued-section">
+        <h3 className={styles.sectionTitle}>Self-issued &amp; other tokens</h3>
+        {orphans.length === 0 ? (
+          <p className={styles.hint}>No self-issued tokens.</p>
+        ) : (
+          <TokensTable tokens={orphans} />
+        )}
+      </section>
+    </>
+  )
+}
+
+// validTtl: a per-domain TTL is finite and non-negative (0 = unset → the finite global
+// default; no indefinite). A blank field is 0 (use the default).
+function parseTtl(v: string): number | null {
+  if (v.trim() === '') return 0
+  const n = Number(v)
+  if (!Number.isInteger(n) || n < 0) return null
+  return n
+}
+
+function AddDomainForm() {
+  const queryClient = useQueryClient()
+  const { add: addToast } = useToast()
+  const [domain, setDomain] = useState('')
+  const [accessTtl, setAccessTtl] = useState('')
+  const [refreshTtl, setRefreshTtl] = useState('')
+  const [consent, setConsent] = useState('')
+
+  const access = parseTtl(accessTtl)
+  const refresh = parseTtl(refreshTtl)
+  const valid = domain.trim() !== '' && access !== null && refresh !== null
+
+  const create = useMutation({
+    mutationFn: () =>
+      createDomain({
+        domain: domain.trim(),
+        accessTtlSeconds: access ?? 0,
+        refreshTtlSeconds: refresh ?? 0,
+        consent: consent === '' ? undefined : consent,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
+      addToast({ level: 'warn', text: `Added trusted domain ${domain.trim()}.` })
+      setDomain('')
+      setAccessTtl('')
+      setRefreshTtl('')
+      setConsent('')
+    },
+    onError: (e) => {
+      addToast({
+        level: 'warn',
+        text: e instanceof Error ? e.message : 'Failed to add domain.',
+      })
+    },
+  })
+
+  return (
+    <form
+      className={styles.domainForm}
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (valid) create.mutate()
+      }}
+    >
+      <input
+        className={styles.domainInput}
+        placeholder="trusted domain (e.g. connector.example.com)"
+        value={domain}
+        onChange={(e) => setDomain(e.target.value)}
+        data-testid="domain-add-identifier"
+        aria-label="Domain identifier"
+      />
+      <input
+        className={styles.ttlInput}
+        placeholder="access TTL (s)"
+        value={accessTtl}
+        onChange={(e) => setAccessTtl(e.target.value)}
+        data-testid="domain-add-access-ttl"
+        aria-label="Access TTL seconds"
+        aria-invalid={access === null}
+      />
+      <input
+        className={styles.ttlInput}
+        placeholder="refresh TTL (s)"
+        value={refreshTtl}
+        onChange={(e) => setRefreshTtl(e.target.value)}
+        data-testid="domain-add-refresh-ttl"
+        aria-label="Refresh TTL seconds"
+        aria-invalid={refresh === null}
+      />
+      <input
+        className={styles.consentInput}
+        type="password"
+        autoComplete="off"
+        placeholder="consent (optional, write-only)"
+        value={consent}
+        onChange={(e) => setConsent(e.target.value)}
+        data-testid="domain-add-consent"
+        aria-label="Per-domain consent (write-only)"
+      />
+      <button
+        type="submit"
+        className={styles.issue}
+        disabled={!valid || create.isPending}
+        data-testid="domain-add-submit"
+      >
+        {create.isPending ? 'Adding…' : 'Add domain'}
+      </button>
+      {!valid && (domain !== '' || accessTtl !== '' || refreshTtl !== '') && (
+        <span className={styles.invalid}>
+          A domain is required; TTLs must be whole non-negative seconds (0 = default).
+        </span>
+      )}
+    </form>
+  )
+}
+
+function fmtTtl(seconds: number): string {
+  if (seconds <= 0) return 'default'
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`
+  if (seconds % 60 === 0) return `${seconds / 60}m`
+  return `${seconds}s`
+}
+
+function DomainCard({ domain, tokens }: { domain: DomainInfo; tokens: OAuthConnection[] }) {
+  const queryClient = useQueryClient()
+  const { add: addToast } = useToast()
+  const [editing, setEditing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const del = useMutation({
+    mutationFn: () => deleteDomain(domain.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
+      void queryClient.invalidateQueries({ queryKey: OAUTH_CONNECTIONS_KEY })
+      addToast({ level: 'warn', text: `Deleted ${domain.domain} (its tokens were revoked).` })
+    },
+    onError: (e) =>
+      addToast({ level: 'warn', text: e instanceof Error ? e.message : 'Delete failed.' }),
+  })
+
+  return (
+    <div className={styles.domainCard} data-testid={`domain-row-${domain.domain}`}>
+      <div className={styles.domainHeader}>
+        <span className={styles.domainName}>{domain.domain}</span>
+        <span className={styles.domainTtl}>
+          access {fmtTtl(domain.access_ttl_seconds)} · refresh {fmtTtl(domain.refresh_ttl_seconds)}
+        </span>
+        <span
+          className={domain.consent_set ? styles.consentSet : styles.consentUnset}
+          data-testid={`domain-consent-${domain.domain}`}
+        >
+          consent: {domain.consent_set ? 'Set' : 'Not set'}
+        </span>
+        <span className={styles.domainActions}>
+          <button
+            className={styles.cancel}
+            onClick={() => setEditing((v) => !v)}
+            data-testid={`domain-edit-${domain.domain}`}
+          >
+            {editing ? 'Close' : 'Edit'}
+          </button>
+          {confirmDelete ? (
+            <>
+              <button
+                className={styles.danger}
+                disabled={del.isPending}
+                onClick={() => del.mutate()}
+                data-testid={`domain-delete-confirm-${domain.domain}`}
+              >
+                {del.isPending ? 'Deleting…' : 'Confirm delete'}
+              </button>
+              <button className={styles.cancel} onClick={() => setConfirmDelete(false)}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              className={styles.revoke}
+              onClick={() => setConfirmDelete(true)}
+              data-testid={`domain-delete-${domain.domain}`}
+            >
+              Delete
+            </button>
+          )}
+        </span>
+      </div>
+
+      {editing && <EditDomainForm domain={domain} onDone={() => setEditing(false)} />}
+
+      <div className={styles.domainTokens} data-testid={`domain-tokens-${domain.domain}`}>
+        {tokens.length === 0 ? (
+          <p className={styles.hintSmall}>No active tokens for this domain.</p>
+        ) : (
+          <TokensTable tokens={tokens} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function EditDomainForm({ domain, onDone }: { domain: DomainInfo; onDone: () => void }) {
+  const queryClient = useQueryClient()
+  const { add: addToast } = useToast()
+  const [accessTtl, setAccessTtl] = useState(String(domain.access_ttl_seconds || ''))
+  const [refreshTtl, setRefreshTtl] = useState(String(domain.refresh_ttl_seconds || ''))
+  const [consent, setConsent] = useState('')
+  const [clear, setClear] = useState(false)
+
+  const access = parseTtl(accessTtl)
+  const refresh = parseTtl(refreshTtl)
+  const valid = access !== null && refresh !== null
+
+  const save = useMutation({
+    mutationFn: () =>
+      updateDomain({
+        id: domain.id,
+        accessTtlSeconds: access ?? 0,
+        refreshTtlSeconds: refresh ?? 0,
+        // write-only consent: cleared, set to a new value, or left unchanged.
+        setConsent: clear ? '' : consent === '' ? undefined : consent,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
+      addToast({ level: 'warn', text: `Updated ${domain.domain}.` })
+      onDone()
+    },
+    onError: (e) =>
+      addToast({ level: 'warn', text: e instanceof Error ? e.message : 'Update failed.' }),
+  })
+
+  return (
+    <form
+      className={styles.domainForm}
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (valid) save.mutate()
+      }}
+    >
+      <input
+        className={styles.ttlInput}
+        value={accessTtl}
+        placeholder="access TTL (s)"
+        onChange={(e) => setAccessTtl(e.target.value)}
+        data-testid={`domain-edit-access-ttl-${domain.domain}`}
+        aria-label="Edit access TTL seconds"
+        aria-invalid={access === null}
+      />
+      <input
+        className={styles.ttlInput}
+        value={refreshTtl}
+        placeholder="refresh TTL (s)"
+        onChange={(e) => setRefreshTtl(e.target.value)}
+        data-testid={`domain-edit-refresh-ttl-${domain.domain}`}
+        aria-label="Edit refresh TTL seconds"
+        aria-invalid={refresh === null}
+      />
+      <input
+        className={styles.consentInput}
+        type="password"
+        autoComplete="off"
+        placeholder="new consent (write-only)"
+        value={consent}
+        disabled={clear}
+        onChange={(e) => setConsent(e.target.value)}
+        data-testid={`domain-edit-consent-${domain.domain}`}
+        aria-label="Set per-domain consent (write-only)"
+      />
+      <label className={styles.clearConsent}>
+        <input
+          type="checkbox"
+          checked={clear}
+          onChange={(e) => setClear(e.target.checked)}
+          data-testid={`domain-edit-clear-consent-${domain.domain}`}
+        />
+        clear consent
+      </label>
+      <button
+        type="submit"
+        className={styles.issue}
+        disabled={!valid || save.isPending}
+        data-testid={`domain-edit-save-${domain.domain}`}
+      >
+        {save.isPending ? 'Saving…' : 'Save'}
+      </button>
+    </form>
+  )
+}
+
+function TokensTable({ tokens }: { tokens: OAuthConnection[] }) {
+  return (
+    <table className={styles.table}>
+      <thead>
+        <tr>
+          <th>Client</th>
+          <th>Principal</th>
+          <th>Scope</th>
+          <th>Issued</th>
+          <th>Access expires</th>
+          <th>Series</th>
+          <th aria-label="Actions" />
+        </tr>
+      </thead>
+      <tbody>
+        {tokens.map((c) => (
+          <ConnectionRow key={c.series_id} conn={c} />
+        ))}
+      </tbody>
+    </table>
   )
 }
 
@@ -174,13 +513,14 @@ function IssueTokenButton({
   const issue = useMutation({
     mutationFn: () => issueSelfToken(),
     onSuccess: (t) => onIssued(t),
-    onError: (e) => {
-      const text =
-        e instanceof OAuthDeniedError
-          ? e.message
-          : 'Failed to generate a CLI token.'
-      addToast({ level: 'warn', text })
-    },
+    onError: (e) =>
+      addToast({
+        level: 'warn',
+        text:
+          e instanceof OAuthDeniedError
+            ? e.message
+            : 'Failed to generate a CLI token.',
+      }),
   })
   return (
     <button
@@ -195,8 +535,7 @@ function IssueTokenButton({
 }
 
 // IssuedTokenPanel shows the freshly minted token ONCE with a copy button and a
-// warning that it will not be shown again. The operator pastes it into their CLI
-// client config (`shoka-cli auth`). Dismissing clears it from the page state.
+// warning that it will not be shown again.
 function IssuedTokenPanel({
   token,
   onDismiss,
@@ -269,7 +608,7 @@ function ConnectionRow({ conn }: { conn: OAuthConnection }) {
   const status = expiryStatus(conn.access_expiry)
 
   return (
-    <tr>
+    <tr data-testid={`token-row-${conn.series_id_short}`}>
       <td className={styles.client} title={conn.client_id}>
         {clientDomain(conn.client_id)}
       </td>

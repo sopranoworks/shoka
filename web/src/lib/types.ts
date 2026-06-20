@@ -99,12 +99,33 @@ export interface OAuthConnection {
   // all-access (every DCR/self-issued token today), or a namespace grant for a
   // future pre-issued scoped token. Non-secret; shown in the connections table.
   scope: string
+  // The trusted-"domain" entry this connection groups under (B-71 Stage 2d) — the
+  // matched entry's identifier; "" for the operator self-issued / confidential /
+  // untrusted-leftover section. Non-secret.
+  domain: string
 }
 
 // The OAUTH_LIST response payload (mirrors Go's ui.OAuthListPayload). The slice
 // is always present (possibly empty — the management view's empty state).
 export interface OAuthListPayload {
   connections: OAuthConnection[]
+}
+
+// DomainInfo is the no-secret view of a "domain" RegistrationEntry (B-71 Stage 2d):
+// the trusted-domain identifier, its per-domain access/refresh TTL in seconds (0 =
+// unset → the finite global default), and whether a per-domain consent is SET. The
+// consent VALUE/hash is NEVER sent — only the set/unset indicator (Stage 0/2b).
+export interface DomainInfo {
+  id: string
+  domain: string
+  access_ttl_seconds: number
+  refresh_ttl_seconds: number
+  consent_set: boolean
+}
+
+// The DOMAIN_LIST response payload (mirrors Go's ui.DomainListPayload).
+export interface DomainListPayload {
+  domains: DomainInfo[]
 }
 
 // The OAUTH_ISSUE_SELF response payload (mirrors Go's ui.OAuthIssueSelfPayload):

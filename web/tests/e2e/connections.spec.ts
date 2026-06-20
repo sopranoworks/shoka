@@ -28,15 +28,14 @@ test('lists the seeded connection by client domain + principal, with no secret o
   await expect(page.getByText('Op Erator')).toBeVisible()
   await expect(page.getByText('op@example.test')).toBeVisible()
 
-  // No secret on screen: no token VALUE anywhere in the rendered page. The
-  // "Generate CLI token" admin affordance (B-46b "token to self") is a BUTTON LABEL,
-  // not a secret — strip it so this no-secret assertion stays precise (the actual
-  // access/refresh-token guard is the frame check below).
-  const body = ((await page.locator('body').textContent()) ?? '').replace(
-    /Generate CLI token/g,
-    '',
-  )
-  expect(body).not.toMatch(/token/i)
+  // No secret VALUE on screen. Since B-71 Stage 2d the management screen is the
+  // grouped domain view, whose headings legitimately contain the WORD "token"
+  // ("Self-issued & other tokens", "No active tokens for this domain"), so a blunt
+  // /token/i body scan no longer expresses "no secret". The only place a token
+  // VALUE ever renders is the display-once issued-token panel (role="status"),
+  // shown after Generate — which this test never clicks; its absence is the precise
+  // on-screen guard. The authoritative guard is the wire-frame check below.
+  await expect(page.getByRole('status')).toHaveCount(0)
 
   // No secret in the wire frames either: the OAUTH_LIST response arrived, and no
   // frame carries an access/refresh token field or value.
@@ -80,8 +79,11 @@ test('per-row revoke is inline-confirm gated, and the row drops on confirm', asy
   const confirm = page.getByRole('button', { name: 'Confirm revoke' })
   await expect(confirm).toBeVisible()
 
-  // Confirm cuts exactly that connection; the row drops and the empty state shows.
+  // Confirm cuts exactly that connection; the row drops. The seeded connection's
+  // CIMD host (connector.example.com) is a subdomain of the config-seeded trusted
+  // "example.com" domain, so it grouped under that domain card (B-71 Stage 2d);
+  // revoking the only token leaves that domain's group empty.
   await confirm.click()
   await expect(row).toBeHidden()
-  await expect(page.getByText('No active OAuth connections.')).toBeVisible()
+  await expect(page.getByText('No active tokens for this domain.')).toBeVisible()
 })

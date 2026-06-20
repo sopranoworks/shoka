@@ -59,6 +59,23 @@ func (f *fakeOAuthStore) Revoke(seriesID string) error {
 	return nil
 }
 
+// B-71 Stage 2d: the fake has no dynamic "domain" registration store — these stubs satisfy
+// the extended OAuthConnectionStore interface for the basic OAUTH_LIST/REVOKE tests. The
+// DOMAIN_* + grouping tests use a REAL *oauthstore.Store instead.
+func (f *fakeOAuthStore) ListRegistrations() ([]oauthstore.RegistrationEntry, error) { return nil, nil }
+func (f *fakeOAuthStore) CreateRegistration(string, string, time.Time) (oauthstore.RegistrationEntry, error) {
+	return oauthstore.RegistrationEntry{}, nil
+}
+func (f *fakeOAuthStore) GetRegistration(string) (oauthstore.RegistrationEntry, error) {
+	return oauthstore.RegistrationEntry{}, oauthstore.ErrNotFound
+}
+func (f *fakeOAuthStore) UpdateRegistration(oauthstore.RegistrationEntry) error { return nil }
+func (f *fakeOAuthStore) DeleteRegistration(string) error                       { return nil }
+func (f *fakeOAuthStore) RevokeByDomain(string) (int, error)                    { return 0, nil }
+func (f *fakeOAuthStore) DomainEntryForClient(string) (oauthstore.RegistrationEntry, bool) {
+	return oauthstore.RegistrationEntry{}, false
+}
+
 func (f *fakeOAuthStore) RevokeByPrincipalEmail(email string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
