@@ -206,6 +206,47 @@ func (s *Store) RevokeByDomain(domain string) (int, error) {
 	return revoked, nil
 }
 
+// RevokeByClientID revokes every token series issued to an exact client_id (B-71 Stage 3): the
+// confidential-client delete cascade — deleting a confidential credential cuts the tokens it
+// issued so a revoked credential cannot keep authorizing. Returns the number revoked. One write
+// transaction; records collected during the scan and deleted after it.
+func (s *Store) RevokeByClientID(clientID string) (int, error) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return 0, nil
+	}
+	var revoked int
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		var dead []SeriesRecord
+		if err := tx.Bucket([]byte(seriesBucket)).ForEach(func(_, v []byte) error {
+			var rec SeriesRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("oauthstore: decode series: %w", err)
+			}
+			if rec.ClientID == clientID {
+				dead = append(dead, rec)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, rec := range dead {
+			if err := deleteSeries(tx, rec); err != nil {
+				return err
+			}
+		}
+		revoked = len(dead)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if revoked > 0 {
+		s.revocations.Add(int64(revoked))
+	}
+	return revoked, nil
+}
+
 // DomainEntryForClient returns the "domain" RegistrationEntry a client_id belongs to — the
 // seam the /authorize consent gate (VerifyConsent) and /token issuance (EffectiveTTL) use to
 // apply per-domain policy (B-71 Stage 2c). false when the client has no domain (operator

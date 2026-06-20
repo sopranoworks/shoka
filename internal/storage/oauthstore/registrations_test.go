@@ -1,7 +1,7 @@
 package oauthstore
 
 import (
-	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,12 +133,12 @@ func TestRegistrations_LenientDecodeReservedFields(t *testing.T) {
 		t.Fatalf("TTL/Consent/Secret must decode to nil when absent: %+v", got)
 	}
 
-	// Populated fields round-trip (TTL/Consent typed; Secret still a reserved raw placeholder).
+	// Populated fields round-trip (TTL/Consent/Secret all typed since B-71 Stage 3).
 	got.TTL = &EntryTTL{AccessSeconds: 3600, RefreshSeconds: 7_776_000}
 	got.SetConsent("the-domain-consent-secret")
-	got.Secret = json.RawMessage(`{"placeholder":"stage3"}`)
+	got.SetSecret("the-confidential-client-secret")
 	if err := s.UpdateRegistration(got); err != nil {
-		t.Fatalf("update with reserved fields: %v", err)
+		t.Fatalf("update with typed fields: %v", err)
 	}
 	reread, _ := s.GetRegistration(e.ID)
 	if reread.TTL == nil || reread.TTL.AccessSeconds != 3600 || reread.TTL.RefreshSeconds != 7_776_000 {
@@ -147,8 +147,15 @@ func TestRegistrations_LenientDecodeReservedFields(t *testing.T) {
 	if reread.Consent == nil || reread.Consent.Hash == "" {
 		t.Fatalf("Consent hash not preserved: %+v", reread.Consent)
 	}
-	if string(reread.Secret) != `{"placeholder":"stage3"}` {
-		t.Fatalf("Secret not preserved: %s", reread.Secret)
+	// The secret round-trips as a HASH only (never the raw value) and verifies constant-time.
+	if reread.Secret == nil || reread.Secret.Hash == "" {
+		t.Fatalf("Secret hash not preserved: %+v", reread.Secret)
+	}
+	if strings.Contains(reread.Secret.Hash, "the-confidential-client-secret") {
+		t.Fatalf("the raw secret must never appear at rest")
+	}
+	if !reread.VerifySecret("the-confidential-client-secret") || reread.VerifySecret("wrong") {
+		t.Fatalf("VerifySecret must accept the secret and reject a wrong one")
 	}
 
 	// A "future" record with an unknown key, written directly, still decodes (forward-compat).

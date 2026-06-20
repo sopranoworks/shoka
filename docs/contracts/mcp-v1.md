@@ -191,10 +191,23 @@ of being handed a static one.
 - **Consent:** approval at `/authorize` is **per-domain**: the submitted credential is
   verified (hashed, constant-time) against the connecting client's domain's own stored
   consent, set by the operator in the web UI. A domain with **no per-domain consent**,
-  or a client with **no domain entry**, **cannot be approved** — there is **no global
-  consent fallback** (B-71 Stage 2e retired the `consent_credential` config key). The
-  consent value is stored hashed and never returned. (Source: `internal/oauth/server.go`
-  `authorizeConsent`; `internal/storage/oauthstore` `VerifyConsent`.)
+  or a client with **no domain entry** (and not a confidential client, below),
+  **cannot be approved** — there is **no global consent fallback** (B-71 Stage 2e retired
+  the `consent_credential` config key). The consent value is stored hashed and never
+  returned. (Source: `internal/oauth/server.go` `authorizeConsent`;
+  `internal/storage/oauthstore` `VerifyConsent`.)
+- **Confidential pre-issued clients (Client ID + Secret) — B-71 Stage 3:** the operator
+  may **pre-issue a Client ID + Secret** from the web UI (super-user only) for a Claude.ai
+  custom connector. The secret is **shown once** and stored **hashed** (never retrievable);
+  the credential carries a **scope** (enforced by the tools/call namespace gate) and a
+  **finite expiry** (no indefinite). Such a client is **pre-authorized by issuance**, so
+  `/authorize` grants consent on approval **without a consent credential** — the gate is the
+  **secret at `/token`**, verified (`client_secret_basic` / `client_secret_post`,
+  constant-time) **in addition to the mandatory PKCE**. `token_endpoint_auth_methods_supported`
+  advertises these methods alongside `none`. Confidential auth is **additive** — the public
+  CIMD/DCR/self (PKCE-only) path is unchanged. (Source: `internal/oauth/server.go`
+  `grantAuthorizationCode`; `internal/storage/oauthstore` confidential entry;
+  `internal/ui/manager.go` `CLIENT_*` ops.)
 - **Enablement prerequisites (operator-supplied, names only):** the OAuth
   transport activates by **setting `server.mcp.oauth.listen`** (there is no
   separate enable flag — presence is the switch). A production deployment also

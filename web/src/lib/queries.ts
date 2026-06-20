@@ -3,6 +3,7 @@ import { wsClient } from './wsClient'
 import { flattenFilePaths } from './tree'
 import { listConnections } from './oauthOps'
 import { listDomains } from './domainOps'
+import { listConfidentialClients } from './confidentialOps'
 import type {
   ProjectInfo,
   FileNode,
@@ -39,6 +40,19 @@ export function useDomainsQuery(enabled = true) {
     queryKey: OAUTH_DOMAINS_KEY,
     enabled,
     queryFn: () => listDomains(),
+  })
+}
+
+// B-71 Stage 3: the confidential pre-issued clients (Client ID + Secret) for the
+// confidential-mode management screen. Admin-gated like the domains query; invalidated after an
+// issue/revoke. The secret is never in this list (only on the issue response, once).
+export const OAUTH_CLIENTS_KEY = ['oauth-confidential-clients'] as const
+
+export function useConfidentialClientsQuery(enabled = true) {
+  return useQuery({
+    queryKey: OAUTH_CLIENTS_KEY,
+    enabled,
+    queryFn: () => listConfidentialClients(),
   })
 }
 

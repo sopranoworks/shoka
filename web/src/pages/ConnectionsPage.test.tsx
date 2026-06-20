@@ -30,6 +30,13 @@ vi.mock('../lib/domainOps', async (importOriginal) => {
   return { ...actual, listDomains }
 })
 
+// B-71 Stage 3: the page also fetches confidential clients (the Confidential-clients section).
+const { listConfidentialClients } = vi.hoisted(() => ({ listConfidentialClients: vi.fn() }))
+vi.mock('../lib/confidentialOps', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/confidentialOps')>()
+  return { ...actual, listConfidentialClients }
+})
+
 import { ConnectionsPage } from './ConnectionsPage'
 import { OAuthDeniedError } from '../lib/oauthOps'
 
@@ -73,6 +80,8 @@ describe('ConnectionsPage', () => {
     issueSelfToken.mockReset()
     listDomains.mockReset()
     listDomains.mockResolvedValue([]) // default: no trusted domains
+    listConfidentialClients.mockReset()
+    listConfidentialClients.mockResolvedValue([]) // default: no confidential clients
   })
 
   it('lists connections by client domain, principal, and short series id (no secrets)', async () => {

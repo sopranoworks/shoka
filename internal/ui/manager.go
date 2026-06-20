@@ -149,6 +149,12 @@ const (
 	MsgDomainCreate MessageType = "DOMAIN_CREATE"
 	MsgDomainUpdate MessageType = "DOMAIN_UPDATE"
 	MsgDomainDelete MessageType = "DOMAIN_DELETE"
+	// B-71 Stage 3: confidential-mode management — issue / list / revoke pre-issued client
+	// credentials (Client ID + Secret), admin-gated. The secret is shown ONCE on issue, never
+	// returned by list.
+	MsgClientIssue  MessageType = "CLIENT_ISSUE"
+	MsgClientList   MessageType = "CLIENT_LIST"
+	MsgClientRevoke MessageType = "CLIENT_REVOKE"
 	// MsgNotify carries one notify.Event pushed from the server to the browser
 	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
 	// {type,payload} envelope as every other message, so existing consumers that
@@ -491,6 +497,12 @@ type OAuthConnectionStore interface {
 	// DomainEntryForClient returns the "domain" entry a connection's client_id belongs to (for
 	// grouping); ok=false for a self-issued/confidential or untrusted-leftover connection.
 	DomainEntryForClient(clientID string) (oauthstore.RegistrationEntry, bool)
+	// IssueConfidentialClient mints a confidential pre-issued client (B-71 Stage 3): a client_id
+	// + a high-entropy secret; only the hash is stored; the RAW secret is returned ONCE.
+	IssueConfidentialClient(scope string, validity time.Duration, now time.Time) (oauthstore.RegistrationEntry, string, error)
+	// RevokeByClientID revokes every token series issued to a client_id (the confidential-client
+	// delete cascade). Returns the number revoked.
+	RevokeByClientID(clientID string) (int, error)
 }
 
 // OAuthSelfIssuer mints a fresh access token bound to the current-mode operator
@@ -672,6 +684,9 @@ var wsLevels = map[MessageType]wsOp{
 	MsgDomainCreate: {authz.LevelAdmin, true},
 	MsgDomainUpdate: {authz.LevelAdmin, true},
 	MsgDomainDelete: {authz.LevelAdmin, true},
+	MsgClientIssue:  {authz.LevelAdmin, true},
+	MsgClientList:   {authz.LevelAdmin, true},
+	MsgClientRevoke: {authz.LevelAdmin, true},
 
 	MsgAdminListUsers:      {authz.LevelAdmin, true},
 	MsgAdminSetUserScope:   {authz.LevelAdmin, true},
@@ -888,6 +903,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleDomainUpdate(client, wsMsg.Payload)
 		case MsgDomainDelete:
 			m.handleDomainDelete(client, wsMsg.Payload)
+		case MsgClientList:
+			m.handleConfidentialList(client)
+		case MsgClientIssue:
+			m.handleConfidentialIssue(client, wsMsg.Payload)
+		case MsgClientRevoke:
+			m.handleConfidentialRevoke(client, wsMsg.Payload)
 		case MsgAdminListUsers:
 			m.handleAdminListUsers(client)
 		case MsgAdminSetUserScope:
@@ -1765,6 +1786,140 @@ func (m *Manager) handleDomainDelete(client *wsClient, payload json.RawMessage) 
 		return
 	}
 	client.sendResponse(MsgDomainDelete, DomainDeletePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
+}
+
+// --- Confidential-client management (B-71 Stage 3) --------------------------
+
+// ConfidentialClientInfo is the no-secret view of a "confidential" RegistrationEntry: its issued
+// client_id, pre-issued scope, finite credential expiry, and creation time. The secret/hash is
+// NEVER returned (only the issue response carries the raw secret, once).
+type ConfidentialClientInfo struct {
+	ID        string `json:"id"`
+	ClientID  string `json:"client_id"`
+	Scope     string `json:"scope"`
+	ExpiresAt string `json:"expires_at"` // RFC3339
+	CreatedAt string `json:"created_at"` // RFC3339
+}
+
+// ConfidentialListPayload is the CLIENT_LIST response (newest first).
+type ConfidentialListPayload struct {
+	Clients []ConfidentialClientInfo `json:"clients"`
+}
+
+// ConfidentialIssueRequest issues a confidential client: a pre-issued scope + a finite validity
+// in seconds (no indefinite).
+type ConfidentialIssueRequest struct {
+	Scope           string `json:"scope"`
+	ValiditySeconds int64  `json:"validity_seconds"`
+}
+
+// ConfidentialIssuePayload returns the no-secret info PLUS the raw client_secret — shown ONCE at
+// issuance and never persisted or returned again.
+type ConfidentialIssuePayload struct {
+	ConfidentialClientInfo
+	ClientSecret string `json:"client_secret"`
+}
+
+// ConfidentialRevokeRequest / ConfidentialRevokePayload — revoke a confidential client (deleting
+// its entry and cascade-revoking the tokens it issued).
+type ConfidentialRevokeRequest struct {
+	ID string `json:"id"`
+}
+type ConfidentialRevokePayload struct {
+	ID            string `json:"id"`
+	RevokedTokens int    `json:"revoked_tokens"`
+	Status        string `json:"status"`
+}
+
+func confidentialInfoOf(e oauthstore.RegistrationEntry) ConfidentialClientInfo {
+	return ConfidentialClientInfo{
+		ID:        e.ID,
+		ClientID:  e.Identifier,
+		Scope:     e.Scope,
+		ExpiresAt: e.ExpiresAt.UTC().Format(time.RFC3339),
+		CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func (m *Manager) handleConfidentialList(client *wsClient) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	entries, err := m.oauth.ListRegistrations()
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to list confidential clients: %v", err))
+		return
+	}
+	out := make([]ConfidentialClientInfo, 0)
+	for _, e := range entries {
+		if e.RegistrationMode == oauthstore.RegistrationModeConfidential {
+			out = append(out, confidentialInfoOf(e))
+		}
+	}
+	// Newest first (CreatedAt is RFC3339, so lexical order is chronological).
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	client.sendResponse(MsgClientList, ConfidentialListPayload{Clients: out})
+}
+
+func (m *Manager) handleConfidentialIssue(client *wsClient, payload json.RawMessage) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	var p ConfidentialIssueRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for CLIENT_ISSUE")
+		return
+	}
+	if strings.TrimSpace(p.Scope) == "" {
+		client.sendError("CLIENT_ISSUE requires a scope")
+		return
+	}
+	if p.ValiditySeconds <= 0 {
+		client.sendError("CLIENT_ISSUE requires a finite positive validity (no indefinite)")
+		return
+	}
+	entry, secret, err := m.oauth.IssueConfidentialClient(p.Scope, time.Duration(p.ValiditySeconds)*time.Second, time.Now())
+	if err != nil {
+		client.sendError(fmt.Sprintf("Failed to issue confidential client: %v", err))
+		return
+	}
+	// The raw secret crosses /ws/ui ONCE here (admin-gated), like OAUTH_ISSUE_SELF; it is never
+	// logged and never returned again.
+	client.sendResponse(MsgClientIssue, ConfidentialIssuePayload{
+		ConfidentialClientInfo: confidentialInfoOf(entry),
+		ClientSecret:           secret,
+	})
+}
+
+func (m *Manager) handleConfidentialRevoke(client *wsClient, payload json.RawMessage) {
+	if !m.oauthAvailable(client) {
+		return
+	}
+	var p ConfidentialRevokeRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for CLIENT_REVOKE")
+		return
+	}
+	if p.ID == "" {
+		client.sendError("CLIENT_REVOKE requires an id")
+		return
+	}
+	entry, err := m.oauth.GetRegistration(p.ID)
+	if err != nil {
+		client.sendError("Confidential client not found")
+		return
+	}
+	if entry.RegistrationMode != oauthstore.RegistrationModeConfidential {
+		client.sendError("not a confidential client")
+		return
+	}
+	// Cascade: revoking the credential cuts the tokens it issued, then deletes the entry.
+	revoked, _ := m.oauth.RevokeByClientID(entry.Identifier)
+	if err := m.oauth.DeleteRegistration(p.ID); err != nil {
+		client.sendError(fmt.Sprintf("Failed to revoke confidential client: %v", err))
+		return
+	}
+	client.sendResponse(MsgClientRevoke, ConfidentialRevokePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
 }
 
 // handleOAuthIssueSelf mints a fresh access token bound to the current-mode

@@ -78,10 +78,18 @@ func assertCommonASFields(t *testing.T, m map[string]any) {
 	if len(pkce) != 1 || pkce[0] != "S256" {
 		t.Fatalf("code_challenge_methods_supported must be [S256], got %v", m["code_challenge_methods_supported"])
 	}
-	// Public client: token_endpoint_auth_methods_supported is ["none"] in BOTH modes.
+	// token_endpoint_auth_methods_supported: "none" (public CIMD/DCR/self clients) PLUS the
+	// confidential methods (B-71 Stage 3) — client_secret_basic / client_secret_post — in BOTH
+	// registration modes.
 	team, _ := m["token_endpoint_auth_methods_supported"].([]any)
-	if len(team) != 1 || team[0] != "none" {
-		t.Fatalf("token_endpoint_auth_methods_supported must be [none], got %v", m["token_endpoint_auth_methods_supported"])
+	want := map[string]bool{"none": true, "client_secret_basic": true, "client_secret_post": true}
+	if len(team) != len(want) {
+		t.Fatalf("token_endpoint_auth_methods_supported must be %v, got %v", want, m["token_endpoint_auth_methods_supported"])
+	}
+	for _, v := range team {
+		if s, _ := v.(string); !want[s] {
+			t.Fatalf("unexpected token_endpoint_auth_method %v in %v", v, team)
+		}
 	}
 }
 

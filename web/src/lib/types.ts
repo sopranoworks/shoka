@@ -128,6 +128,29 @@ export interface DomainListPayload {
   domains: DomainInfo[]
 }
 
+// ConfidentialClientInfo is the no-secret view of a "confidential" RegistrationEntry (B-71 Stage
+// 3): the issued client_id, its pre-issued scope, its finite credential expiry (RFC3339), and
+// creation time. The secret is NEVER sent here — only the issue response carries it, once.
+export interface ConfidentialClientInfo {
+  id: string
+  client_id: string
+  scope: string
+  expires_at: string
+  created_at: string
+}
+
+// The CLIENT_LIST response payload (mirrors Go's ui.ConfidentialListPayload).
+export interface ConfidentialListPayload {
+  clients: ConfidentialClientInfo[]
+}
+
+// The CLIENT_ISSUE response payload (mirrors Go's ui.ConfidentialIssuePayload): the no-secret info
+// PLUS the raw client_secret — shown ONCE at issuance, never persisted or returned again. The
+// client_id + client_secret are what the operator pastes into Claude.ai's advanced settings.
+export interface ConfidentialIssuePayload extends ConfidentialClientInfo {
+  client_secret: string
+}
+
 // The OAUTH_ISSUE_SELF response payload (mirrors Go's ui.OAuthIssueSelfPayload):
 // the freshly minted access token for the operator and its expiry. THIS IS THE ONE
 // SECRET that crosses /ws/ui — shown once so the operator can copy it into their

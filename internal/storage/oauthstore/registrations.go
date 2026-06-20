@@ -43,13 +43,20 @@ const migrationKeyRegistrationsSeeded = "registrations_seeded_v1"
 // Scope-field precedent (absent JSON key ⇒ zero value; unknown keys are ignored by the
 // lenient decoder).
 type RegistrationEntry struct {
-	ID               string          `json:"id"`
-	RegistrationMode string          `json:"registration_mode"` // "dcr" | "confidential"
-	Identifier       string          `json:"identifier"`        // domain mode: the trusted domain; confidential: the client identifier
-	CreatedAt        time.Time       `json:"created_at"`
-	TTL              *EntryTTL       `json:"ttl,omitempty"`     // B-71 Stage 2b: per-domain access/refresh TTL
-	Consent          *EntryConsent   `json:"consent,omitempty"` // B-71 Stage 2b: per-domain consent (HASHED)
-	Secret           json.RawMessage `json:"secret,omitempty"`  // RESERVED — Stage 3 confidential material (hashed)
+	ID               string        `json:"id"`
+	RegistrationMode string        `json:"registration_mode"` // "domain" | "confidential"
+	Identifier       string        `json:"identifier"`        // domain mode: the trusted domain; confidential: the issued client_id
+	CreatedAt        time.Time     `json:"created_at"`
+	TTL              *EntryTTL     `json:"ttl,omitempty"`     // B-71 Stage 2b: per-domain access/refresh TTL
+	Consent          *EntryConsent `json:"consent,omitempty"` // B-71 Stage 2b: per-domain consent (HASHED)
+	// B-71 Stage 3 — confidential-client material. Secret holds the HASHED client secret (never
+	// raw, Stage 0 discipline); Scope is the pre-issued authorization grant that drives the
+	// tools/call namespace gate; ExpiresAt is the credential's FINITE validity (no indefinite —
+	// /authorize and /token reject the credential after it). All omitempty, so a domain entry (or
+	// a pre-Stage-3 record) decodes with them nil/zero — no breaking migration.
+	Secret    *EntrySecret `json:"secret,omitempty"`
+	Scope     string       `json:"scope,omitempty"`
+	ExpiresAt time.Time    `json:"expires_at,omitempty"`
 }
 
 // EntryTTL is a "domain" entry's per-domain token lifetime (B-71 Stage 2b), in whole
@@ -116,6 +123,40 @@ func (e RegistrationEntry) VerifyConsent(presented string) bool {
 	return subtle.ConstantTimeCompare([]byte(hashHandle(presented)), []byte(e.Consent.Hash)) == 1
 }
 
+// EntrySecret is a confidential entry's client secret (B-71 Stage 3). Only the HASH is stored
+// (Stage 0 discipline — hashHandle/SHA-256); the raw secret is shown to the operator once at
+// issuance and never persisted or returned again.
+type EntrySecret struct {
+	Hash string `json:"hash,omitempty"` // hashHandle(secret); NEVER the raw secret
+}
+
+// SetSecret stores a confidential entry's client secret HASHED (hashHandle; Stage 0). An empty
+// secret clears it. The raw value is never persisted.
+func (e *RegistrationEntry) SetSecret(secret string) {
+	if secret == "" {
+		e.Secret = nil
+		return
+	}
+	e.Secret = &EntrySecret{Hash: hashHandle(secret)}
+}
+
+// VerifySecret reports whether presented matches the entry's stored client-secret hash
+// (constant-time). An entry with no secret, or an empty presented value, never verifies.
+func (e RegistrationEntry) VerifySecret(presented string) bool {
+	if e.Secret == nil || e.Secret.Hash == "" || presented == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(hashHandle(presented)), []byte(e.Secret.Hash)) == 1
+}
+
+// CredentialExpired reports whether a confidential entry's finite credential validity has passed
+// (B-71 Stage 3, no-indefinite). A zero ExpiresAt is treated as expired (a confidential entry must
+// always carry a finite expiry — IssueConfidentialClient guarantees it), so a malformed entry
+// fails closed.
+func (e RegistrationEntry) CredentialExpired(now time.Time) bool {
+	return e.ExpiresAt.IsZero() || !now.Before(e.ExpiresAt)
+}
+
 func validRegistrationMode(m string) bool {
 	return m == RegistrationModeDomain || m == RegistrationModeConfidential
 }
@@ -146,6 +187,76 @@ func (s *Store) CreateRegistration(mode, identifier string, now time.Time) (Regi
 		return RegistrationEntry{}, err
 	}
 	return entry, nil
+}
+
+// IssueConfidentialClient mints a confidential ("confidential"-mode) registration entry (B-71
+// Stage 3): a fresh opaque client_id (the Identifier) + a high-entropy client secret. Only the
+// secret HASH is stored (Stage 0); the RAW secret is returned ONCE for the operator to copy and
+// is never persisted or retrievable again. scope is the pre-issued authorization grant (drives
+// the tools/call gate); validity is the credential's FINITE lifetime (must be > 0 — no
+// indefinite). Persisted in one atomic transaction.
+func (s *Store) IssueConfidentialClient(scope string, validity time.Duration, now time.Time) (entry RegistrationEntry, rawSecret string, err error) {
+	if validity <= 0 {
+		return RegistrationEntry{}, "", fmt.Errorf("oauthstore: confidential client validity must be positive (no indefinite)")
+	}
+	id, err := NewHandle()
+	if err != nil {
+		return RegistrationEntry{}, "", err
+	}
+	clientID, err := NewHandle()
+	if err != nil {
+		return RegistrationEntry{}, "", err
+	}
+	rawSecret, err = NewHandle()
+	if err != nil {
+		return RegistrationEntry{}, "", err
+	}
+	entry = RegistrationEntry{
+		ID:               id,
+		RegistrationMode: RegistrationModeConfidential,
+		Identifier:       clientID,
+		CreatedAt:        now.UTC(),
+		Scope:            strings.TrimSpace(scope),
+		ExpiresAt:        now.UTC().Add(validity),
+	}
+	entry.SetSecret(rawSecret)
+	val, err := json.Marshal(entry)
+	if err != nil {
+		return RegistrationEntry{}, "", fmt.Errorf("oauthstore: encode confidential entry: %w", err)
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(registrationsBucket)).Put([]byte(id), val)
+	}); err != nil {
+		return RegistrationEntry{}, "", err
+	}
+	return entry, rawSecret, nil
+}
+
+// ConfidentialClient resolves an issued client_id to its confidential registration entry (B-71
+// Stage 3) — the /authorize resolution + /token authentication seam. Returns false if no
+// confidential entry carries that Identifier. (A bucket scan; the confidential set is small —
+// operator-issued credentials, not per-connection.)
+func (s *Store) ConfidentialClient(clientID string) (RegistrationEntry, bool) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return RegistrationEntry{}, false
+	}
+	var found RegistrationEntry
+	ok := false
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(registrationsBucket))
+		return b.ForEach(func(_, v []byte) error {
+			var e RegistrationEntry
+			if json.Unmarshal(v, &e) != nil {
+				return nil
+			}
+			if e.RegistrationMode == RegistrationModeConfidential && e.Identifier == clientID {
+				found, ok = e, true
+			}
+			return nil
+		})
+	})
+	return found, ok
 }
 
 // ListRegistrations returns every entry (bbolt key order = the opaque id).

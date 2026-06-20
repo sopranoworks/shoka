@@ -50,6 +50,11 @@ type ClientMetadata struct {
 	GrantTypes              []string `json:"grant_types"`
 	ResponseTypes           []string `json:"response_types"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	// Confidential marks a B-71 Stage 3 confidential pre-issued client (resolved from the dynamic
+	// store, NOT a fetched CIMD document). It is never parsed from or serialized to a metadata
+	// document (json:"-"); it is an internal signal so /authorize accepts any https redirect_uri
+	// (a pre-issued credential has no fixed redirect; the client SECRET at /token is the gate).
+	Confidential bool `json:"-"`
 }
 
 const (
@@ -285,6 +290,14 @@ func RedirectURIAllowed(presented string, registered []string) bool {
 		}
 	}
 	return false
+}
+
+// isHTTPSURL reports whether raw is a well-formed absolute https URL with a host (B-71 Stage 3):
+// the minimal open-redirect guard for a confidential client's accept-any redirect_uri — any https
+// host is allowed, but a non-https or hostless URL is not.
+func isHTTPSURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && u.Scheme == "https" && u.Host != ""
 }
 
 // isLoopbackHost reports whether host is a loopback literal or "localhost".

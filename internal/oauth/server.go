@@ -144,6 +144,15 @@ type authRequest struct {
 // carried the former global consent into each seeded domain), the common path is a per-domain
 // match — unchanged for a seeded deployment.
 func (s *AuthServer) authorizeConsent(r *http.Request, clientID string) (oauthstore.Principal, bool) {
+	// B-71 Stage 3 — a confidential pre-issued client is PRE-AUTHORIZED by issuance (the operator
+	// created the credential), so consent is granted on the bare approve, with NO consent
+	// credential: the real gate is the client SECRET verified at /token (a code minted here is
+	// useless without the secret + the PKCE verifier). A non-existent or expired credential is not
+	// approved here — it is rejected earlier in resolveAuthorizeClient.
+	if conf, ok := s.store.ConfidentialClient(clientID); ok && !conf.CredentialExpired(s.now()) {
+		return s.boundPrincipal, true
+	}
+	// Domain mode — per-domain consent (B-71 Stage 2c/2e), no global fallback.
 	entry, ok := s.store.DomainEntryForClient(clientID)
 	if !ok || entry.Consent == nil {
 		return oauthstore.Principal{}, false
@@ -211,7 +220,12 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !RedirectURIAllowed(req.RedirectURI, md.RedirectURIs) {
+	// A confidential client (B-71 Stage 3) has no registered redirect_uris (a pre-issued credential
+	// has no fixed redirect); it accepts any https redirect_uri, which is bound to the code and
+	// re-checked at /token — the client SECRET is the load-bearing gate. Every other client binds
+	// to its registered/verified redirect_uris.
+	redirectOK := md.Confidential && isHTTPSURL(req.RedirectURI)
+	if !redirectOK && !RedirectURIAllowed(req.RedirectURI, md.RedirectURIs) {
 		lg.Warn("oauth authorize rejected",
 			"client_id", req.ClientID, "redirect_uri", req.RedirectURI,
 			"reason", "redirect-uri-not-registered")
@@ -313,6 +327,26 @@ func (s *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 //   - CIMD (the client_id is an https URL): fetch + verify the metadata document —
 //     unchanged from the pre-B-63 behaviour, including the self-diagnosing logging.
 func (s *AuthServer) resolveAuthorizeClient(w http.ResponseWriter, r *http.Request, lg *slog.Logger, clientID string) (*ClientMetadata, bool) {
+	// B-71 Stage 3 — a confidential client_id is opaque (like a DCR handle), so resolve it BEFORE
+	// the DCR path. An unknown or expired confidential credential is invalid_client. A confidential
+	// client accepts any https redirect_uri (no fixed redirect; the secret at /token is the gate).
+	if conf, ok := s.store.ConfidentialClient(clientID); ok {
+		if conf.CredentialExpired(s.now()) {
+			lg.Warn("oauth authorize rejected",
+				"client_id", clientID, "registration", "confidential", "reason", "confidential-credential-expired")
+			s.authError(w, "invalid_client", "client credential has expired")
+			return nil, false
+		}
+		lg.Info("oauth client resolved", "client_id", clientID, "registration", "confidential")
+		return &ClientMetadata{
+			ClientID:                clientID,
+			ClientName:              "confidential client",
+			GrantTypes:              []string{"authorization_code", "refresh_token"},
+			ResponseTypes:           []string{"code"},
+			TokenEndpointAuthMethod: "client_secret_post",
+			Confidential:            true,
+		}, true
+	}
 	if isDCRClientID(clientID) {
 		rc, err := s.store.GetClient(clientID)
 		if err != nil {
@@ -518,6 +552,13 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	clientID := r.PostFormValue("client_id")
 	redirectURI := r.PostFormValue("redirect_uri")
 	verifier := r.PostFormValue("code_verifier")
+	// B-71 Stage 3 — a confidential client may present its credentials via HTTP Basic
+	// (client_secret_basic): the username is the client_id, the password the secret. Accept the
+	// client_id from Basic when the body omits it, so a Basic-only confidential client resolves.
+	basicID, basicSecret, hasBasic := r.BasicAuth()
+	if clientID == "" && hasBasic {
+		clientID = basicID
+	}
 	if code == "" || clientID == "" || verifier == "" {
 		// Distinguish a missing PKCE verifier (the §2.2 "missing" outcome) from the
 		// other missing params, without logging any value.
@@ -536,7 +577,11 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	// RFC 6749). The CIMD path (client_id is an https URL) is untouched — it is not
 	// store-backed, so it never hits this check. The code is NOT consumed here: an
 	// unknown client should re-register, not burn the code on an error.
-	if isDCRClientID(clientID) {
+	// B-71 Stage 3 — resolve a confidential client up front (its client_id is opaque, like a DCR
+	// handle). The DCR-unknown check below is skipped for a confidential client (it is not in the
+	// DCR clients bucket); its secret + expiry are enforced after PKCE, below.
+	confEntry, isConfidential := s.store.ConfidentialClient(clientID)
+	if !isConfidential && isDCRClientID(clientID) {
 		if _, gerr := s.store.GetClient(clientID); gerr != nil {
 			lg.Warn("oauth token rejected",
 				"grant_type", "authorization_code", "client_id", clientID,
@@ -581,11 +626,42 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 		s.tokenError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
-	// DCR/CIMD tokens are all-access (Scope "*", the settled authz model — scoped
-	// access requires a future non-DCR pre-issued token). The tools/call authz gate
-	// reads this scope; "*" allows every namespace, today's behaviour.
+	// B-71 Stage 3 — confidential client authentication, REQUIRED IN ADDITION to the PKCE check
+	// above (defence in depth; the operator's higher-security choice). The presented secret comes
+	// from HTTP Basic (client_secret_basic) or the client_secret body param (client_secret_post);
+	// it is hash-compared constant-time to the stored hash. A missing/wrong secret, or an expired
+	// credential, is invalid_client (401). The token then carries the entry's pre-issued SCOPE
+	// (which the tools/call namespace gate enforces). The public/PKCE-only path is unchanged.
+	scope := "*"
+	if isConfidential {
+		if confEntry.CredentialExpired(s.now()) {
+			lg.Warn("oauth token rejected",
+				"grant_type", "authorization_code", "client_id", clientID,
+				"error", "invalid_client", "reason", "confidential-credential-expired")
+			s.tokenError(w, http.StatusUnauthorized, "invalid_client", "client credential has expired")
+			return
+		}
+		presentedSecret := r.PostFormValue("client_secret")
+		if hasBasic {
+			presentedSecret = basicSecret // client_secret_basic takes precedence
+		}
+		if !confEntry.VerifySecret(presentedSecret) {
+			reason := "confidential-secret-mismatch"
+			if presentedSecret == "" {
+				reason = "confidential-secret-missing"
+			}
+			lg.Warn("oauth token rejected",
+				"grant_type", "authorization_code", "client_id", clientID,
+				"error", "invalid_client", "reason", reason)
+			s.tokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+			return
+		}
+		scope = confEntry.Scope
+	}
+	// DCR/CIMD/self tokens stay all-access (Scope "*"); a confidential token carries its pre-issued
+	// scope. The tools/call authz gate reads this scope; "*" allows every namespace.
 	access, refresh := s.issuanceTTL(rec.ClientID) // per-domain TTL else the global finite default
-	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, "*", s.now(), access, refresh)
+	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, scope, s.now(), access, refresh)
 	if err != nil {
 		lg.Error("oauth token issuance failed",
 			"grant_type", "authorization_code", "client_id", rec.ClientID, "reason", "series-create-failed")
@@ -619,6 +695,29 @@ func (s *AuthServer) grantRefreshToken(w http.ResponseWriter, r *http.Request) {
 	// Per-domain TTL on rotation too: resolve the series' client (without rotating) to find
 	// its domain's EffectiveTTL, else the global finite defaults (B-71 Stage 2c).
 	rotateClientID, _ := s.store.RefreshClientID(refresh)
+	// B-71 Stage 3 — a confidential client re-authenticates on EVERY /token request, refresh
+	// included: verify its secret (Basic or body) and that the credential has not expired before
+	// rotating. A missing/wrong secret, or an expired credential, is invalid_client (401).
+	if confEntry, ok := s.store.ConfidentialClient(rotateClientID); ok {
+		if confEntry.CredentialExpired(s.now()) {
+			lg.Warn("oauth token rejected",
+				"grant_type", "refresh_token", "client_id", rotateClientID,
+				"error", "invalid_client", "reason", "confidential-credential-expired")
+			s.tokenError(w, http.StatusUnauthorized, "invalid_client", "client credential has expired")
+			return
+		}
+		presentedSecret := r.PostFormValue("client_secret")
+		if _, basicSecret, hasBasic := r.BasicAuth(); hasBasic {
+			presentedSecret = basicSecret
+		}
+		if !confEntry.VerifySecret(presentedSecret) {
+			lg.Warn("oauth token rejected",
+				"grant_type", "refresh_token", "client_id", rotateClientID,
+				"error", "invalid_client", "reason", "confidential-secret-mismatch")
+			s.tokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+			return
+		}
+	}
 	accessTTL, refreshTTL := s.issuanceTTL(rotateClientID)
 	series, err := s.store.Rotate(refresh, s.now(), accessTTL, refreshTTL)
 	if err != nil {

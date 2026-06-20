@@ -133,13 +133,16 @@ func AuthorizationServerMetadataHandler(cfg DiscoveryConfig) http.Handler {
 			return
 		}
 		md := AuthorizationServerMetadata{
-			Issuer:                            serverurl.IssuerURL(base),
-			AuthorizationEndpoint:             serverurl.AuthorizeURL(base),
-			TokenEndpoint:                     serverurl.TokenURL(base),
-			ResponseTypesSupported:            []string{"code"},
-			GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
-			CodeChallengeMethodsSupported:     []string{"S256"},
-			TokenEndpointAuthMethodsSupported: []string{"none"},
+			Issuer:                        serverurl.IssuerURL(base),
+			AuthorizationEndpoint:         serverurl.AuthorizeURL(base),
+			TokenEndpoint:                 serverurl.TokenURL(base),
+			ResponseTypesSupported:        []string{"code"},
+			GrantTypesSupported:           []string{"authorization_code", "refresh_token"},
+			CodeChallengeMethodsSupported: []string{"S256"},
+			// B-71 Stage 3: the token endpoint now also authenticates confidential pre-issued
+			// clients (Client ID + Secret) via client_secret_basic / client_secret_post, IN ADDITION
+			// to PKCE. "none" stays — public clients (CIMD/DCR/self) still exist.
+			TokenEndpointAuthMethodsSupported: []string{"none", "client_secret_basic", "client_secret_post"},
 		}
 		// B-63 §0.1: advertise EXACTLY one registration posture. DCR mode →
 		// registration_endpoint, CIMD signal withheld; CIMD mode (default) → CIMD

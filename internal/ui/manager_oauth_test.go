@@ -75,6 +75,10 @@ func (f *fakeOAuthStore) RevokeByDomain(string) (int, error)                    
 func (f *fakeOAuthStore) DomainEntryForClient(string) (oauthstore.RegistrationEntry, bool) {
 	return oauthstore.RegistrationEntry{}, false
 }
+func (f *fakeOAuthStore) IssueConfidentialClient(string, time.Duration, time.Time) (oauthstore.RegistrationEntry, string, error) {
+	return oauthstore.RegistrationEntry{}, "", nil
+}
+func (f *fakeOAuthStore) RevokeByClientID(string) (int, error) { return 0, nil }
 
 func (f *fakeOAuthStore) RevokeByPrincipalEmail(email string) (int, error) {
 	f.mu.Lock()

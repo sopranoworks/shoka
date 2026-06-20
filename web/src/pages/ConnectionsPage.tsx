@@ -4,8 +4,10 @@ import { useIsAdmin } from '../lib/admin'
 import {
   useConnectionsQuery,
   useDomainsQuery,
+  useConfidentialClientsQuery,
   OAUTH_CONNECTIONS_KEY,
   OAUTH_DOMAINS_KEY,
+  OAUTH_CLIENTS_KEY,
 } from '../lib/queries'
 import {
   revokeConnection,
@@ -14,11 +16,17 @@ import {
   OAuthDeniedError,
 } from '../lib/oauthOps'
 import { createDomain, updateDomain, deleteDomain } from '../lib/domainOps'
+import {
+  issueConfidentialClient,
+  revokeConfidentialClient,
+} from '../lib/confidentialOps'
 import { useToast } from '../lib/toast'
 import type {
   OAuthConnection,
   OAuthIssueSelfPayload,
   DomainInfo,
+  ConfidentialClientInfo,
+  ConfidentialIssuePayload,
 } from '../lib/types'
 import styles from './ConnectionsPage.module.css'
 
@@ -92,10 +100,13 @@ export function ConnectionsPage() {
         ) : error ? (
           <p className={styles.error}>Failed to load connections. Try Refresh.</p>
         ) : (
-          <DomainManagement
-            domains={domains ?? []}
-            connections={connections ?? []}
-          />
+          <>
+            <DomainManagement
+              domains={domains ?? []}
+              connections={connections ?? []}
+            />
+            <ConfidentialManagement />
+          </>
         )}
       </div>
     </div>
@@ -148,6 +159,251 @@ function DomainManagement({
         )}
       </section>
     </>
+  )
+}
+
+// ConfidentialManagement is the confidential-mode screen (B-71 Stage 3), composed alongside the
+// domain-mode screen: the operator pre-issues a Client ID + Secret (with a scope + a finite
+// expiry) for Claude.ai's custom-connector advanced settings. The secret is shown ONCE at
+// issuance (never retrievable after); the list never carries it; revoke cascades to its tokens.
+function ConfidentialManagement() {
+  const { data: clients, isLoading } = useConfidentialClientsQuery(true)
+  const [issued, setIssued] = useState<ConfidentialIssuePayload | null>(null)
+
+  return (
+    <section className={styles.domainsSection} data-testid="confidential-section">
+      <h3 className={styles.sectionTitle}>Confidential clients (Client ID + Secret)</h3>
+      <p className={styles.hintSmall}>
+        Pre-issue a Client ID + Secret for a Claude.ai custom connector. The secret is shown once
+        — copy it now. PKCE is still required in addition to the secret.
+      </p>
+      <IssueClientForm onIssued={setIssued} />
+      {issued && (
+        <IssuedClientPanel issued={issued} onDismiss={() => setIssued(null)} />
+      )}
+      {isLoading ? (
+        <p className={styles.hint}>Loading…</p>
+      ) : (clients ?? []).length === 0 ? (
+        <p className={styles.hint} data-testid="confidential-empty">
+          No confidential clients issued.
+        </p>
+      ) : (
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Client ID</th>
+              <th>Scope</th>
+              <th>Expires</th>
+              <th>Issued</th>
+              <th aria-label="Actions" />
+            </tr>
+          </thead>
+          <tbody>
+            {(clients ?? []).map((c) => (
+              <ConfidentialClientRow key={c.id} client={c} />
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  )
+}
+
+// parseValidityDays: a confidential credential's validity in whole positive days (no indefinite).
+// Returns null for a non-finite / non-positive / non-integer value.
+function parseValidityDays(v: string): number | null {
+  const n = Number(v)
+  if (!Number.isInteger(n) || n <= 0) return null
+  return n
+}
+
+function IssueClientForm({
+  onIssued,
+}: {
+  onIssued: (p: ConfidentialIssuePayload) => void
+}) {
+  const queryClient = useQueryClient()
+  const { add: addToast } = useToast()
+  const [scope, setScope] = useState('')
+  const [days, setDays] = useState('30')
+
+  const validDays = parseValidityDays(days)
+  const valid = scope.trim() !== '' && validDays !== null
+
+  const issue = useMutation({
+    mutationFn: () =>
+      issueConfidentialClient({
+        scope: scope.trim(),
+        validitySeconds: (validDays ?? 0) * 86400,
+      }),
+    onSuccess: (p) => {
+      void queryClient.invalidateQueries({ queryKey: OAUTH_CLIENTS_KEY })
+      onIssued(p)
+      setScope('')
+      setDays('30')
+    },
+    onError: (e) =>
+      addToast({
+        level: 'warn',
+        text: e instanceof Error ? e.message : 'Failed to issue a confidential client.',
+      }),
+  })
+
+  return (
+    <form
+      className={styles.domainForm}
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (valid) issue.mutate()
+      }}
+    >
+      <input
+        className={styles.domainInput}
+        placeholder="scope (e.g. namespace:docs:rw, or * for all access)"
+        value={scope}
+        onChange={(e) => setScope(e.target.value)}
+        data-testid="client-issue-scope"
+        aria-label="Pre-issued scope"
+      />
+      <input
+        className={styles.ttlInput}
+        placeholder="valid days"
+        value={days}
+        onChange={(e) => setDays(e.target.value)}
+        data-testid="client-issue-validity"
+        aria-label="Validity in days"
+        aria-invalid={validDays === null}
+      />
+      <button
+        type="submit"
+        className={styles.issue}
+        disabled={!valid || issue.isPending}
+        data-testid="client-issue-submit"
+      >
+        {issue.isPending ? 'Issuing…' : 'Issue client'}
+      </button>
+      {!valid && (scope !== '' || days !== '30') && (
+        <span className={styles.invalid}>
+          A scope is required; validity must be a whole positive number of days (no indefinite).
+        </span>
+      )}
+    </form>
+  )
+}
+
+// IssuedClientPanel shows the freshly minted client_id + secret ONCE, with copy controls and a
+// clear "shown only once" caption — the one place the raw secret crosses /ws/ui.
+function IssuedClientPanel({
+  issued,
+  onDismiss,
+}: {
+  issued: ConfidentialIssuePayload
+  onDismiss: () => void
+}) {
+  const { add: addToast } = useToast()
+  const copy = (value: string, label: string) => {
+    void navigator.clipboard
+      ?.writeText(value)
+      .then(() => addToast({ level: 'warn', text: `${label} copied.` }))
+      .catch(() =>
+        addToast({ level: 'warn', text: 'Could not copy — select and copy manually.' }),
+      )
+  }
+  return (
+    <div className={styles.tokenPanel} role="status" data-testid="client-issued-panel">
+      <div className={styles.tokenWarn}>
+        <strong>Copy the secret now.</strong> It is shown only once and cannot be retrieved
+        again. Paste the Client ID and Secret into Claude.ai&apos;s connector advanced settings.
+      </div>
+      <div className={styles.tokenRow}>
+        <code className={styles.tokenValue} data-testid="client-issued-id">
+          {issued.client_id}
+        </code>
+        <button
+          className={styles.copy}
+          onClick={() => copy(issued.client_id, 'Client ID')}
+          aria-label="Copy client id"
+        >
+          Copy ID
+        </button>
+      </div>
+      <div className={styles.tokenRow}>
+        <code className={styles.tokenValue} data-testid="client-issued-secret">
+          {issued.client_secret}
+        </code>
+        <button
+          className={styles.copy}
+          onClick={() => copy(issued.client_secret, 'Client secret')}
+          aria-label="Copy client secret"
+        >
+          Copy secret
+        </button>
+        <button className={styles.dismiss} onClick={onDismiss} aria-label="Dismiss">
+          Done
+        </button>
+      </div>
+      <div className={styles.tokenExpiry}>
+        Scope {fmtScope(issued.scope)} · expires {fmtTime(issued.expires_at)}
+      </div>
+    </div>
+  )
+}
+
+function ConfidentialClientRow({ client }: { client: ConfidentialClientInfo }) {
+  const queryClient = useQueryClient()
+  const { add: addToast } = useToast()
+  const [confirming, setConfirming] = useState(false)
+
+  const revoke = useMutation({
+    mutationFn: () => revokeConfidentialClient(client.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: OAUTH_CLIENTS_KEY })
+      void queryClient.invalidateQueries({ queryKey: OAUTH_CONNECTIONS_KEY })
+      addToast({ level: 'warn', text: 'Revoked the confidential client (its tokens were cut).' })
+    },
+    onError: (e) => {
+      addToast({
+        level: 'warn',
+        text: e instanceof Error ? e.message : 'Failed to revoke the client.',
+      })
+      setConfirming(false)
+    },
+  })
+
+  return (
+    <tr data-testid={`client-row-${client.client_id}`}>
+      <td className={styles.client}>
+        <code className={styles.series}>{client.client_id}</code>
+      </td>
+      <td className={styles.scopeCell}>{fmtScope(client.scope)}</td>
+      <td className={styles.time}>{fmtTime(client.expires_at)}</td>
+      <td className={styles.time}>{fmtTime(client.created_at)}</td>
+      <td className={styles.actions}>
+        {confirming ? (
+          <>
+            <button
+              className={styles.danger}
+              disabled={revoke.isPending}
+              onClick={() => revoke.mutate()}
+              data-testid={`client-revoke-confirm-${client.client_id}`}
+            >
+              {revoke.isPending ? 'Revoking…' : 'Confirm revoke'}
+            </button>
+            <button className={styles.cancel} onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            className={styles.revoke}
+            onClick={() => setConfirming(true)}
+            data-testid={`client-revoke-${client.client_id}`}
+          >
+            Revoke
+          </button>
+        )}
+      </td>
+    </tr>
   )
 }
 
