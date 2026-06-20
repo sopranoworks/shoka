@@ -11,6 +11,17 @@ const NONE_DISABLED: RailView[] = []
 // everywhere (B-28 stage 3).
 const NO_PROJECT_DISABLED: RailView[] = ['explorer', 'search', 'history']
 
+// isSettingsPath reports whether a pathname is a settings route — global (/settings) or
+// project-scoped (/p/ns/proj/settings). The Shell DERIVES the rail's "settings" active state from
+// this (single source of truth), so the gear is active exactly when the settings view is shown and
+// can never drift (e.g. it clears the moment "Shoka"/home navigates away).
+export function isSettingsPath(pathname: string): boolean {
+  return (
+    /^\/settings(\/|$)/.test(pathname) ||
+    /^\/p\/[^/]+\/[^/]+\/settings(\/|$)/.test(pathname)
+  )
+}
+
 // parseProjectPrefix extracts ns/proj from any "/p/<ns>/<proj>..." path (including
 // the settings sub-route), where parseProjectFile (which requires a blob/edit/history
 // tail) does not match.
@@ -59,22 +70,22 @@ export function useRailSelect(
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const onProjectRoute = pathname.startsWith('/p/')
   const onHistoryRoute = /^\/p\/[^/]+\/[^/]+\/history(\/|$)/.test(pathname)
-  const onSettingsRoute =
-    /^\/settings(\/|$)/.test(pathname) || /^\/p\/[^/]+\/[^/]+\/settings(\/|$)/.test(pathname)
+  const onSettingsRoute = isSettingsPath(pathname)
   const onSelect = useCallback(
     (v: RailView) => {
       // Settings is global (available everywhere); the other modes need a project.
       if (v !== 'settings' && !onProjectRoute) return
 
-      // Settings: switch to the Settings rail mode. Project-scoped when in a project
-      // (so the file tree stays mounted in the sidebar — no remount/collapse on
-      // return), global otherwise. Toggling the open Settings pane closes it.
+      // Settings: navigate to the Settings route — project-scoped when in a project (so the file
+      // tree stays mounted in the sidebar — no remount/collapse on return), global otherwise. The
+      // rail's "settings" active state is DERIVED from the route (Shell), so we do NOT set a
+      // separate rail state here (which is exactly what used to leave the gear stuck active after
+      // leaving Settings). Toggling the open Settings pane (already on a settings route) closes it.
       if (v === 'settings') {
-        if (v === rail && sidebarOpen) {
+        if (onSettingsRoute && sidebarOpen) {
           setSidebarOpen(false)
           return
         }
-        setRail('settings')
         setSidebarOpen(true)
         const ref = parseProjectPrefix(pathname)
         if (ref) {
@@ -179,19 +190,4 @@ export function useResetRailToExplorerOnProjectChange(
   useEffect(() => {
     if (projectKey) setRail('explorer')
   }, [projectKey, setRail])
-}
-
-// Sync the rail to Settings when the URL is a settings route (so a reload / deep-link
-// to /settings or /p/ns/proj/settings shows the Settings mode). Declared AFTER the
-// explorer-reset in Shell so it wins on a direct load of a project-scoped settings
-// route (where the project-change reset would otherwise force Explorer).
-export function useSettingsRailSync(setRail: (v: RailView) => void): void {
-  const onSettings = useRouterState({
-    select: (s) =>
-      /^\/settings(\/|$)/.test(s.location.pathname) ||
-      /^\/p\/[^/]+\/[^/]+\/settings(\/|$)/.test(s.location.pathname),
-  })
-  useEffect(() => {
-    if (onSettings) setRail('settings')
-  }, [onSettings, setRail])
 }

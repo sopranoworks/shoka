@@ -18,7 +18,7 @@ import { useMediaQuery } from '../lib/useMediaQuery'
 import {
   useRailSelect,
   useResetRailToExplorerOnProjectChange,
-  useSettingsRailSync,
+  isSettingsPath,
 } from '../lib/useRailSelect'
 import styles from './Shell.module.css'
 
@@ -27,6 +27,9 @@ import styles from './Shell.module.css'
  * Only `children` (the routed <Outlet/>) swaps on navigation.
  */
 export function Shell({ children }: { children: ReactNode }) {
+  // `rail` is the project-view sub-selection (explorer/search/history) — never 'settings'. The
+  // "settings" active state is DERIVED from the route below, so it is a single source of truth and
+  // can never drift (the gear clears the instant "Shoka"/home navigates off a settings route).
   const [rail, setRail] = useState<RailView>('explorer')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const isNarrow = useMediaQuery('(max-width: 640px)')
@@ -38,9 +41,18 @@ export function Shell({ children }: { children: ReactNode }) {
   )
   // Selecting a project defaults the rail to Explorer (the file view).
   useResetRailToExplorerOnProjectChange(setRail)
-  // A settings route (reload / deep-link) shows the Settings mode. Declared AFTER the
-  // explorer-reset so it wins on a direct load of a project-scoped settings route.
-  useSettingsRailSync(setRail)
+
+  // The rail's active item, DERIVED from the current view: 'settings' when on a settings route,
+  // otherwise the explorer/search/history sub-selection. (The guard keeps a stray 'settings' rail
+  // value from ever displaying off a settings route.)
+  const onSettingsRoute = useRouterState({
+    select: (s) => isSettingsPath(s.location.pathname),
+  })
+  const activeRail: RailView = onSettingsRoute
+    ? 'settings'
+    : rail === 'settings'
+      ? 'explorer'
+      : rail
 
   // On narrow screens the panel group stacks vertically so the content stays
   // full-width and readable (no sliver). On desktop it's a resizable split.
@@ -62,7 +74,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
       <div className={styles.body}>
         <ShellRail
-          active={rail}
+          active={activeRail}
           onSelect={onRailSelect}
           disabled={disabledItems}
         />
@@ -87,7 +99,7 @@ export function Shell({ children }: { children: ReactNode }) {
                       above, the trash pane as an in-column collapsible section
                       below (B-31 fix G). SidebarTrash renders nothing when the
                       pane is closed, so the view fills the column. */}
-                  <Sidebar view={rail} />
+                  <Sidebar view={activeRail} />
                   <SidebarTrash />
                 </Panel>
                 <PanelResizeHandle
