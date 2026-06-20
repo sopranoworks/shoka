@@ -72,9 +72,19 @@ server:
       #                    CIMD signal, so Claude performs Dynamic Client Registration
       #                    (POSTs its metadata to /register). The two CANNOT both be
       #                    advertised: while the CIMD signal is present Claude skips DCR.
-      # token_endpoint_auth_methods_supported stays ["none"] (public client) in both.
+      # In both modes the AS also advertises the CONFIDENTIAL client auth methods
+      # (token_endpoint_auth_methods_supported: none + client_secret_basic +
+      # client_secret_post; B-71 Stage 3) — see the confidential-client note below.
       # Flip this and re-test the live claude.ai connect each way; no rebuild needed.
       # registration_mode: "cimd"
+      #
+      # CONFIDENTIAL pre-issued clients (Client ID + Secret; B-71 Stage 3) are NOT configured
+      # here either — the operator issues them from the web UI (Settings → OAuth, super-user
+      # only): pick a scope + a finite expiry; the secret is shown ONCE (stored hashed) and the
+      # client authenticates at /token with the secret IN ADDITION to PKCE.
+      #
+      # The operator's own "Generate CLI token" (self-issued) likewise picks a per-issuance
+      # FINITE expiry in the UI (B-71 Stage 4) — no indefinite option anywhere.
 
   # Structured logging. Optional — omit the whole block for info/text on stderr.
   #

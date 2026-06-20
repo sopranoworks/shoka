@@ -581,25 +581,44 @@ domain, or address is given:
 The OAuth transport speaks **purely OAuth** — static `Authorization: Bearer`
 tokens are not accepted on it (mixing a bearer path onto the external port is
 forbidden by design). It enforces OAuth access tokens on its `/mcp` path and
-identifies clients via CIMD (no dynamic client registration). The separate
-plain transport carries the static-bearer / unauthenticated path. For the
-protocol detail — discovery, `/authorize`, `/token`, PKCE — see
+identifies clients by one of three registration paths, selected by
+`server.mcp.oauth.registration_mode`: **CIMD** (default — the `client_id` is an
+https metadata-document URL), **DCR** (RFC 7591 dynamic registration, B-63), or a
+**confidential pre-issued client** (Client ID + Secret, B-71 Stage 3 — see below).
+The separate plain transport carries the static-bearer / unauthenticated path. For
+the protocol detail — discovery, `/authorize`, `/token`, PKCE — see
 [`docs/contracts/mcp-v1.md`](contracts/mcp-v1.md) § 3.1. Standing up OAuth means
 configuring these fields; it does not point at a running, reachable service.
 (Source: `internal/config/config.go`, `internal/oauth/`.)
 
-**Authorization model (foundation; enforcement dormant).** Every issued token
-carries a **scope** that says what it may access. Tokens minted by the OAuth flow
-(and the operator's self-issued CLI token) are **all-access** (`scope: "*"`) — the
-settled model: a normal connected client may reach every namespace/project, just
-as today. All MCP `tools/call`s flow through a **single authorization choke point**
-(a server middleware) so authorization lives in one place rather than scattered
-across handlers; with an all-access token it allows everything, so **behaviour is
-unchanged**. The choke point already enforces a *non*-all-access scope
-(e.g. a token limited to one namespace), but **no such token can be minted yet** —
-scoped, pre-issued tokens and the UI to manage them are a later step. A token
-minted before the scope field existed is treated as all-access and ages out as it
-expires. (Source: `internal/auth/auth.go`, `internal/tools/authz.go`,
+**Issuing a confidential client (Client ID + Secret), in the UI.** For a Claude.ai
+custom connector that authenticates with a Client ID + Secret, the operator
+(super-user) issues the credential from the web UI (Settings → OAuth, the
+confidential-mode section): choose a **scope** (e.g. `namespace:docs:rw`, or `*`
+for all-access) and a **finite expiry** (no indefinite option). The **secret is
+shown once** and stored **hashed** — copy it then; it cannot be retrieved again.
+Paste the Client ID + Secret into Claude.ai's connector advanced settings. The
+client authenticates at `/token` with the secret **in addition to** the mandatory
+PKCE, and its token carries the chosen scope (enforced by the tools/call gate).
+Revoking the client in the UI cuts the tokens it issued.
+
+**Generating a CLI token (self-issued), in the UI.** The operator's "Generate CLI
+token" control (Settings → OAuth) mints an all-access token for the CLI, choosing a
+**per-issuance finite expiry** (B-71 Stage 4) — shown once, copied into the CLI
+config. No path offers an indefinite token.
+
+**Authorization model (live).** Every issued token carries a **scope** that says
+what it may access. All MCP `tools/call`s flow through a **single authorization
+choke point** (a server middleware) so authorization lives in one place rather than
+scattered across handlers. Tokens minted by the OAuth flow (CIMD/DCR) and the
+operator's self-issued CLI token are **all-access** (`scope: "*"`), so they reach
+every namespace/project. A **confidential pre-issued client** (above) can instead
+carry a **namespace scope** (e.g. `namespace:docs:rw`), and the choke point
+**enforces it** — that token is allowed in its granted namespace and **denied**
+elsewhere. This gate is live (not dormant): a scoped confidential token is the
+supported way to limit a client; a token minted before the scope field existed (or
+with an empty scope) is read as all-access and ages out as it expires. (Source:
+`internal/auth/auth.go`, `internal/tools/authz.go`,
 `internal/storage/oauthstore/`.)
 
 ## Scraping `/metrics`

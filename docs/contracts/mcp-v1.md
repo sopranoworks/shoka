@@ -178,15 +178,19 @@ of being handed a static one.
   discovers every endpoint from these documents — **the contract names the documents
   by role and never a literal URL.** (Source: `internal/oauth/discovery.go:27-97`;
   `internal/auth/auth.go:43-49,141-152`.)
-- **Client identity — Client ID Metadata Document (CIMD), not dynamic registration:**
-  there is **no dynamic client registration endpoint** (`registration_endpoint` is
-  deliberately omitted — do not look for one). Instead the client's `client_id`
-  **is an https URL to its own client-metadata document**; the server fetches that
-  document and only trusts it when its domain is a trusted **"domain" entry in the
-  dynamic domain store**, managed by the operator in the **web UI** (Settings → OAuth) —
-  **default-deny** (no entries ⇒ no client may connect). Trust is no longer a config
-  field (B-71 Stage 2e); the store is the sole runtime source. (Source:
-  `internal/oauth/cimd.go` `Verifier.SetTrustedSource`; `internal/storage/oauthstore`
+- **Client identity — three registration paths, selected by `registration_mode`:**
+  **CIMD** (default) — the client's `client_id` **is an https URL to its own
+  client-metadata document**, which the server fetches and trusts only when the
+  document's domain is trusted; **DCR** (B-63, RFC 7591) — the AS advertises a
+  `registration_endpoint` and the client POSTs its metadata to `/register` for an
+  opaque public `client_id` (the two postures cannot coexist — `registration_mode`
+  picks which the metadata advertises); and **confidential** (B-71 Stage 3, below) —
+  a UI-issued Client ID + Secret. For CIMD/DCR a domain is trusted only when it is a
+  **"domain" entry in the dynamic domain store**, managed by the operator in the
+  **web UI** (Settings → OAuth) — **default-deny** (no entries ⇒ no CIMD/DCR client
+  may connect). Trust is no longer a config field (B-71 Stage 2e); the store is the
+  sole runtime source. (Source: `internal/oauth/cimd.go` `Verifier.SetTrustedSource`,
+  `internal/oauth/discovery.go` `registration_mode`; `internal/storage/oauthstore`
   `TrustedDomain`; `internal/ui/manager.go` domain ops.)
 - **Consent:** approval at `/authorize` is **per-domain**: the submitted credential is
   verified (hashed, constant-time) against the connecting client's domain's own stored
