@@ -26,73 +26,37 @@ import (
 // rotating refresh; RFC 8707 audience). CIMD (cimd.go) is the only client
 // registration path; the token state lives in the go-git-free oauthstore.
 //
-// The principal stamped on a token is the CURRENT-MODE principal, obtained from
-// the PrincipalAuthenticator seam — NOT a baked-in single-user constant. Today
-// that seam authenticates with a configured consent credential and returns the
-// configured operator; multi-user enablement (a later B-28 leg) replaces the
-// seam with per-user authentication, additively, with no change here.
-
-// PrincipalAuthenticator is the pluggable "authenticate the principal" step the
-// consent gate runs before approving. In single-user mode it validates a shared
-// consent credential and returns the configured operator principal; under
-// multi-user mode it is replaced by real per-user authentication returning that
-// user's principal. ok=false means the submission failed authentication.
-type PrincipalAuthenticator interface {
-	Authenticate(r *http.Request) (principal oauthstore.Principal, ok bool)
-	// BoundPrincipal returns the principal this authenticator grants on success, WITHOUT a
-	// credential check — used by the per-domain consent gate (B-71 Stage 2c) once a domain's
-	// own consent has already verified the submission.
-	BoundPrincipal() oauthstore.Principal
-}
-
-// ConsentCredentialAuth is the single-user-mode PrincipalAuthenticator: it
-// constant-time-compares a form-submitted credential against the configured
-// consent credential and, on success, returns the one configured principal. This
-// is the seam multi-user mode later replaces — the value here being one principal
-// is a property of the current mode, not an assumption baked into the flow.
-type ConsentCredentialAuth struct {
-	Credential string
-	Principal  oauthstore.Principal
-}
-
-// Authenticate validates the "consent_credential" form field. An empty configured
-// credential denies all approvals (a safe default: consent cannot be granted until
-// the operator sets one).
-func (c ConsentCredentialAuth) Authenticate(r *http.Request) (oauthstore.Principal, bool) {
-	if c.Credential == "" {
-		return oauthstore.Principal{}, false
-	}
-	got := r.PostFormValue("consent_credential")
-	if subtle.ConstantTimeCompare([]byte(got), []byte(c.Credential)) != 1 {
-		return oauthstore.Principal{}, false
-	}
-	return c.Principal, true
-}
-
-// BoundPrincipal returns the configured operator principal (the single-user-mode principal).
-func (c ConsentCredentialAuth) BoundPrincipal() oauthstore.Principal { return c.Principal }
+// The principal stamped on a token is the CURRENT-MODE operator principal, carried as
+// BoundPrincipal — NOT a baked-in single-user constant. Today that is the one configured
+// operator; multi-user enablement (a later B-28 leg) replaces this with per-user
+// authentication, additively. Consent itself is per-domain (B-71 Stage 2c/2e): the
+// /authorize gate verifies the submitted credential against the connecting domain's own
+// stored consent; there is no global consent credential (B-71 Stage 2e retired it).
 
 // AuthServerConfig configures the AuthServer.
 type AuthServerConfig struct {
-	ExternalURL   string // Server.MCP.OAuth.ExternalURL; empty falls back to forwarded headers
-	PrincipalAuth PrincipalAuthenticator
-	AccessTTL     time.Duration
-	RefreshTTL    time.Duration
-	CodeTTL       time.Duration
-	Logger        *slog.Logger // operational log for client-verification outcomes; nil → slog.Default()
+	ExternalURL string // Server.MCP.OAuth.ExternalURL; empty falls back to forwarded headers
+	// BoundPrincipal is the operator principal stamped on an issued token once a domain's
+	// per-domain consent has verified the /authorize submission (B-71 Stage 2e). It carries no
+	// credential — the consent secret lives only in the domain entry (hashed), never here.
+	BoundPrincipal oauthstore.Principal
+	AccessTTL      time.Duration
+	RefreshTTL     time.Duration
+	CodeTTL        time.Duration
+	Logger         *slog.Logger // operational log for client-verification outcomes; nil → slog.Default()
 }
 
 // AuthServer serves /authorize and /token for the built-in AS.
 type AuthServer struct {
-	store         *oauthstore.Store
-	verifier      *Verifier
-	externalURL   string
-	principalAuth PrincipalAuthenticator
-	accessTTL     time.Duration
-	refreshTTL    time.Duration
-	codeTTL       time.Duration
-	logger        *slog.Logger
-	now           func() time.Time // injectable for tests
+	store          *oauthstore.Store
+	verifier       *Verifier
+	externalURL    string
+	boundPrincipal oauthstore.Principal
+	accessTTL      time.Duration
+	refreshTTL     time.Duration
+	codeTTL        time.Duration
+	logger         *slog.Logger
+	now            func() time.Time // injectable for tests
 }
 
 // NewAuthServer builds an AuthServer. TTLs default to sensible FINITE values when
@@ -120,15 +84,15 @@ func NewAuthServer(store *oauthstore.Store, verifier *Verifier, cfg AuthServerCo
 		logger = slog.Default()
 	}
 	return &AuthServer{
-		store:         store,
-		verifier:      verifier,
-		externalURL:   cfg.ExternalURL,
-		principalAuth: cfg.PrincipalAuth,
-		accessTTL:     accessTTL,
-		refreshTTL:    refreshTTL,
-		codeTTL:       codeTTL,
-		logger:        logger,
-		now:           time.Now,
+		store:          store,
+		verifier:       verifier,
+		externalURL:    cfg.ExternalURL,
+		boundPrincipal: cfg.BoundPrincipal,
+		accessTTL:      accessTTL,
+		refreshTTL:     refreshTTL,
+		codeTTL:        codeTTL,
+		logger:         logger,
+		now:            time.Now,
 	}
 }
 
@@ -170,21 +134,24 @@ type authRequest struct {
 	Scope               string
 }
 
-// authorizeConsent runs the /authorize approval gate (B-71 Stage 2c). If the connecting
-// client's domain has a per-domain consent configured, the submitted consent_credential is
-// verified against THAT (hashed, constant-time) and the operator principal is returned.
-// Otherwise it FALLS BACK to the single global consent_credential (the stated transitional
-// default — inherit global; never silently allow). The principal is the operator principal in
-// both cases (single-user mode). After the startup seed (which carries the global consent into
-// each domain), the common path is a real per-domain match.
+// authorizeConsent runs the /authorize approval gate (B-71 Stage 2c/2e). Consent is PER-DOMAIN
+// only: the submitted consent_credential is verified against the connecting client's domain's
+// own stored consent (hashed, constant-time); on success the operator principal is returned.
+// A client whose host has no "domain" entry, or a domain entry with NO per-domain consent set
+// (Consent == nil), CANNOT be approved — it is denied. There is no global consent_credential
+// fallback: B-71 Stage 2e retired that static key, so a domain inherits nothing; the operator
+// sets per-domain consent via the web UI (never silently allow). After the 2c seed (which
+// carried the former global consent into each seeded domain), the common path is a per-domain
+// match — unchanged for a seeded deployment.
 func (s *AuthServer) authorizeConsent(r *http.Request, clientID string) (oauthstore.Principal, bool) {
-	if entry, ok := s.store.DomainEntryForClient(clientID); ok && entry.Consent != nil {
-		if entry.VerifyConsent(r.PostFormValue("consent_credential")) {
-			return s.principalAuth.BoundPrincipal(), true
-		}
+	entry, ok := s.store.DomainEntryForClient(clientID)
+	if !ok || entry.Consent == nil {
 		return oauthstore.Principal{}, false
 	}
-	return s.principalAuth.Authenticate(r)
+	if entry.VerifyConsent(r.PostFormValue("consent_credential")) {
+		return s.boundPrincipal, true
+	}
+	return oauthstore.Principal{}, false
 }
 
 // issuanceTTL returns the access/refresh TTL for a token issued to clientID (B-71 Stage 2c):

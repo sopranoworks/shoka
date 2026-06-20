@@ -267,7 +267,8 @@ section is optional and falls back to a built-in default.
 | `server.auth.enabled` | bool | no | `false` | Enable static Bearer-token auth for the **Web UI / non-MCP** endpoints (and the API-Token set the plain transport validates against). No longer a global MCP gate — MCP auth is decided per transport above. When false, those endpoints need no token and all WS origins are accepted. |
 | `server.auth.tokens` | list of strings | no | [] | Accepted bearer tokens (constant-time compared); also the API-Token set for `server.mcp.plain.bearer_auth`. |
 | `server.auth.allowed_origins` | list of strings | no | [] | When auth is on, permitted WebSocket `Origin` values for `/ws/ui` and `/drafts` (empty Origin rejected). |
-| `server.mcp.oauth.{consent_credential, trusted_client_metadata_domains, access_token_ttl, refresh_token_ttl, authorization_code_ttl}` | block | no | off | Built-in OAuth 2.1 authorization server, active when `server.mcp.oauth.listen` is set. See *Enabling OAuth* below. |
+| `server.mcp.oauth.{access_token_ttl, refresh_token_ttl, authorization_code_ttl}` | block | no | off | Built-in OAuth 2.1 authorization server, active when `server.mcp.oauth.listen` is set. These are the global default token lifetimes; per-domain trust/consent/TTL are managed in the web UI (Settings → OAuth). See *Enabling OAuth* below. |
+| `server.mcp.oauth.{consent_credential, trusted_client_metadata_domains}` | — | **DEPRECATED** | — | Retired as config (B-71 Stage 2e): trusted domains and per-domain consent are managed in the web UI and held in the dynamic domain store. Still parse, but are consumed only ONCE to migrate a not-yet-seeded deployment, then ignored (a startup warning flags them). Remove them after the domains appear in the UI. See *Enabling OAuth*. |
 
 † **At least one** of `server.mcp.plain.listen` / `server.mcp.oauth.listen` must be
 set (both is valid; neither is a startup error). There are **no `tls` fields** on
@@ -565,11 +566,17 @@ domain, or address is given:
 - **`server.mcp.oauth.listen`** set — its presence opens the OAuth transport.
 - **`server.mcp.oauth.external_url`** set to the public origin — the field; the
   URL value lives only in your config, never in the docs.
-- The **`server.mcp.oauth.trusted_client_metadata_domains`** allowlist populated.
-  It is **default-deny**: an empty list admits no client, so list the legitimate
-  connector domain(s) for your deployment.
-- **`server.mcp.oauth.consent_credential`** set — an empty value denies all
-  consent, so consent cannot be granted until it is configured.
+- **At least one trusted domain added in the web UI** (Settings → OAuth) with its
+  **consent secret set** (B-71 Stage 2e). Trust is **default-deny**: with no domain
+  entries no client can connect, and a domain with no per-domain consent cannot grant
+  `/authorize` consent — there is no global consent fallback. Per-domain token-TTL
+  overrides are set there too. These settings live in the dynamic domain store, the
+  sole runtime source of trust/consent/TTL; they are **no longer config fields**.
+  - *Migration:* the former `server.mcp.oauth.trusted_client_metadata_domains` and
+    `consent_credential` keys are **deprecated** but still parse. On the first start of a
+    not-yet-seeded deployment they are consumed **once** to seed the store (so an upgrade is
+    never stranded); afterwards they are ignored and a startup warning flags them. Remove
+    them once the domains appear in the UI.
 
 The OAuth transport speaks **purely OAuth** — static `Authorization: Bearer`
 tokens are not accepted on it (mixing a bearer path onto the external port is

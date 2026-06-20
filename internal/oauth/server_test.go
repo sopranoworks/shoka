@@ -72,11 +72,8 @@ func newTestAS(t *testing.T) testAS {
 	t.Cleanup(func() { _ = store.Close() })
 
 	as := NewAuthServer(store, v, AuthServerConfig{
-		ExternalURL: "https://rs.example",
-		PrincipalAuth: ConsentCredentialAuth{
-			Credential: testCredential,
-			Principal:  oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
-		},
+		ExternalURL:    "https://rs.example",
+		BoundPrincipal: oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
 	})
 	return testAS{as: as, store: store, clientID: clientID, verifier: v, host: host}
 }
@@ -122,6 +119,7 @@ func baseAuthForm(clientID, challenge string) url.Values {
 // rotate refresh. Verifies the principal + resource binding and rotation.
 func TestFullFlow(t *testing.T) {
 	h := newTestAS(t)
+	h.trustDomainWithConsent(t, h.host) // B-71 Stage 2e: per-domain consent (no global fallback)
 	verifier, challenge := pkcePair()
 
 	form := baseAuthForm(h.clientID, challenge)
@@ -197,6 +195,7 @@ func TestFullFlow(t *testing.T) {
 // `Authorization: Bearer` exactly as claude.ai's MCP initialize does.
 func TestIssuedToken_ValidatesThroughOAuthPortAuthMiddleware(t *testing.T) {
 	h := newTestAS(t)
+	h.trustDomainWithConsent(t, h.host) // B-71 Stage 2e: per-domain consent (no global fallback)
 	verifier, challenge := pkcePair()
 
 	// authorize (consent) -> code
@@ -372,6 +371,7 @@ func TestToken_UnsupportedGrant(t *testing.T) {
 // Helper that drives authorize->code and returns the issued code.
 func (h testAS) issueCode(t *testing.T, challenge string) string {
 	t.Helper()
+	h.trustDomainWithConsent(t, h.host) // B-71 Stage 2e: the connecting domain needs its own consent
 	form := baseAuthForm(h.clientID, challenge)
 	form.Set("approve", "1")
 	form.Set("consent_credential", testCredential)

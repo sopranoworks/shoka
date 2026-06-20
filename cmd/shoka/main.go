@@ -301,36 +301,55 @@ func main() {
 		uim.SetOAuthStore(oauthStore)
 
 		oc := cfg.Server.MCP.OAuth
-		if len(oc.TrustedClientMetadataDomains) == 0 {
-			logger.Warn("oauth enabled with an empty trusted_client_metadata_domains allowlist; " +
-				"no client can connect until at least the legitimate connector domain is listed")
+
+		// B-71 Stage 2e: the static OAuth keys (trusted_client_metadata_domains, consent_credential)
+		// are RETIRED as the place-of-configuration — the dynamic "domain" store, managed via the web
+		// UI (Settings → OAuth), is the sole source of trust/consent/TTL. The keys remain PARSEABLE
+		// for one purpose only: a one-time, marker-guarded migration that seeds the store on a
+		// deployment that upgraded but has not yet seeded, so such a deployment is never stranded.
+		// After the marker is set they are ignored. Warn the operator to remove them.
+		if len(oc.TrustedClientMetadataDomains) > 0 || oc.ConsentCredential != "" {
+			logger.Warn("server.auth.oauth.trusted_client_metadata_domains and consent_credential are " +
+				"DEPRECATED (B-71 Stage 2e): trusted domains and per-domain consent are now managed in the " +
+				"web UI (Settings → OAuth) and held in the dynamic domain store. These keys are consumed only " +
+				"once, to migrate a not-yet-seeded deployment; remove them from your config.")
 		}
-		if oc.ConsentCredential == "" {
-			logger.Warn("oauth enabled without server.auth.oauth.consent_credential; " +
-				"all /authorize approvals will be denied until a consent credential is set")
-		}
-		verifier := oauth.NewVerifier(oc.TrustedClientMetadataDomains)
-		// B-71 Stage 2c: seed the dynamic "domain" store from the static config (idempotent,
-		// marker-guarded), carrying the single consent_credential into each domain's per-domain
-		// consent (hashed) and the finite global TTLs as each domain's TTL — so existing
-		// connections keep working. Then switch the CIMD verifier's trust onto the store. The
-		// static keys still load (removed only in Stage 2e) but the dynamic store is now the
-		// source of truth for trust/consent/TTL.
+		// The one-time migration: marker-guarded (registrations_seeded_v1). On an already-seeded
+		// deployment this is a no-op; on an unseeded upgrade it carries the deprecated keys into the
+		// store (each trusted domain becomes a "domain" entry with the consent + finite TTLs), so
+		// existing connections keep working WITHOUT the keys after this run.
 		if serr := oauthStore.SeedDomainRegistrationsFromDomains(
 			oc.TrustedClientMetadataDomains, oc.ConsentCredential,
 			oc.AccessTokenTTL.Std(), oc.RefreshTokenTTL.Std(), time.Now(),
 		); serr != nil {
 			log.Fatalf("failed to seed oauth domain registrations: %v", serr)
 		}
+		// The store is the source of truth now, so the operational signal is the store's content, not
+		// the retired config. With no "domain" entries, no client can connect until the operator adds
+		// at least the legitimate connector domain via the web UI.
+		if regs, rerr := oauthStore.ListRegistrations(); rerr == nil {
+			domains := 0
+			for _, e := range regs {
+				if e.RegistrationMode == oauthstore.RegistrationModeDomain {
+					domains++
+				}
+			}
+			if domains == 0 {
+				logger.Warn("oauth enabled with no trusted domains configured; no client can connect " +
+					"until at least the legitimate connector domain is added via the web UI (Settings → OAuth)")
+			}
+		}
+		// The CIMD verifier / DCR gate read the dynamic store for trust (B-71 Stage 2c); the static
+		// allowlist is retired, so construct with no static domains and switch trust onto the store.
+		verifier := oauth.NewVerifier(nil)
 		verifier.SetTrustedSource(oauthStore.TrustedDomain)
 		authServer = oauth.NewAuthServer(oauthStore, verifier, oauth.AuthServerConfig{
 			ExternalURL: cfg.Server.MCP.OAuth.ExternalURL,
-			PrincipalAuth: oauth.ConsentCredentialAuth{
-				Credential: oc.ConsentCredential,
-				Principal: oauthstore.Principal{
-					Name:  cfg.Identity.User.Name,
-					Email: cfg.Identity.User.Email,
-				},
+			// The operator principal stamped on a token once a domain's per-domain consent verifies
+			// the submission (B-71 Stage 2e). No global consent secret is wired in.
+			BoundPrincipal: oauthstore.Principal{
+				Name:  cfg.Identity.User.Name,
+				Email: cfg.Identity.User.Email,
 			},
 			AccessTTL:  oc.AccessTokenTTL.Std(),
 			RefreshTTL: oc.RefreshTokenTTL.Std(),

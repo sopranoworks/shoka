@@ -182,28 +182,32 @@ of being handed a static one.
   there is **no dynamic client registration endpoint** (`registration_endpoint` is
   deliberately omitted — do not look for one). Instead the client's `client_id`
   **is an https URL to its own client-metadata document**; the server fetches that
-  document and only trusts it when its domain is on the
-  **`server.mcp.oauth.trusted_client_metadata_domains`** allowlist — which is
-  **default-deny** (empty ⇒ no client may connect, so the operator must list the
-  connector's metadata domain). The allowlist is referenced as a **config field
-  name**, never by its contents. (Source: `internal/oauth/discovery.go:9-10,37-38,84,96`;
-  `internal/oauth/cimd.go`; `internal/config/config.go:117-122`.)
-- **Consent:** approval at `/authorize` is gated by a server-side consent step
-  bound to the **`server.mcp.oauth.consent_credential`** field (an empty value
-  denies all consent — a safe default). This is the single-operator seam; it is
-  named, never valued. (Source: `internal/oauth/server.go:41-63,189-222`;
-  `internal/config/config.go:111-116`.)
+  document and only trusts it when its domain is a trusted **"domain" entry in the
+  dynamic domain store**, managed by the operator in the **web UI** (Settings → OAuth) —
+  **default-deny** (no entries ⇒ no client may connect). Trust is no longer a config
+  field (B-71 Stage 2e); the store is the sole runtime source. (Source:
+  `internal/oauth/cimd.go` `Verifier.SetTrustedSource`; `internal/storage/oauthstore`
+  `TrustedDomain`; `internal/ui/manager.go` domain ops.)
+- **Consent:** approval at `/authorize` is **per-domain**: the submitted credential is
+  verified (hashed, constant-time) against the connecting client's domain's own stored
+  consent, set by the operator in the web UI. A domain with **no per-domain consent**,
+  or a client with **no domain entry**, **cannot be approved** — there is **no global
+  consent fallback** (B-71 Stage 2e retired the `consent_credential` config key). The
+  consent value is stored hashed and never returned. (Source: `internal/oauth/server.go`
+  `authorizeConsent`; `internal/storage/oauthstore` `VerifyConsent`.)
 - **Enablement prerequisites (operator-supplied, names only):** the OAuth
   transport activates by **setting `server.mcp.oauth.listen`** (there is no
   separate enable flag — presence is the switch). A production deployment also
   requires a **TLS-terminating reverse proxy** in front of Shoka (Shoka
   terminates no TLS itself), **`server.mcp.oauth.external_url`** set to the public
-  URL (the field name — the URL value lives only in config), the
-  **`server.mcp.oauth.trusted_client_metadata_domains`** allowlist populated, and
-  **`server.mcp.oauth.consent_credential`** set. Token lifetimes are
-  `server.mcp.oauth.access_token_ttl` / `refresh_token_ttl` /
-  `authorization_code_ttl`. (Source: `internal/config/config.go:108-127`;
-  `internal/oauth/server.go:86-99`.)
+  URL (the field name — the URL value lives only in config), and **at least one
+  trusted domain added in the web UI with its consent secret set** (Settings → OAuth) —
+  these live in the dynamic domain store, not config. Global default token lifetimes are
+  `server.mcp.oauth.access_token_ttl` / `refresh_token_ttl` / `authorization_code_ttl`
+  (per-domain TTL overrides are set in the UI). The former
+  `trusted_client_metadata_domains` / `consent_credential` keys are **deprecated**: they
+  parse but are consumed once to migrate a not-yet-seeded deployment, then ignored.
+  (Source: `internal/config/config.go`; `cmd/shoka/main.go` OAuth wiring.)
 - **What an MCP client does (by port):**
   - **On the OAuth port** — discover the AS from the metadata documents (above), run
     the standard authorization-code + PKCE-`S256` handshake to obtain an access token,

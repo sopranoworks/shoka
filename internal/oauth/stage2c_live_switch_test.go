@@ -35,7 +35,7 @@ func TestStage2c_CIMDTrustFromDynamicStore(t *testing.T) {
 	t.Run("seeded, trusted, connect authorizes + issues", func(t *testing.T) {
 		h := newTestAS(t)
 		h.useDynamicTrust()
-		h.trustDomain(t, h.host) // the seed: the domain becomes trusted via the store
+		h.trustDomainWithConsent(t, h.host) // the seed: trusted via the store + per-domain consent (Stage 2e)
 
 		verifier, challenge := pkcePair()
 		form := baseAuthForm(h.clientID, challenge)

@@ -46,14 +46,18 @@ server:
     oauth:
       # listen: ":8082"
       # external_url: "https://your-public-origin"   # public origin behind the proxy
-      # Gates /authorize approval (the consent step). Set a long secret; an empty
-      # value denies all consent. Replaced by per-user auth under multi-user mode.
-      # consent_credential: "replace-with-a-long-random-secret"
-      # Allowlist of client (CIMD) metadata domains Shoka will fetch and trust (a
-      # host or any subdomain of it). DEFAULT-DENY: empty means no client can
-      # connect. List the legitimate connector domain(s) for your deployment.
-      # trusted_client_metadata_domains:
-      #   - "the-connector-domain-you-trust"
+      #
+      # Trusted domains, per-domain consent, and per-domain token lifetimes are NO LONGER
+      # configured here (B-71 Stage 2e). They are managed in the web UI (Settings → OAuth):
+      # add a trusted domain, set its consent secret, and edit its TTLs. The settings live in
+      # the dynamic domain store, which is the sole runtime source of trust/consent/TTL.
+      #
+      # MIGRATION: the former keys `consent_credential` and `trusted_client_metadata_domains`
+      # are DEPRECATED but still parse — on first start of a not-yet-seeded deployment they are
+      # consumed ONCE to seed the store (so an upgrade is never stranded), then ignored. A
+      # startup warning flags their presence; remove them from your config once the domains
+      # appear in the UI. A fresh install configures everything via the UI from the start.
+      #
       # Token lifetimes (optional; finite defaults: access 1h, refresh 2160h=90d,
       # code 1m). 0/unset/negative is NOT "forever" — it resolves to the finite
       # default (B-71 Stage 5 no-indefinite floor). Refresh rotates on every use, so

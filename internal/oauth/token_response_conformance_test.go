@@ -28,6 +28,7 @@ import (
 // response plus the raw recorder, so a test can assert both body and headers.
 func (h testAS) issueTokens(t *testing.T) (tokenResponse, *http.Header) {
 	t.Helper()
+	h.trustDomainWithConsent(t, h.host) // B-71 Stage 2e: the connecting domain needs its own consent
 	verifier, challenge := pkcePair()
 	form := baseAuthForm(h.clientID, challenge)
 	form.Set("approve", "1")

@@ -189,17 +189,18 @@ type PlainTransportConfig struct {
 type OAuthTransportConfig struct {
 	Listen      string `yaml:"listen"`
 	ExternalURL string `yaml:"external_url"`
-	// ConsentCredential gates the /authorize approval in single-user mode (the
-	// pluggable principal-auth seam; B-39 (b)). The operator sets a secret; an
-	// empty value denies all consent (a safe default — consent cannot be granted
-	// until configured). Multi-user enablement later replaces this seam with
-	// per-user authentication.
+	// ConsentCredential is DEPRECATED (B-71 Stage 2e): per-domain consent is now managed in
+	// the web UI (Settings → OAuth) and held in the dynamic "domain" store, not in config. The
+	// key remains parseable for ONE purpose — a one-time, marker-guarded migration that seeds an
+	// as-yet-unseeded deployment's store on startup (so an upgrade is never stranded). After the
+	// seed marker is set it is ignored; the runtime never reads it. Remove it from config; a
+	// startup warning flags its presence.
 	ConsentCredential string `yaml:"consent_credential"`
-	// TrustedClientMetadataDomains is the allowlist of client (CIMD) metadata
-	// domains Shoka will fetch and trust (a host or any subdomain of it). It is
-	// default-deny: empty means no client can connect, so the operator MUST list
-	// the legitimate connector domain(s) here. The value lives ONLY in config,
-	// never in source — confidentiality and flexibility.
+	// TrustedClientMetadataDomains is DEPRECATED (B-71 Stage 2e): trusted client (CIMD) metadata
+	// domains are now managed in the web UI and held in the dynamic "domain" store, which is the
+	// sole runtime source of trust. Like consent_credential above, the key remains parseable only
+	// to feed the one-time, marker-guarded migration seed for a not-yet-seeded deployment; it is
+	// ignored once the marker is set. Remove it from config; a startup warning flags its presence.
 	TrustedClientMetadataDomains []string `yaml:"trusted_client_metadata_domains"`
 	// Token lifetimes. 0/unset/negative is NOT "forever" — applyDefaults resolves it
 	// to the finite default (access 1h, refresh 90d, code 1m; B-71 Stage 5's

@@ -57,12 +57,9 @@ func loggedAS(t *testing.T, trusted []string) (testAS, *bytes.Buffer) {
 	t.Cleanup(func() { _ = store.Close() })
 	logger, buf := bufLogger()
 	as := NewAuthServer(store, NewVerifier(trusted), AuthServerConfig{
-		ExternalURL: "https://rs.example",
-		PrincipalAuth: ConsentCredentialAuth{
-			Credential: testCredential,
-			Principal:  oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
-		},
-		Logger: logger,
+		ExternalURL:    "https://rs.example",
+		BoundPrincipal: oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
+		Logger:         logger,
 	})
 	return testAS{as: as, store: store}, buf
 }
@@ -143,12 +140,9 @@ func TestVerificationLog_SuccessAccepted(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	logger, buf := bufLogger()
 	as := NewAuthServer(store, cimd.verifier, AuthServerConfig{
-		ExternalURL: "https://rs.example",
-		PrincipalAuth: ConsentCredentialAuth{
-			Credential: testCredential,
-			Principal:  oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
-		},
-		Logger: logger,
+		ExternalURL:    "https://rs.example",
+		BoundPrincipal: oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
+		Logger:         logger,
 	})
 	h := testAS{as: as, store: store}
 

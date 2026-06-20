@@ -30,14 +30,15 @@ func loggedFlowAS(t *testing.T) (testAS, *bytes.Buffer) {
 	t.Cleanup(func() { _ = store.Close() })
 	logger, buf := bufLogger()
 	as := NewAuthServer(store, cimd.verifier, AuthServerConfig{
-		ExternalURL: "https://rs.example",
-		PrincipalAuth: ConsentCredentialAuth{
-			Credential: testCredential,
-			Principal:  oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
-		},
-		Logger: logger,
+		ExternalURL:    "https://rs.example",
+		BoundPrincipal: oauthstore.Principal{Name: "Operator", Email: "op@example.test"},
+		Logger:         logger,
 	})
-	return testAS{as: as, store: store, clientID: cimd.clientID}, buf
+	h := testAS{as: as, store: store, clientID: cimd.clientID, host: cimd.host, verifier: cimd.verifier}
+	// B-71 Stage 2e: a successful connect needs the connecting domain's own per-domain consent
+	// (the global consent_credential fallback is retired).
+	h.trustDomainWithConsent(t, cimd.host)
+	return h, buf
 }
 
 // A full successful connect is legible end to end: /authorize (request → consent

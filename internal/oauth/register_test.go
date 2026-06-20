@@ -33,13 +33,34 @@ func (h testAS) trustDomain(t *testing.T, domain string) {
 	}
 }
 
+// trustDomainWithConsent makes domain a trusted "domain" entry that can actually grant
+// /authorize consent: it creates the entry (if absent) and sets its per-domain consent to
+// testCredential. B-71 Stage 2e retired the global consent_credential fallback, so an
+// approve-path test must give the connecting domain its OWN consent — mirroring the operator
+// setting it in the web UI. Idempotent (re-setting consent on an existing entry is fine).
+func (h testAS) trustDomainWithConsent(t *testing.T, domain string) {
+	t.Helper()
+	entry, ok := h.store.DomainEntryForHost(domain)
+	if !ok {
+		var err error
+		entry, err = h.store.CreateRegistration(oauthstore.RegistrationModeDomain, domain, h.as.now())
+		if err != nil {
+			t.Fatalf("trustDomainWithConsent(%q): create: %v", domain, err)
+		}
+	}
+	entry.SetConsent(testCredential)
+	if err := h.store.UpdateRegistration(entry); err != nil {
+		t.Fatalf("trustDomainWithConsent(%q): set consent: %v", domain, err)
+	}
+}
+
 // registerClient performs a successful DCR registration and returns the issued client_id (an
 // opaque handle). It first trusts the redirect host so the Stage 2c DCR gate admits the
 // registration (as production does via the startup seed).
 func (h testAS) registerClient(t *testing.T, redirectURIs []string) string {
 	t.Helper()
 	if d := oauthstore.DomainFromRedirectURIs(redirectURIs); d != "" {
-		h.trustDomain(t, d)
+		h.trustDomainWithConsent(t, d)
 	}
 	body, _ := json.Marshal(registrationRequest{
 		RedirectURIs:            redirectURIs,
