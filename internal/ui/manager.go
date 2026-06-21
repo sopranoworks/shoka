@@ -174,6 +174,17 @@ const (
 	MsgAdminCreateInvite   MessageType = "ADMIN_CREATE_INVITE"
 	MsgAdminListInvites    MessageType = "ADMIN_LIST_INVITES"
 	MsgAdminRevokeInvite   MessageType = "ADMIN_REVOKE_INVITE"
+	// Self-service "My Account" ops (B-28) — the per-user account page, reachable by
+	// ANY authenticated user for THEIR OWN account (read-level, global in wsLevels —
+	// NOT admin-gated, unlike the ADMIN_*/OAUTH_* pages). Self-access is STRUCTURAL:
+	// these act on the connection's session identity only and carry NO target-id field,
+	// so a caller cannot name another account. ACCOUNT_GET returns the acting user's own
+	// info (never a password hash); ACCOUNT_SET_NAME changes the display name;
+	// ACCOUNT_SET_PASSWORD verifies the current password then re-hashes (argon2id). Email
+	// is the account id and has no setter.
+	MsgAccountGet         MessageType = "ACCOUNT_GET"
+	MsgAccountSetName     MessageType = "ACCOUNT_SET_NAME"
+	MsgAccountSetPassword MessageType = "ACCOUNT_SET_PASSWORD"
 	// MsgPermissionDenied is the authorization-refusal frame for the /ws/ui dispatch
 	// gate (the B-28 stage-2 enforcement flip): a session principal whose scope lacks
 	// the level the requested operation requires gets this instead of the handler
@@ -554,6 +565,10 @@ type UserAdminStore interface {
 	CreateInvite(email, scope, createdBy string, now time.Time, ttl time.Duration) (string, userstore.InviteRecord, error)
 	ListInvites() ([]userstore.InviteInfo, error)
 	RevokeInvite(codeHash string) error
+	// GetUser / PutUser back the self-service "My Account" ops (read own record;
+	// persist a name or re-hashed password). *userstore.Store already satisfies them.
+	GetUser(email string) (*userstore.UserRecord, error)
+	PutUser(rec *userstore.UserRecord) error
 }
 
 // Administrator authorization for the OAUTH_* management requests is enforced by the
@@ -705,6 +720,14 @@ var wsLevels = map[MessageType]wsOp{
 	MsgClientIssue:           {authz.LevelAdmin, true},
 	MsgClientList:            {authz.LevelAdmin, true},
 	MsgClientRevoke:          {authz.LevelAdmin, true},
+
+	// Self-service account ops: read-level, GLOBAL — reachable by ANY authenticated user
+	// (a global read check passes for any principal with read access anywhere, incl. a
+	// namespace-scoped read-only user). NOT admin: self-access is structural (no target
+	// id), enforced in the handlers by acting on the session identity only.
+	MsgAccountGet:         {authz.LevelRead, true},
+	MsgAccountSetName:     {authz.LevelRead, true},
+	MsgAccountSetPassword: {authz.LevelRead, true},
 
 	MsgAdminListUsers:      {authz.LevelAdmin, true},
 	MsgAdminSetUserScope:   {authz.LevelAdmin, true},
@@ -929,6 +952,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleConfidentialIssue(client, wsMsg.Payload)
 		case MsgClientRevoke:
 			m.handleConfidentialRevoke(client, wsMsg.Payload)
+		case MsgAccountGet:
+			m.handleAccountGet(client)
+		case MsgAccountSetName:
+			m.handleAccountSetName(client, wsMsg.Payload)
+		case MsgAccountSetPassword:
+			m.handleAccountSetPassword(client, wsMsg.Payload)
 		case MsgAdminListUsers:
 			m.handleAdminListUsers(client)
 		case MsgAdminSetUserScope:

@@ -22,6 +22,10 @@ export interface SettingsItem {
 }
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
+  // My Account is the per-user self-service page — visible to EVERY authenticated user
+  // (NOT super-user-only). The server enforces self-access structurally (the ACCOUNT_*
+  // ops act on the session identity only), so it is safe for all viewers.
+  { id: 'account', label: 'My Account', visible: () => true },
   // User management + OAuth connections are SUPER-USER-ONLY.
   { id: 'users', label: 'User management', visible: (v) => v.isSuperUser },
   // The OAuth/MCP connection management screen — its real home now. The OAUTH_* ops are

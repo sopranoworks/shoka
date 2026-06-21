@@ -28,6 +28,20 @@ const (
 // string this package can parse.
 var ErrMalformedHash = errors.New("userstore: malformed password hash")
 
+// MinPasswordLen is the password-policy floor (length only; no complexity rule is
+// imposed beyond this). It is the single source of truth shared by first-run
+// registration and the self-service password reset.
+const MinPasswordLen = 8
+
+// ValidatePassword enforces the password policy. It returns a user-facing error
+// (suitable to surface verbatim) when the password is too short, else nil.
+func ValidatePassword(pw string) error {
+	if len(pw) < MinPasswordLen {
+		return fmt.Errorf("password must be at least %d characters", MinPasswordLen)
+	}
+	return nil
+}
+
 // HashPassword hashes a plaintext password with argon2id and returns a PHC string
 // of the form $argon2id$v=19$m=...,t=...,p=...$<salt>$<hash> (standard, parseable,
 // self-describing).

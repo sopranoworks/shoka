@@ -1,4 +1,5 @@
 import { useRouterState } from '@tanstack/react-router'
+import { MyAccountPage } from './MyAccountPage'
 import { UserManagementPage } from './UserManagementPage'
 import { ConnectionsPage } from './ConnectionsPage'
 import { NamespaceManagementPage } from './NamespaceManagementPage'
@@ -22,6 +23,11 @@ export function SettingsPage() {
         <p>Choose a setting from the list.</p>
       </div>
     )
+  }
+
+  // My Account is visible to every authenticated user (self-service); no super-user gate.
+  if (item === 'account') {
+    return <MyAccountPage />
   }
 
   if (item === 'users') {
