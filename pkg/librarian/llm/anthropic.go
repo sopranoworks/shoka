@@ -21,17 +21,15 @@ type anthropicClient struct {
 	maxTokens int64
 }
 
-// NewAnthropicClient builds a Client over the Anthropic SDK. A non-empty
+// newAnthropicClient builds a Client over the Anthropic SDK. A non-empty
 // BaseURL points the SDK at an Anthropic-compatible endpoint (e.g. ollama's
 // /v1/messages at http://localhost:11434); an empty BaseURL uses the real
-// Anthropic API.
-func NewAnthropicClient(cfg LLMConfig) Client {
+// Anthropic API. No key option is set — the SDK reads ANTHROPIC_API_KEY from
+// the environment (Shoka never handles the key).
+func newAnthropicClient(cfg LLMConfig) Client {
 	var opts []option.RequestOption
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
-	}
-	if cfg.APIKey != "" {
-		opts = append(opts, option.WithAPIKey(cfg.APIKey))
 	}
 	return &anthropicClient{
 		client:    anthropic.NewClient(opts...),

@@ -463,23 +463,48 @@ type IdentityConfig struct {
 }
 
 // LLMConfig configures the ask_the_librarian internal LLM (B-73). It maps to
-// pkg/librarian/llm.LLMConfig. The same shape selects live Anthropic (empty
-// base_url, a real key) and local-ollama debugging (base_url
-// http://localhost:11434, api_key "ollama", an ollama model) on ONE code path.
+// pkg/librarian/llm.LLMConfig. provider selects the SDK (anthropic|openai);
+// model is REQUIRED (the SDKs have no model env var); base_url is OPTIONAL
+// (omitted ⇒ the SDK's production endpoint; set only for ollama/proxy).
+//
+// There is DELIBERATELY no api_key field: the API key is read from the
+// environment by the SDK (ANTHROPIC_API_KEY / OPENAI_API_KEY), never from
+// config. With strict KnownFields decoding, an `api_key:` line is a hard config
+// error — the intended guardrail against putting a secret in the config file.
 // When unset (IsConfigured false), the ask_the_librarian tool is not registered.
 type LLMConfig struct {
 	Provider string `yaml:"provider"`
 	BaseURL  string `yaml:"base_url"`
-	APIKey   string `yaml:"api_key"`
 	Model    string `yaml:"model"`
 	MaxSteps int    `yaml:"max_steps"`
 }
 
 // IsConfigured reports whether the librarian tool should be registered: a
-// provider, a model, and a credential (a real key, or the ollama placeholder).
+// provider and a model. Whether the env API key is present/valid is verified by
+// the startup health-check, not here.
 func (c LLMConfig) IsConfigured() bool {
-	return c.Provider != "" && c.Model != "" && c.APIKey != ""
+	return c.Provider != "" && c.Model != ""
 }
+
+// Validate checks a configured librarian for internal consistency: a known
+// provider and a non-empty model. It is only meaningful when some llm field is
+// set; an entirely-empty LLMConfig is "not configured" and skipped by callers.
+func (c LLMConfig) Validate() error {
+	if c.Provider != llmProviderAnthropic && c.Provider != llmProviderOpenAI {
+		return fmt.Errorf("llm.provider must be %q or %q, got %q", llmProviderAnthropic, llmProviderOpenAI, c.Provider)
+	}
+	if c.Model == "" {
+		return fmt.Errorf("llm.model is required (the provider has no model environment variable)")
+	}
+	return nil
+}
+
+// llm provider names, kept in sync with pkg/librarian/llm. They are duplicated
+// (not imported) so internal/config carries no dependency on pkg/librarian.
+const (
+	llmProviderAnthropic = "anthropic"
+	llmProviderOpenAI    = "openai"
+)
 
 type Config struct {
 	Server struct {
@@ -690,6 +715,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.Backup.RetentionDays < 0 {
 		return errors.New("storage.backup.retention_days must be non-negative (0 = off)")
+	}
+	// ask_the_librarian (B-73): if any llm field is set, the block must be a
+	// valid, consistent config (known provider + a model). An entirely-empty
+	// block is "not configured" and skipped.
+	if c.LLM != (LLMConfig{}) {
+		if err := c.LLM.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

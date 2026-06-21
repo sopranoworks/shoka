@@ -27,6 +27,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/httplog"
 	"github.com/sopranoworks/shoka/internal/identity"
+	"github.com/sopranoworks/shoka/internal/libstatus"
 	"github.com/sopranoworks/shoka/internal/logging"
 	"github.com/sopranoworks/shoka/internal/metrics"
 	"github.com/sopranoworks/shoka/internal/notify"
@@ -253,6 +254,24 @@ func main() {
 	}
 
 	uim := ui.NewManager(s, dm, notifyCenter)
+
+	// ask_the_librarian setup validation (B-73): a cached health checker shared by
+	// the startup check and the WebUI status (with manual refresh). When the LLM is
+	// configured, run ONE minimal health-check at startup — non-blocking (in a
+	// goroutine) so a slow/unreachable endpoint never delays serving — and log the
+	// outcome. The WebUI reads the cached snapshot; a refresh re-runs the check.
+	libHealth := libstatus.New(llmConfig(cfg))
+	uim.SetLibrarianStatus(libHealth)
+	if cfg.LLM.IsConfigured() {
+		go func() {
+			snap := libHealth.Refresh(ctx)
+			if snap.Kind == string(llm.HealthReady) {
+				logger.Info("librarian: ready", "provider", snap.Provider, "model", snap.Model)
+			} else {
+				logger.Warn("librarian: not ready", "kind", snap.Kind, "provider", snap.Provider, "model", snap.Model, "detail", snap.Detail)
+			}
+		}()
+	}
 
 	// B-50: "is OAuth active" ≡ the OAuth MCP transport is configured (its listen
 	// address is set). The former server.auth.oauth.enabled flag is gone. The
@@ -694,6 +713,17 @@ func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
 	return out
 }
 
+// llmConfig maps the Shoka config's llm block to the pkg/librarian/llm seam
+// config (the API key is not carried — the SDK reads it from the environment).
+func llmConfig(cfg *config.Config) llm.LLMConfig {
+	return llm.LLMConfig{
+		Provider: cfg.LLM.Provider,
+		BaseURL:  cfg.LLM.BaseURL,
+		Model:    cfg.LLM.Model,
+		MaxSteps: cfg.LLM.MaxSteps,
+	}
+}
+
 func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitStorage, logger *slog.Logger, notifyCenter *notify.Center) *mcp.Server {
 	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
@@ -878,18 +908,18 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	// (read-level), so the caller still needs the namespace/project scope; the
 	// inner read/list/search tools are in-process Go, not separately MCP-exposed.
 	if cfg.LLM.IsConfigured() {
-		llmClient := llm.NewAnthropicClient(llm.LLMConfig{
-			Provider: cfg.LLM.Provider,
-			BaseURL:  cfg.LLM.BaseURL,
-			APIKey:   cfg.LLM.APIKey,
-			Model:    cfg.LLM.Model,
-			MaxSteps: cfg.LLM.MaxSteps,
-		})
-		lib := librarian.New(llmClient, cfg.LLM.MaxSteps)
-		mcp.AddTool(mcpServer, &mcp.Tool{
-			Name:        "ask_the_librarian",
-			Description: "Ask a natural-language question about a project's documents and get back just the answer. An internal LLM reads the project's files (read-only) and synthesizes the answer, so your own context is not filled by the corpus — ideal for consulting a large body of docs (specs, backlog, reports). Requires read access to the namespace/project.",
-		}, tools.LoggedTool(logger, "ask_the_librarian", tools.AskTheLibrarianHandler(s, lib)))
+		llmClient, err := llm.NewClient(llmConfig(cfg))
+		if err != nil {
+			// Config was validated at load (known provider), so this should not
+			// happen; log and skip registration rather than crash serving.
+			logger.Error("ask_the_librarian: cannot build LLM client; tool not registered", "error", err)
+		} else {
+			lib := librarian.New(llmClient, cfg.LLM.MaxSteps)
+			mcp.AddTool(mcpServer, &mcp.Tool{
+				Name:        "ask_the_librarian",
+				Description: "Ask a natural-language question about a project's documents and get back just the answer. An internal LLM reads the project's files (read-only) and synthesizes the answer, so your own context is not filled by the corpus — ideal for consulting a large body of docs (specs, backlog, reports). Requires read access to the namespace/project.",
+			}, tools.LoggedTool(logger, "ask_the_librarian", tools.AskTheLibrarianHandler(s, lib)))
+		}
 	}
 
 	// Wire the reaper to the live session set and start it (drops subscriptions for

@@ -12,6 +12,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 // Role is the conversational role of a message.
@@ -94,22 +95,48 @@ type Client interface {
 	CreateMessage(ctx context.Context, params CreateMessageParams) (Message, error)
 }
 
-// LLMConfig configures the LLM client. The same struct selects live Anthropic
-// and local-ollama debugging — they differ only in BaseURL, APIKey, and Model:
+// Provider names accepted by NewClient.
+const (
+	ProviderAnthropic = "anthropic"
+	ProviderOpenAI    = "openai"
+)
+
+// LLMConfig configures the LLM client. The provider selects the SDK; the model
+// is required (the SDKs have no model env var); BaseURL is optional (omitted ⇒
+// the SDK's production endpoint; set only for ollama/proxy).
 //
-//	live:  {Provider:"anthropic", BaseURL:"",                       APIKey:<real>,    Model:"claude-…"}
-//	debug: {Provider:"anthropic", BaseURL:"http://localhost:11434", APIKey:"ollama",  Model:"Qwen3:1.7b-q4_K_M"}
+// The API key is DELIBERATELY absent: secrets do not belong in config. Each SDK
+// auto-reads its key from the environment — ANTHROPIC_API_KEY for the anthropic
+// provider, OPENAI_API_KEY for the openai provider (for ollama debugging the env
+// key is the ignored placeholder "ollama"). Shoka never reads or handles the key.
+//
+//	prod (anthropic):  {Provider:"anthropic", Model:"claude-…"}                              + ANTHROPIC_API_KEY in env
+//	prod (openai):     {Provider:"openai",    Model:"gpt-…"}                                 + OPENAI_API_KEY in env
+//	debug (ollama):    {Provider:"anthropic", BaseURL:"http://localhost:11434", Model:"…"}   + ANTHROPIC_API_KEY=ollama
 type LLMConfig struct {
-	Provider string // "anthropic"
-	BaseURL  string // "" => real Anthropic; "http://localhost:11434" => local ollama
-	APIKey   string // real key live; "ollama" (accepted-but-ignored) for local
-	Model    string // "claude-…" live; "Qwen3:1.7b-q4_K_M" debug
+	Provider string // "anthropic" | "openai"
+	BaseURL  string // "" => SDK production default; "http://localhost:11434" => local ollama
+	Model    string // required; "claude-…" / "gpt-…" / an ollama tag
 	MaxSteps int    // tool-call loop budget (max model round-trips)
 }
 
-// IsConfigured reports whether the config carries enough to build a client: a
-// provider, a model, and a credential (a real key, or the ollama placeholder
-// that rides on a base-URL override).
+// IsConfigured reports whether the librarian should be enabled: a provider and a
+// model. Whether the env key is present/valid is what the health-check verifies
+// (see health.go) — not this gate.
 func (c LLMConfig) IsConfigured() bool {
-	return c.Provider != "" && c.Model != "" && c.APIKey != ""
+	return c.Provider != "" && c.Model != ""
+}
+
+// NewClient builds the LLM client for the configured provider. An unknown
+// provider is a clear error, never a silent fallback. Neither client is given
+// an explicit key option — the SDK reads its key from the environment.
+func NewClient(cfg LLMConfig) (Client, error) {
+	switch cfg.Provider {
+	case ProviderAnthropic:
+		return newAnthropicClient(cfg), nil
+	case ProviderOpenAI:
+		return newOpenAIClient(cfg), nil
+	default:
+		return nil, fmt.Errorf("unknown llm provider %q (want %q or %q)", cfg.Provider, ProviderAnthropic, ProviderOpenAI)
+	}
 }

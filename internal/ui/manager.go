@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/ingest"
+	"github.com/sopranoworks/shoka/internal/libstatus"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/pkg/authz"
@@ -87,6 +89,12 @@ const (
 	// MsgNotify carries one notify.Event pushed from the server to the browser (the
 	// 2026-05-31 auto-refresh directive). It rides the same {type,payload} envelope.
 	MsgNotify MessageType = "NOTIFY"
+	// MsgLibrarianStatus returns the cached ask_the_librarian health snapshot
+	// (B-73 config-and-validation); MsgRefreshLibrarianStatus re-runs the one-call
+	// health-check and returns the fresh snapshot. Both carry a LibrarianStatus
+	// payload and are admin-only (they expose config validity, never the API key).
+	MsgLibrarianStatus        MessageType = "LIBRARIAN_STATUS"
+	MsgRefreshLibrarianStatus MessageType = "REFRESH_LIBRARIAN_STATUS"
 )
 
 type CreateProjectPayload struct {
@@ -222,12 +230,16 @@ type Manager struct {
 	// exactly as before — Shoka's behaviour is unchanged. The holder needs NO
 	// StorageService, so the slice is independently constructible by a second program.
 	*uiws.CoreHandlers
-	storage       storage.StorageService
-	drafts        *drafts.Manager
-	notify        *notify.Center
-	originChecker func(*http.Request) bool
-	upgrader      websocket.Upgrader
-	notifyDrops   atomic.Int64
+	storage storage.StorageService
+	drafts  *drafts.Manager
+	notify  *notify.Center
+	// librarianStatus holds the cached ask_the_librarian health (B-73); nil when
+	// the librarian is not wired (e.g. the LLM is not configured). The handlers
+	// treat nil as "unconfigured".
+	librarianStatus *libstatus.Checker
+	originChecker   func(*http.Request) bool
+	upgrader        websocket.Upgrader
+	notifyDrops     atomic.Int64
 	// connSeq assigns each connection a unique sender id ("ws-<seq>"). Atomic so
 	// concurrent upgrades never collide on an id.
 	connSeq atomic.Uint64
@@ -338,6 +350,12 @@ var wsLevels = map[MessageType]uiws.Op{
 	// handler tightens whole-namespace actions to super-user).
 	MsgNamespaceHealth:  {Level: authz.LevelAdmin, Global: true},
 	MsgNamespaceRecover: {Level: authz.LevelAdmin, Global: false},
+
+	// Librarian health is server-global config validity (admin-somewhere reads it;
+	// the handler exposes no secret). Refresh makes one real API call, so it is
+	// gated the same as the read.
+	MsgLibrarianStatus:        {Level: authz.LevelAdmin, Global: true},
+	MsgRefreshLibrarianStatus: {Level: authz.LevelAdmin, Global: true},
 }
 
 // wsSuperUserOps are the /ws/ui messages that require a SUPER-USER (wildcard admin), not
@@ -468,6 +486,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleListDeleted(client, wsMsg.Payload)
 		case MsgReviveFile:
 			m.handleReviveFile(client, wsMsg.Payload)
+		case MsgLibrarianStatus:
+			m.handleLibrarianStatus(client)
+		case MsgRefreshLibrarianStatus:
+			m.handleRefreshLibrarianStatus(client)
 		default:
 			client.SendError("Unknown message type")
 		}
@@ -760,6 +782,33 @@ func (m *Manager) handleNamespaceHealth(client *uiws.Client) {
 	// The gate authorized admin-somewhere; filter the picture to the principal's admin
 	// namespaces (a super-user sees all, incl. base-level foreign namespaces).
 	client.SendResponse(MsgNamespaceHealth, filterHealthByAdminScope(hr.CheckAllHealth(), client.Scope()))
+}
+
+// SetLibrarianStatus wires the cached ask_the_librarian health checker (B-73).
+// Called once at startup from cmd/shoka; nil leaves the status "unconfigured".
+func (m *Manager) SetLibrarianStatus(c *libstatus.Checker) { m.librarianStatus = c }
+
+// handleLibrarianStatus returns the cached librarian health snapshot — a cheap
+// read, NOT a fresh API call (the WebUI shows the last cached result on load).
+func (m *Manager) handleLibrarianStatus(client *uiws.Client) {
+	if m.librarianStatus == nil {
+		client.SendResponse(MsgLibrarianStatus, libstatus.Snapshot{Kind: "unconfigured"})
+		return
+	}
+	client.SendResponse(MsgLibrarianStatus, m.librarianStatus.Get())
+}
+
+// handleRefreshLibrarianStatus re-runs the one-call health-check on demand (the
+// operator's manual refresh) and returns the fresh snapshot. One real (tiny) API
+// call per click — never the API key.
+func (m *Manager) handleRefreshLibrarianStatus(client *uiws.Client) {
+	if m.librarianStatus == nil {
+		client.SendResponse(MsgLibrarianStatus, libstatus.Snapshot{Kind: "unconfigured"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client.SendResponse(MsgLibrarianStatus, m.librarianStatus.Refresh(ctx))
 }
 
 // filterHealthByAdminScope narrows a health report to what the principal may see: a

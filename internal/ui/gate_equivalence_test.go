@@ -44,6 +44,10 @@ func TestGateTables_MatchPreExtraction(t *testing.T) {
 		MsgNamespaceHealth:  {Level: authz.LevelAdmin, Global: true},
 		MsgNamespaceRecover: {Level: authz.LevelAdmin, Global: false},
 
+		// --- document rows added after the extraction (B-73 librarian status) ---
+		MsgLibrarianStatus:        {Level: authz.LevelAdmin, Global: true},
+		MsgRefreshLibrarianStatus: {Level: authz.LevelAdmin, Global: true},
+
 		// --- core rows (moved to uiws.CoreLevels; values must be unchanged) ---
 		uiws.MsgOAuthList:      {Level: authz.LevelAdmin, Global: true},
 		uiws.MsgOAuthRevoke:    {Level: authz.LevelAdmin, Global: true},

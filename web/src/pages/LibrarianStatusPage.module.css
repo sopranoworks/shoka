@@ -1,0 +1,61 @@
+.page {
+  padding: 1.5rem;
+  max-width: 40rem;
+}
+
+.title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+}
+
+.intro {
+  color: var(--text-muted, #666);
+  margin: 0 0 1rem;
+}
+
+.card {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.row {
+  display: flex;
+  gap: 1rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border-subtle, #f0f0f0);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.label {
+  flex: 0 0 8rem;
+  color: var(--text-muted, #666);
+}
+
+.ok {
+  color: var(--success, #1a7f37);
+  font-weight: 600;
+}
+
+.bad {
+  color: var(--danger, #b42318);
+  font-weight: 600;
+}
+
+.refresh {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  cursor: pointer;
+}
+
+.refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

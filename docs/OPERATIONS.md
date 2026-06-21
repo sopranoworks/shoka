@@ -337,20 +337,48 @@ internal LLM reads a project's documents through read-only, root-confined,
 ignore-filtered tools and returns only the **answer**, so a consulting agent's
 own context is never filled by the corpus. The tool rides the authorization
 middleware at **read** level — the caller still needs read access to the target
-namespace/project. The same keys serve live Anthropic and a local-ollama debug
-path on one code path (they differ only in `base_url`, `api_key`, `model`).
+namespace/project.
+
+**The API key goes in the environment, not the config.** Shoka never reads or
+stores the key; the SDK reads it from the environment:
+
+- `provider: anthropic` → set **`ANTHROPIC_API_KEY`** in the server's environment.
+- `provider: openai` → set **`OPENAI_API_KEY`** in the server's environment.
+
+There is deliberately **no `api_key` config key** — putting one in the config is
+a hard load error (the guardrail against committing a secret).
 
 | Key | Type | Required | Default | Meaning |
 |-----|------|----------|---------|---------|
-| `llm.provider` | string | to enable | — | LLM provider. Only `anthropic` today. |
-| `llm.base_url` | string | no | `""` | `""` ⇒ live Anthropic; `http://localhost:11434` ⇒ local ollama (Anthropic-compatible `/v1/messages`). |
-| `llm.api_key` | string | to enable | — | A real Anthropic key live; the placeholder `ollama` (accepted-but-ignored) for local ollama. |
-| `llm.model` | string | to enable | — | e.g. a `claude-*` model live, or an ollama tag like `Qwen3:1.7b-q4_K_M`. |
+| `llm.provider` | string | yes (to enable) | — | `anthropic` or `openai`. |
+| `llm.model` | string | yes (to enable) | — | A current model id from the provider, e.g. a `claude-…` (Anthropic) or `gpt-…` (OpenAI) string. The provider has no model environment variable, so this is required. |
+| `llm.base_url` | string | no | `""` | Omit for production (the SDK's default endpoint). Set only for a proxy. |
 | `llm.max_steps` | int | no | `8` | Tool-call loop budget (model round-trips). |
 
-The tool is registered **only** when `provider`, `model`, and `api_key` are all
-set (the `IsConfigured` gate); otherwise it is silently absent. The inner
+A minimal production config:
+
+```yaml
+llm:
+  provider: anthropic        # or: openai
+  model: claude-3-5-haiku-latest   # use a current model id; openai e.g. gpt-4o
+# the API key is an environment variable (ANTHROPIC_API_KEY / OPENAI_API_KEY), NOT a config key
+```
+
+The tool is registered **only** when `provider` and `model` are both set (the
+`IsConfigured` gate); otherwise it is silently absent. Whether the key is
+present/valid and the model name is correct is verified by a **startup
+health-check** — one minimal LLM call logged as `librarian: ready (…)` or
+`librarian: not ready (kind=…)`. The result is shown in the Web UI under
+**Settings → Librarian** (super-user), with a **Refresh** button to re-check on
+demand (e.g. after fixing the key or when the endpoint was down). The health
+result reveals only validity (provider/model/kind), never the key. The inner
 read/list/search tools are in-process Go, not separately MCP-exposed.
+
+> Developer/debug only (NOT for deployment): either provider can be pointed at a
+> local [ollama](https://ollama.com) for a free, hermetic loop by setting
+> `base_url: http://localhost:11434` (anthropic) or `http://localhost:11434/v1`
+> (openai), an ollama `model` tag, and the placeholder key `ollama` in the env
+> var. ollama is a dev aid only and is not a supported deployment target.
 
 Validation: the server refuses to start without `storage.base_dir`,
 `server.http.listen`, or at least one MCP transport (`server.mcp.plain.listen` /

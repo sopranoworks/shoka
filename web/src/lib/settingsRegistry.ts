@@ -40,6 +40,10 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
     label: 'Namespace / project management',
     visible: (v) => v.isSuperUser || v.managesAnyNamespace,
   },
+  // ask_the_librarian health (B-73) — SUPER-USER-ONLY: it reports server-wide LLM
+  // config validity (provider/model/connectivity), never a secret. The LIBRARIAN_*
+  // ws ops are admin-gated server-side, so this filter is the UI half.
+  { id: 'librarian', label: 'Librarian', visible: (v) => v.isSuperUser },
 ]
 
 // visibleSettingsItems returns the items the current viewer may access.

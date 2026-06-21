@@ -58,13 +58,18 @@ func TestAsk_OllamaEndToEnd(t *testing.T) {
 	_ = conn.Close()
 
 	root, ignore, secret := fixtureCorpus(t)
-	client := llm.NewAnthropicClient(llm.LLMConfig{
+	// The key now comes from the environment (Shoka never handles it); for ollama
+	// it is the ignored placeholder "ollama".
+	t.Setenv("ANTHROPIC_API_KEY", "ollama")
+	client, err := llm.NewClient(llm.LLMConfig{
 		Provider: "anthropic",
 		BaseURL:  baseURL,
-		APIKey:   "ollama",
 		Model:    model,
 		MaxSteps: 6,
 	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 	lib := New(client, 6)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)

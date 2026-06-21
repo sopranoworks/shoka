@@ -3,6 +3,7 @@ import { MyAccountPage } from './MyAccountPage'
 import { UserManagementPage } from './UserManagementPage'
 import { ConnectionsPage } from './ConnectionsPage'
 import { NamespaceManagementPage } from './NamespaceManagementPage'
+import { LibrarianStatusPage } from './LibrarianStatusPage'
 import { useIsSuperUser, useManagesAnyNamespace } from '../lib/authStatus'
 import styles from './SettingsPage.module.css'
 
@@ -64,6 +65,18 @@ export function SettingsPage() {
       )
     }
     return <NamespaceManagementPage />
+  }
+
+  if (item === 'librarian') {
+    if (!isSuperUser) {
+      return (
+        <div className={styles.placeholder}>
+          <h1 className={styles.title}>Librarian</h1>
+          <p>You do not have permission to view the librarian status.</p>
+        </div>
+      )
+    }
+    return <LibrarianStatusPage />
   }
 
   return (

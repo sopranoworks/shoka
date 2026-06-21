@@ -66,7 +66,6 @@ func TestAskTheLibrarian_ConditionalRegistration(t *testing.T) {
 	on.LLM = config.LLMConfig{
 		Provider: "anthropic",
 		BaseURL:  "http://localhost:11434",
-		APIKey:   "ollama",
 		Model:    "Qwen3:1.7b-q4_K_M",
 		MaxSteps: 4,
 	}
