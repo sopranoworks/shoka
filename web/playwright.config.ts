@@ -14,11 +14,20 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
-  reporter: 'list',
+  // 'list' for the live log + the failure-evidence archiver (directive §2.5): on ANY
+  // failure it copies the complete failing moment (trace/video/screenshot + replay inputs)
+  // OUT to a non-wiped per-run archive before the next run clears test-results — so a flake
+  // that fires on run 7 or run 700 is always fully reconstructable afterward.
+  reporter: [['list'], ['./tests/e2e/failure-archiver.ts']],
   globalSetup: './tests/e2e/global-setup.ts',
   use: {
     baseURL: `http://localhost:${PORT}`,
-    trace: 'on-first-retry',
+    // Retain on failure (NOT on-first-retry, which never fires at retries:0): the trace
+    // carries DOM snapshots + console + network + step timing; video + screenshot complete
+    // the moment. The archiver copies them out before test-results is wiped.
+    trace: 'retain-on-failure',
+    video: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 })

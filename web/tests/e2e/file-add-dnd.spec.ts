@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { backendCreateProject, backendWrite } from './control'
+import { dropFile } from './dndHelpers'
 
 // B-28 — external file drag-and-drop ADD, PROVEN in a REAL browser (the trash-D&D
 // class: a unit/mock seam can be green while the real browser path is broken). These
@@ -33,51 +34,8 @@ async function openProject(page: Page, path: string) {
   await expect(page.getByTestId('file-dropzone')).toBeVisible()
 }
 
-// dropFile dispatches a REAL native file drop of {name, content} onto the explorer
-// dropzone. When onFolder is given, the drop point is centred on that folder's row
-// (so resolveDestDir picks it up via data-dir-path); otherwise it targets the empty
-// area at the bottom of the dropzone → the project root.
-async function dropFile(
-  page: Page,
-  name: string,
-  content: string,
-  onFolder?: string,
-) {
-  let point: { x: number; y: number }
-  if (onFolder) {
-    const row = page.locator('#sidebar').getByText(onFolder, { exact: true }).first()
-    await expect(row).toBeVisible()
-    const box = await row.boundingBox()
-    if (!box) throw new Error(`folder row ${onFolder} has no box`)
-    point = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
-  } else {
-    const zone = page.getByTestId('file-dropzone')
-    const box = await zone.boundingBox()
-    if (!box) throw new Error('dropzone has no box')
-    // The empty area near the bottom — below the rows → project root.
-    point = { x: box.x + box.width / 2, y: box.y + box.height - 6 }
-  }
-
-  await page.evaluate(
-    ({ name, content, point }) => {
-      const el = document.elementFromPoint(point.x, point.y)
-      if (!el) throw new Error('no element at drop point')
-      const dt = new DataTransfer()
-      dt.items.add(new File([content], name, { type: 'text/markdown' }))
-      const opts = {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer: dt,
-        clientX: point.x,
-        clientY: point.y,
-      }
-      el.dispatchEvent(new DragEvent('dragenter', opts))
-      el.dispatchEvent(new DragEvent('dragover', opts))
-      el.dispatchEvent(new DragEvent('drop', opts))
-    },
-    { name, content, point },
-  )
-}
+// dropFile (the ATOMIC, race-free native-drop helper) now lives in ./dndHelpers so the
+// rootcause proof spec can reuse it; see that file for the resolve-then-dispatch race fix.
 
 test('drops an allowlisted .md onto the explorer → it is ADDED to the tree (real browser; core)', async ({
   page,

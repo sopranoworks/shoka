@@ -13,3 +13,4 @@ test-results/
 
 # Editor / OS
 .DS_Store
+playwright-failures/
