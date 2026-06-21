@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // B-71 Stage 2d: the DOMAIN_* ws ops + domain-grouped OAUTH_LIST, against a REAL oauthstore
@@ -23,12 +25,12 @@ func realOAuthStore(t *testing.T) *oauthstore.Store {
 	return s
 }
 
-func decodeDomainList(t *testing.T, resp WSMessage) DomainListPayload {
+func decodeDomainList(t *testing.T, resp uiws.WSMessage) uiws.DomainListPayload {
 	t.Helper()
-	if resp.Type != MsgDomainList {
+	if resp.Type != uiws.MsgDomainList {
 		t.Fatalf("type = %s, want DOMAIN_LIST (payload=%s)", resp.Type, resp.Payload)
 	}
-	var out DomainListPayload
+	var out uiws.DomainListPayload
 	if err := json.Unmarshal(resp.Payload, &out); err != nil {
 		t.Fatalf("unmarshal DOMAIN_LIST: %v", err)
 	}
@@ -42,12 +44,12 @@ func TestWSUI_DomainCRUD(t *testing.T) {
 	conn := newOAuthManager(t, "", realOAuthStore(t))
 
 	// CREATE with TTL, no consent.
-	resp := roundTrip(t, conn, MsgDomainCreate,
+	resp := roundTrip(t, conn, uiws.MsgDomainCreate,
 		`{"domain":"connector.example","access_ttl_seconds":3600,"refresh_ttl_seconds":86400}`)
-	if resp.Type != MsgDomainCreate {
+	if resp.Type != uiws.MsgDomainCreate {
 		t.Fatalf("create type = %s (%s)", resp.Type, resp.Payload)
 	}
-	var created DomainInfo
+	var created uiws.DomainInfo
 	_ = json.Unmarshal(resp.Payload, &created)
 	if created.Domain != "connector.example" || created.AccessTTLSeconds != 3600 || created.RefreshTTLSeconds != 86400 || created.Consent != "" {
 		t.Fatalf("created (should have no consent yet): %+v", created)
@@ -55,11 +57,11 @@ func TestWSUI_DomainCRUD(t *testing.T) {
 	id := created.ID
 
 	// GENERATE CONSENT — returns a plaintext value (operator-readable).
-	resp = roundTrip(t, conn, MsgDomainGenerateConsent, fmt.Sprintf(`{"id":%q}`, id))
-	if resp.Type != MsgDomainGenerateConsent {
+	resp = roundTrip(t, conn, uiws.MsgDomainGenerateConsent, fmt.Sprintf(`{"id":%q}`, id))
+	if resp.Type != uiws.MsgDomainGenerateConsent {
 		t.Fatalf("generate type = %s (%s)", resp.Type, resp.Payload)
 	}
-	var gen DomainGenerateConsentPayload
+	var gen uiws.DomainGenerateConsentPayload
 	_ = json.Unmarshal(resp.Payload, &gen)
 	if gen.ID != id || gen.Consent == "" {
 		t.Fatalf("generate must return a plaintext consent value: %+v", gen)
@@ -67,37 +69,37 @@ func TestWSUI_DomainCRUD(t *testing.T) {
 	consent := gen.Consent
 
 	// Regenerate yields a DIFFERENT value (re-roll).
-	resp = roundTrip(t, conn, MsgDomainGenerateConsent, fmt.Sprintf(`{"id":%q}`, id))
-	var gen2 DomainGenerateConsentPayload
+	resp = roundTrip(t, conn, uiws.MsgDomainGenerateConsent, fmt.Sprintf(`{"id":%q}`, id))
+	var gen2 uiws.DomainGenerateConsentPayload
 	_ = json.Unmarshal(resp.Payload, &gen2)
 	if gen2.Consent == "" || gen2.Consent == consent {
 		t.Fatalf("regenerate must re-roll the value: %q vs %q", consent, gen2.Consent)
 	}
 
 	// LIST shows the domain WITH its plaintext consent value (the whole point — readable).
-	list := decodeDomainList(t, roundTrip(t, conn, MsgDomainList, `{}`))
+	list := decodeDomainList(t, roundTrip(t, conn, uiws.MsgDomainList, `{}`))
 	if len(list.Domains) != 1 || list.Domains[0].ID != id || list.Domains[0].Consent != gen2.Consent {
 		t.Fatalf("list must carry the plaintext consent value: %+v", list.Domains)
 	}
 
 	// UPDATE: change the access TTL, leave refresh unset (0 ⇒ global default); consent untouched.
-	resp = roundTrip(t, conn, MsgDomainUpdate,
+	resp = roundTrip(t, conn, uiws.MsgDomainUpdate,
 		fmt.Sprintf(`{"id":%q,"access_ttl_seconds":7200,"refresh_ttl_seconds":0}`, id))
-	if resp.Type != MsgDomainUpdate {
+	if resp.Type != uiws.MsgDomainUpdate {
 		t.Fatalf("update type = %s (%s)", resp.Type, resp.Payload)
 	}
-	var updated DomainInfo
+	var updated uiws.DomainInfo
 	_ = json.Unmarshal(resp.Payload, &updated)
 	if updated.AccessTTLSeconds != 7200 || updated.RefreshTTLSeconds != 0 || updated.Consent != gen2.Consent {
 		t.Fatalf("updated (consent must survive a TTL edit): %+v", updated)
 	}
 
 	// DELETE.
-	resp = roundTrip(t, conn, MsgDomainDelete, fmt.Sprintf(`{"id":%q}`, id))
-	if resp.Type != MsgDomainDelete {
+	resp = roundTrip(t, conn, uiws.MsgDomainDelete, fmt.Sprintf(`{"id":%q}`, id))
+	if resp.Type != uiws.MsgDomainDelete {
 		t.Fatalf("delete type = %s (%s)", resp.Type, resp.Payload)
 	}
-	if got := decodeDomainList(t, roundTrip(t, conn, MsgDomainList, `{}`)); len(got.Domains) != 0 {
+	if got := decodeDomainList(t, roundTrip(t, conn, uiws.MsgDomainList, `{}`)); len(got.Domains) != 0 {
 		t.Fatalf("deleted domain still listed: %+v", got.Domains)
 	}
 }
@@ -117,8 +119,8 @@ func TestWSUI_DomainDeleteRevokesTokens(t *testing.T) {
 	self, _ := store.NewSeries(oauthstore.SelfIssuedClientID, p, "res", "*", now, time.Hour, 24*time.Hour)
 
 	conn := newOAuthManager(t, "", store)
-	resp := roundTrip(t, conn, MsgDomainDelete, fmt.Sprintf(`{"id":%q}`, dom.ID))
-	var del DomainDeletePayload
+	resp := roundTrip(t, conn, uiws.MsgDomainDelete, fmt.Sprintf(`{"id":%q}`, dom.ID))
+	var del uiws.DomainDeletePayload
 	_ = json.Unmarshal(resp.Payload, &del)
 	if del.RevokedTokens != 1 {
 		t.Fatalf("delete must revoke the 1 token under the domain; got %d", del.RevokedTokens)
@@ -146,7 +148,7 @@ func TestWSUI_OAuthListGroupsByDomain(t *testing.T) {
 	_, _ = store.NewSeries(oauthstore.SelfIssuedClientID, p, "res", "*", now, time.Hour, 24*time.Hour)
 
 	conn := newOAuthManager(t, "", store)
-	list := decodeOAuthList(t, roundTrip(t, conn, MsgOAuthList, `{}`))
+	list := decodeOAuthList(t, roundTrip(t, conn, uiws.MsgOAuthList, `{}`))
 	if len(list.Connections) != 2 {
 		t.Fatalf("connections = %d, want 2", len(list.Connections))
 	}
@@ -168,9 +170,9 @@ func TestWSUI_OAuthListGroupsByDomain(t *testing.T) {
 // authz gate (PERMISSION_DENIED), before the handler runs.
 func TestWSUI_DomainOpsAdminGated(t *testing.T) {
 	conn := newOAuthManager(t, "namespace:foo:r", realOAuthStore(t))
-	for _, mt := range []MessageType{MsgDomainList, MsgDomainCreate, MsgDomainUpdate, MsgDomainDelete, MsgDomainGenerateConsent} {
+	for _, mt := range []MessageType{uiws.MsgDomainList, uiws.MsgDomainCreate, uiws.MsgDomainUpdate, uiws.MsgDomainDelete, uiws.MsgDomainGenerateConsent} {
 		resp := roundTrip(t, conn, mt, `{}`)
-		if resp.Type != MsgPermissionDenied {
+		if resp.Type != uiws.MsgPermissionDenied {
 			t.Fatalf("%s by a non-admin: type = %s, want PERMISSION_DENIED", mt, resp.Type)
 		}
 	}

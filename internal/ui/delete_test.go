@@ -11,6 +11,8 @@ import (
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // TestWSUI_DeleteFileEndToEnd is the directive's /ws/ui completion criterion for
@@ -62,7 +64,7 @@ func TestWSUI_DeleteFileEndToEnd(t *testing.T) {
 	connB.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var deleted *notify.Event
 	for deleted == nil {
-		var msg WSMessage
+		var msg uiws.WSMessage
 		if err := connB.ReadJSON(&msg); err != nil {
 			t.Fatalf("B never received file.delete: %v", err)
 		}
@@ -135,7 +137,7 @@ func TestWSUI_DeleteStaleIfMatchReturnsConflict(t *testing.T) {
 	if resp.Type != MsgConflict {
 		t.Fatalf("type = %s, want CONFLICT (payload=%s)", resp.Type, resp.Payload)
 	}
-	if resp.Type == Error {
+	if resp.Type == uiws.Error {
 		t.Error("conflict must be structurally distinct from the generic ERROR frame")
 	}
 	var c ConflictPayload

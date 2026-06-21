@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // b64 is the standard base64 encoding of b — the wire form a dropped file's bytes
@@ -43,7 +45,7 @@ func TestWSUI_SaveBase64_DisallowedFormatRejected(t *testing.T) {
 	for _, path := range []string{"image.png", "notes.txt", "Makefile"} {
 		resp := roundTrip(t, conn, SaveFile,
 			`{"namespace":"ns","projectName":"proj","path":"`+path+`","content":"`+b64([]byte("x"))+`","content_encoding":"base64"}`)
-		if resp.Type != Error {
+		if resp.Type != uiws.Error {
 			t.Fatalf("path %q: type = %s, want ERROR", path, resp.Type)
 		}
 		if _, _, rerr := s.ReadFileWithETag("ns", "proj", path); rerr == nil {
@@ -125,7 +127,7 @@ func TestWSUI_SaveBase64_RidesLevelWriteGate(t *testing.T) {
 		Namespace: "foo", ProjectName: "proj", Path: "drop.md",
 		Content: b64([]byte("# x\n")), ContentEncoding: "base64",
 	})
-	readUntil(t, connR, MsgPermissionDenied, nil, 2*time.Second)
+	readUntil(t, connR, uiws.MsgPermissionDenied, nil, 2*time.Second)
 
 	// Write principal → passes the gate (not a denial).
 	srvW := httptest.NewServer(withScope("namespace:foo:rw", m))
@@ -136,7 +138,7 @@ func TestWSUI_SaveBase64_RidesLevelWriteGate(t *testing.T) {
 		Namespace: "foo", ProjectName: "proj", Path: "drop.md",
 		Content: b64([]byte("# x\n")), ContentEncoding: "base64",
 	})
-	if ft := firstFrameType(t, connW); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, connW); ft == uiws.MsgPermissionDenied {
 		t.Fatal("write principal must pass the base64 SAVE_FILE gate")
 	}
 }

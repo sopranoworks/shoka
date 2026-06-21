@@ -9,6 +9,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/pkg/auth"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // withScope wraps the manager so the upgrade request carries a session principal of
@@ -26,7 +28,7 @@ func withScope(scope string, next http.Handler) http.Handler {
 func firstFrameType(t *testing.T, conn *websocket.Conn) MessageType {
 	t.Helper()
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var msg WSMessage
+	var msg uiws.WSMessage
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("read frame: %v", err)
 	}
@@ -54,25 +56,25 @@ func TestWSUI_AuthzFlip_ReadOnlyScope(t *testing.T) {
 
 	// READ foo → gate passes (the response is the read result, NOT a denial).
 	sendWS(t, conn, ReadFile, ReadFilePayload{Namespace: "foo", ProjectName: "proj", Path: "f.md"})
-	if ft := firstFrameType(t, conn); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft == uiws.MsgPermissionDenied {
 		t.Fatal("read-only foo must be allowed to READ_FILE on foo")
 	}
 
 	// SAVE foo → denied (read-only).
 	sendWS(t, conn, SaveFile, SaveFilePayload{Namespace: "foo", ProjectName: "proj", Path: "f.md", Content: "x"})
-	readUntil(t, conn, MsgPermissionDenied, nil, 2*time.Second)
+	readUntil(t, conn, uiws.MsgPermissionDenied, nil, 2*time.Second)
 
 	// DELETE foo → denied.
 	sendWS(t, conn, MsgDeleteFile, DeleteFilePayload{Namespace: "foo", ProjectName: "proj", Path: "f.md"})
-	readUntil(t, conn, MsgPermissionDenied, nil, 2*time.Second)
+	readUntil(t, conn, uiws.MsgPermissionDenied, nil, 2*time.Second)
 
 	// READ bar (foreign namespace) → denied.
 	sendWS(t, conn, ReadFile, ReadFilePayload{Namespace: "bar", ProjectName: "proj", Path: "f.md"})
-	readUntil(t, conn, MsgPermissionDenied, nil, 2*time.Second)
+	readUntil(t, conn, uiws.MsgPermissionDenied, nil, 2*time.Second)
 
 	// RECOVER_PROJECT foo → denied (admin required, foo:r is not admin).
 	sendWS(t, conn, MsgRecoverProject, RecoverProjectPayload{Namespace: "foo", ProjectName: "proj"})
-	readUntil(t, conn, MsgPermissionDenied, nil, 2*time.Second)
+	readUntil(t, conn, uiws.MsgPermissionDenied, nil, 2*time.Second)
 }
 
 // TestWSUI_AuthzFlip_SuperUserAndNoLockout proves a super-user passes a write, and the
@@ -89,7 +91,7 @@ func TestWSUI_AuthzFlip_SuperUserAndNoLockout(t *testing.T) {
 	conn := dialWS(t, srv.URL)
 	defer conn.Close()
 	sendWS(t, conn, SaveFile, SaveFilePayload{Namespace: "foo", ProjectName: "proj", Path: "g.md", Content: "# G\n"})
-	if ft := firstFrameType(t, conn); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft == uiws.MsgPermissionDenied {
 		t.Fatal("super-user must pass SAVE_FILE")
 	}
 
@@ -103,7 +105,7 @@ func TestWSUI_AuthzFlip_SuperUserAndNoLockout(t *testing.T) {
 	conn2 := dialWS(t, srv2.URL)
 	defer conn2.Close()
 	sendWS(t, conn2, SaveFile, SaveFilePayload{Namespace: "foo", ProjectName: "proj", Path: "h.md", Content: "# H\n"})
-	if ft := firstFrameType(t, conn2); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, conn2); ft == uiws.MsgPermissionDenied {
 		t.Fatal("no-principal (no-lockout) connection must be treated as super-user")
 	}
 }

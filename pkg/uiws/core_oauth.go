@@ -1,4 +1,4 @@
-package ui
+package uiws
 
 import (
 	"encoding/json"
@@ -21,9 +21,9 @@ import (
 // handlers never nil-panic. Administrator AUTHORIZATION is NOT checked here — it is
 // enforced upstream by the single stage-2 dispatch authzGate (OAUTH_* are admin-level
 // in wsLevels). This replaced the retired adminGate/singleUserAdmin seam (stage 4).
-func (h *CoreHandlers) oauthAvailable(client *wsClient) bool {
+func (h *CoreHandlers) oauthAvailable(client *Client) bool {
 	if h.oauth == nil {
-		client.sendResponse(MsgOAuthDenied, OAuthDeniedPayload{
+		client.SendResponse(MsgOAuthDenied, OAuthDeniedPayload{
 			Reason:  "oauth_disabled",
 			Message: "OAuth is not enabled on this server",
 		})
@@ -37,13 +37,13 @@ func (h *CoreHandlers) oauthAvailable(client *wsClient) bool {
 // no NOTIFY — so, like handleSearchFiles, it carries no identity or sender
 // context. The Connections slice is always non-nil so the wire shape is always
 // {"connections": [...]} (the empty-state client renders [] as "no connections").
-func (h *CoreHandlers) handleOAuthList(client *wsClient) {
+func (h *CoreHandlers) handleOAuthList(client *Client) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	infos, err := h.oauth.List()
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to list OAuth connections: %v", err))
+		client.SendError(fmt.Sprintf("Failed to list OAuth connections: %v", err))
 		return
 	}
 	// Defined order (the 2026-06-15 admin-UI directive): newest connection first.
@@ -68,7 +68,7 @@ func (h *CoreHandlers) handleOAuthList(client *wsClient) {
 		}
 		conns = append(conns, c)
 	}
-	client.sendResponse(MsgOAuthList, OAuthListPayload{Connections: conns})
+	client.SendResponse(MsgOAuthList, OAuthListPayload{Connections: conns})
 }
 
 // handleOAuthRevoke revokes one connection by series id (oauthstore.Revoke).
@@ -77,24 +77,24 @@ func (h *CoreHandlers) handleOAuthList(client *wsClient) {
 // silent no-op; a well-formed but already-revoked id succeeds idempotently (the
 // store's Revoke is idempotent — the right behaviour when two admins race or the
 // row is already gone).
-func (h *CoreHandlers) handleOAuthRevoke(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleOAuthRevoke(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	var p OAuthRevokeRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for OAUTH_REVOKE")
+		client.SendError("Invalid payload for OAUTH_REVOKE")
 		return
 	}
 	if p.SeriesID == "" {
-		client.sendError("OAUTH_REVOKE requires a series_id")
+		client.SendError("OAUTH_REVOKE requires a series_id")
 		return
 	}
 	if err := h.oauth.Revoke(p.SeriesID); err != nil {
-		client.sendError(fmt.Sprintf("Failed to revoke OAuth connection: %v", err))
+		client.SendError(fmt.Sprintf("Failed to revoke OAuth connection: %v", err))
 		return
 	}
-	client.sendResponse(MsgOAuthRevoke, OAuthRevokePayload{SeriesID: p.SeriesID, Status: "ok"})
+	client.SendResponse(MsgOAuthRevoke, OAuthRevokePayload{SeriesID: p.SeriesID, Status: "ok"})
 }
 
 // --- B-71 Stage 2d: domain-mode management (DOMAIN_* ws ops) ---
@@ -161,13 +161,13 @@ func domainInfoOf(e oauthstore.RegistrationEntry) DomainInfo {
 	return di
 }
 
-func (h *CoreHandlers) handleDomainList(client *wsClient) {
+func (h *CoreHandlers) handleDomainList(client *Client) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	entries, err := h.oauth.ListRegistrations()
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to list domains: %v", err))
+		client.SendError(fmt.Sprintf("Failed to list domains: %v", err))
 		return
 	}
 	out := make([]DomainInfo, 0)
@@ -177,65 +177,65 @@ func (h *CoreHandlers) handleDomainList(client *wsClient) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Domain < out[j].Domain })
-	client.sendResponse(MsgDomainList, DomainListPayload{Domains: out})
+	client.SendResponse(MsgDomainList, DomainListPayload{Domains: out})
 }
 
-func (h *CoreHandlers) handleDomainCreate(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleDomainCreate(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	var p DomainCreateRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for DOMAIN_CREATE")
+		client.SendError("Invalid payload for DOMAIN_CREATE")
 		return
 	}
 	if strings.TrimSpace(p.Domain) == "" {
-		client.sendError("DOMAIN_CREATE requires a domain")
+		client.SendError("DOMAIN_CREATE requires a domain")
 		return
 	}
 	if p.AccessTTLSeconds < 0 || p.RefreshTTLSeconds < 0 {
-		client.sendError("DOMAIN_CREATE TTL must not be negative")
+		client.SendError("DOMAIN_CREATE TTL must not be negative")
 		return
 	}
 	entry, err := h.oauth.CreateRegistration(oauthstore.RegistrationModeDomain, p.Domain, time.Now())
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to create domain: %v", err))
+		client.SendError(fmt.Sprintf("Failed to create domain: %v", err))
 		return
 	}
 	if p.AccessTTLSeconds > 0 || p.RefreshTTLSeconds > 0 {
 		entry.TTL = &oauthstore.EntryTTL{AccessSeconds: p.AccessTTLSeconds, RefreshSeconds: p.RefreshTTLSeconds}
 		if err := h.oauth.UpdateRegistration(entry); err != nil {
-			client.sendError(fmt.Sprintf("Failed to set domain TTL: %v", err))
+			client.SendError(fmt.Sprintf("Failed to set domain TTL: %v", err))
 			return
 		}
 	}
-	client.sendResponse(MsgDomainCreate, domainInfoOf(entry))
+	client.SendResponse(MsgDomainCreate, domainInfoOf(entry))
 }
 
-func (h *CoreHandlers) handleDomainUpdate(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleDomainUpdate(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	var p DomainUpdateRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for DOMAIN_UPDATE")
+		client.SendError("Invalid payload for DOMAIN_UPDATE")
 		return
 	}
 	if p.ID == "" {
-		client.sendError("DOMAIN_UPDATE requires an id")
+		client.SendError("DOMAIN_UPDATE requires an id")
 		return
 	}
 	if p.AccessTTLSeconds < 0 || p.RefreshTTLSeconds < 0 {
-		client.sendError("DOMAIN_UPDATE TTL must not be negative")
+		client.SendError("DOMAIN_UPDATE TTL must not be negative")
 		return
 	}
 	entry, err := h.oauth.GetRegistration(p.ID)
 	if err != nil {
-		client.sendError("Domain not found")
+		client.SendError("Domain not found")
 		return
 	}
 	if entry.RegistrationMode != oauthstore.RegistrationModeDomain {
-		client.sendError("not a domain entry")
+		client.SendError("not a domain entry")
 		return
 	}
 	if p.AccessTTLSeconds > 0 || p.RefreshTTLSeconds > 0 {
@@ -244,62 +244,62 @@ func (h *CoreHandlers) handleDomainUpdate(client *wsClient, payload json.RawMess
 		entry.TTL = nil // both 0 ⇒ unset → the finite global default
 	}
 	if err := h.oauth.UpdateRegistration(entry); err != nil {
-		client.sendError(fmt.Sprintf("Failed to update domain: %v", err))
+		client.SendError(fmt.Sprintf("Failed to update domain: %v", err))
 		return
 	}
-	client.sendResponse(MsgDomainUpdate, domainInfoOf(entry))
+	client.SendResponse(MsgDomainUpdate, domainInfoOf(entry))
 }
 
 // handleDomainGenerateConsent mints (or re-rolls) a domain's per-domain consent value and returns
 // the PLAINTEXT value once in the response. Calling it again regenerates (the old value stops
 // verifying). Admin-gated like the other DOMAIN_* ops.
-func (h *CoreHandlers) handleDomainGenerateConsent(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleDomainGenerateConsent(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	var p DomainGenerateConsentRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for DOMAIN_GENERATE_CONSENT")
+		client.SendError("Invalid payload for DOMAIN_GENERATE_CONSENT")
 		return
 	}
 	if p.ID == "" {
-		client.sendError("DOMAIN_GENERATE_CONSENT requires an id")
+		client.SendError("DOMAIN_GENERATE_CONSENT requires an id")
 		return
 	}
 	value, err := h.oauth.GenerateDomainConsent(p.ID)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to generate consent: %v", err))
+		client.SendError(fmt.Sprintf("Failed to generate consent: %v", err))
 		return
 	}
-	client.sendResponse(MsgDomainGenerateConsent, DomainGenerateConsentPayload{ID: p.ID, Consent: value})
+	client.SendResponse(MsgDomainGenerateConsent, DomainGenerateConsentPayload{ID: p.ID, Consent: value})
 }
 
-func (h *CoreHandlers) handleDomainDelete(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleDomainDelete(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	var p DomainDeleteRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for DOMAIN_DELETE")
+		client.SendError("Invalid payload for DOMAIN_DELETE")
 		return
 	}
 	if p.ID == "" {
-		client.sendError("DOMAIN_DELETE requires an id")
+		client.SendError("DOMAIN_DELETE requires an id")
 		return
 	}
 	entry, err := h.oauth.GetRegistration(p.ID)
 	if err != nil {
-		client.sendError("Domain not found")
+		client.SendError("Domain not found")
 		return
 	}
 	// Policy (B-71 Stage 2d): deleting a domain makes it untrusted AND revokes its live tokens
 	// (mirroring the user-delete OAuth-revoke cascade) — its connections cannot keep working.
 	revoked, _ := h.oauth.RevokeByDomain(entry.Identifier)
 	if err := h.oauth.DeleteRegistration(p.ID); err != nil {
-		client.sendError(fmt.Sprintf("Failed to delete domain: %v", err))
+		client.SendError(fmt.Sprintf("Failed to delete domain: %v", err))
 		return
 	}
-	client.sendResponse(MsgDomainDelete, DomainDeletePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
+	client.SendResponse(MsgDomainDelete, DomainDeletePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
 }
 
 // --- Confidential-client management (B-71 Stage 3) --------------------------
@@ -355,13 +355,13 @@ func confidentialInfoOf(e oauthstore.RegistrationEntry) ConfidentialClientInfo {
 	}
 }
 
-func (h *CoreHandlers) handleConfidentialList(client *wsClient) {
+func (h *CoreHandlers) handleConfidentialList(client *Client) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	entries, err := h.oauth.ListRegistrations()
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to list confidential clients: %v", err))
+		client.SendError(fmt.Sprintf("Failed to list confidential clients: %v", err))
 		return
 	}
 	out := make([]ConfidentialClientInfo, 0)
@@ -372,68 +372,68 @@ func (h *CoreHandlers) handleConfidentialList(client *wsClient) {
 	}
 	// Newest first (CreatedAt is RFC3339, so lexical order is chronological).
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
-	client.sendResponse(MsgClientList, ConfidentialListPayload{Clients: out})
+	client.SendResponse(MsgClientList, ConfidentialListPayload{Clients: out})
 }
 
-func (h *CoreHandlers) handleConfidentialIssue(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleConfidentialIssue(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	var p ConfidentialIssueRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for CLIENT_ISSUE")
+		client.SendError("Invalid payload for CLIENT_ISSUE")
 		return
 	}
 	if strings.TrimSpace(p.Scope) == "" {
-		client.sendError("CLIENT_ISSUE requires a scope")
+		client.SendError("CLIENT_ISSUE requires a scope")
 		return
 	}
 	if p.ValiditySeconds <= 0 {
-		client.sendError("CLIENT_ISSUE requires a finite positive validity (no indefinite)")
+		client.SendError("CLIENT_ISSUE requires a finite positive validity (no indefinite)")
 		return
 	}
 	entry, secret, err := h.oauth.IssueConfidentialClient(p.Scope, time.Duration(p.ValiditySeconds)*time.Second, time.Now())
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to issue confidential client: %v", err))
+		client.SendError(fmt.Sprintf("Failed to issue confidential client: %v", err))
 		return
 	}
 	// The raw secret crosses /ws/ui ONCE here (admin-gated), like OAUTH_ISSUE_SELF; it is never
 	// logged and never returned again.
-	client.sendResponse(MsgClientIssue, ConfidentialIssuePayload{
+	client.SendResponse(MsgClientIssue, ConfidentialIssuePayload{
 		ConfidentialClientInfo: confidentialInfoOf(entry),
 		ClientSecret:           secret,
 	})
 }
 
-func (h *CoreHandlers) handleConfidentialRevoke(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleConfidentialRevoke(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	var p ConfidentialRevokeRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for CLIENT_REVOKE")
+		client.SendError("Invalid payload for CLIENT_REVOKE")
 		return
 	}
 	if p.ID == "" {
-		client.sendError("CLIENT_REVOKE requires an id")
+		client.SendError("CLIENT_REVOKE requires an id")
 		return
 	}
 	entry, err := h.oauth.GetRegistration(p.ID)
 	if err != nil {
-		client.sendError("Confidential client not found")
+		client.SendError("Confidential client not found")
 		return
 	}
 	if entry.RegistrationMode != oauthstore.RegistrationModeConfidential {
-		client.sendError("not a confidential client")
+		client.SendError("not a confidential client")
 		return
 	}
 	// Cascade: revoking the credential cuts the tokens it issued, then deletes the entry.
 	revoked, _ := h.oauth.RevokeByClientID(entry.Identifier)
 	if err := h.oauth.DeleteRegistration(p.ID); err != nil {
-		client.sendError(fmt.Sprintf("Failed to revoke confidential client: %v", err))
+		client.SendError(fmt.Sprintf("Failed to revoke confidential client: %v", err))
 		return
 	}
-	client.sendResponse(MsgClientRevoke, ConfidentialRevokePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
+	client.SendResponse(MsgClientRevoke, ConfidentialRevokePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
 }
 
 // handleOAuthIssueSelf mints a fresh access token bound to the current-mode
@@ -443,12 +443,12 @@ func (h *CoreHandlers) handleConfidentialRevoke(client *wsClient, payload json.R
 // NOT logged (no log statement carries it) and is persisted only in the normal
 // token store. Administrator-only via the dispatch authz gate, like List/Revoke; the
 // issuer being nil (OAuth disabled) is reported as oauth_disabled.
-func (h *CoreHandlers) handleOAuthIssueSelf(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleOAuthIssueSelf(client *Client, payload json.RawMessage) {
 	if !h.oauthAvailable(client) {
 		return
 	}
 	if h.selfIssuer == nil {
-		client.sendResponse(MsgOAuthDenied, OAuthDeniedPayload{
+		client.SendResponse(MsgOAuthDenied, OAuthDeniedPayload{
 			Reason:  "oauth_disabled",
 			Message: "token issuance is not available on this server",
 		})
@@ -460,22 +460,22 @@ func (h *CoreHandlers) handleOAuthIssueSelf(client *wsClient, payload json.RawMe
 	var p OAuthIssueSelfRequest
 	if len(payload) > 0 {
 		if err := json.Unmarshal(payload, &p); err != nil {
-			client.sendError("Invalid payload for OAUTH_ISSUE_SELF")
+			client.SendError("Invalid payload for OAUTH_ISSUE_SELF")
 			return
 		}
 	}
 	if p.ValiditySeconds < 0 {
-		client.sendError("OAUTH_ISSUE_SELF validity must not be negative (no indefinite)")
+		client.SendError("OAUTH_ISSUE_SELF validity must not be negative (no indefinite)")
 		return
 	}
 	token, expiry, err := h.selfIssuer.IssueSelf(client.req, time.Duration(p.ValiditySeconds)*time.Second)
 	if err != nil {
 		// The error is generic on the wire; the token never appears in it.
-		client.sendError("Failed to issue a token")
+		client.SendError("Failed to issue a token")
 		log.Printf("OAUTH_ISSUE_SELF mint failed: %v", err)
 		return
 	}
-	client.sendResponse(MsgOAuthIssueSelf, OAuthIssueSelfPayload{
+	client.SendResponse(MsgOAuthIssueSelf, OAuthIssueSelfPayload{
 		AccessToken:  token,
 		AccessExpiry: expiry,
 	})

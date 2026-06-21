@@ -43,6 +43,7 @@ import (
 	"github.com/sopranoworks/shoka/pkg/oauth"
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
 	"github.com/sopranoworks/shoka/pkg/serverurl"
+	"github.com/sopranoworks/shoka/pkg/uiws"
 	"github.com/sopranoworks/shoka/pkg/userstore"
 	"github.com/sopranoworks/shoka/server"
 	"golang.org/x/sync/errgroup"
@@ -385,7 +386,7 @@ func main() {
 		// /authorize does — so a CLI token is indistinguishable from any other. All
 		// oauth/serverurl/identity wiring stays here in main; the manager only
 		// admin-gates and calls. The minted token is never logged on this path.
-		uim.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+		uim.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
 			base, berr := serverurl.Base(cfg.Server.MCP.OAuth.ExternalURL, r)
 			if berr != nil {
 				return "", time.Time{}, berr

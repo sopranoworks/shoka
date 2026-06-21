@@ -9,9 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/drafts"
@@ -19,13 +17,15 @@ import (
 	"github.com/sopranoworks/shoka/internal/ingest"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
-	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/authz"
-	"github.com/sopranoworks/shoka/pkg/oauthstore"
-	"github.com/sopranoworks/shoka/pkg/userstore"
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
-type MessageType string
+// MessageType is the /ws/ui frame discriminator. The transport + auth/user/OAuth core
+// message types live in pkg/uiws (uiws.MessageType); this alias lets the document
+// message constants below — and the dispatch switch's document cases — stay unqualified
+// while remaining the same type as the core constants (uiws.MsgAccountGet, …).
+type MessageType = uiws.MessageType
 
 const (
 	GetProjects MessageType = "GET_PROJECTS"
@@ -42,7 +42,7 @@ const (
 	MsgCreateProject MessageType = "CREATE_PROJECT"
 	// B-28 ns/proj management part 1: the destructive + identity ops. Project
 	// create/delete = admin on the target namespace; namespace create/delete =
-	// super-user only (gated via authz.IsSuperUser in authzGate, see wsSuperUserOps).
+	// super-user only (gated via authz.IsSuperUser in the gate, see wsSuperUserOps).
 	MsgDeleteProject   MessageType = "DELETE_PROJECT"
 	MsgCreateNamespace MessageType = "CREATE_NAMESPACE"
 	MsgDeleteNamespace MessageType = "DELETE_NAMESPACE"
@@ -59,150 +59,35 @@ const (
 	MsgRenameNamespace MessageType = "RENAME_NAMESPACE"
 	// MsgSearchFiles requests a project-scoped full-text/filename search and
 	// MsgSearchResult carries the matches back. Search is read-only and
-	// project-scoped: it wires the existing storage.SearchFiles capability (the
-	// same one the MCP search_files tool uses) to the /ws/ui request/response
-	// dispatch, mirroring READ_FILE. There is deliberately no cross-project
-	// variant — the storage layer searches one project at a time.
+	// project-scoped, mirroring READ_FILE.
 	MsgSearchFiles  MessageType = "SEARCH_FILES"
 	MsgSearchResult MessageType = "SEARCH_RESULT"
 	// MsgMoveFile renames/moves a file within a project; MsgMoveAck carries the
-	// result back (new etag + an always-0 links_rewritten count). A move is a
-	// pure path change: one atomic, history-preserving rename (git log --follow
-	// keeps working) that rewrites no inbound links. Inbound-link rewriting was
-	// decoupled and disabled in B-33; the goldmark rewriter is retained dormant
-	// pending a future reverse-link index (B-33/B-34), so links_rewritten is
-	// always 0 today. A stale if_match — or an existing target with no if_match —
-	// yields the same CONFLICT frame SAVE_FILE uses, carrying the relevant file's
-	// current etag.
+	// result back (new etag + an always-0 links_rewritten count).
 	MsgMoveFile MessageType = "MOVE_FILE"
 	MsgMoveAck  MessageType = "MOVE_ACK"
 	// MsgDeleteFile removes a file; MsgDeleteAck carries the deleted path back. It
-	// is the server half of the B-31 trash-can model: the front-end defers the
-	// delete behind a client-side grace timer and sends DELETE_FILE only when the
-	// timer elapses (a cancelled reservation never reaches the wire — so there is
-	// nothing to undo here). Like SAVE_FILE/MOVE_FILE it carries an optional
-	// if_match (captured at enqueue): a stale etag yields the SAME CONFLICT frame
-	// SAVE_FILE/MOVE_FILE use, so a file edited mid-grace is not silently destroyed.
-	// It wires the EXISTING storage.Delete (git-tracked hard-remove, recoverable via
-	// History) — no storage or MCP-tool change.
+	// wires the EXISTING storage.Delete (git-tracked hard-remove, recoverable via
+	// History). It carries an optional if_match: a stale etag yields the SAME
+	// CONFLICT frame SAVE_FILE/MOVE_FILE use.
 	MsgDeleteFile MessageType = "DELETE_FILE"
 	MsgDeleteAck  MessageType = "DELETE_ACK"
-	// MsgListDeleted lists a project's currently-deleted files (the 2026-06-18
-	// deleted-log directive) — a cheap O(cap) read of the per-project deleted-file
-	// log (no git walk); the response rides the same type carrying the deleted
-	// entries. MsgReviveFile re-creates one deleted file forward-only (read the
-	// content at the deletion commit's parent, write it back as a NEW commit);
-	// MsgReviveAck carries the revived path back, OR a clear divergence error (the
-	// deletion commit is gone from git — cap eviction or external rewrite) so the UI
-	// surfaces "can no longer be restored", never a silent failure. Both are
-	// ADMIN-ONLY (the deleted overlay is an admin affordance), gated server-side via
-	// wsLevels — distinct from the client-side grace-period trash-can (DELETE_FILE),
-	// which is recent/undoable; this surface is the full git past with no grace.
+	// MsgListDeleted lists a project's currently-deleted files (a cheap O(cap) read of
+	// the per-project deleted-file log); MsgReviveFile re-creates one deleted file
+	// forward-only; MsgReviveAck carries the revived path back. Both are ADMIN-ONLY.
 	MsgListDeleted MessageType = "LIST_DELETED"
 	MsgReviveFile  MessageType = "REVIVE_FILE"
 	MsgReviveAck   MessageType = "REVIVE_ACK"
-	// MsgRecoverProject is the in-product recovery for a project stuck in
-	// `corrupted` (uncommitted working-tree drift): it re-syncs the write-path
-	// baseline to the ACTUAL on-disk git HEAD and clears a FALSE corrupted flag,
-	// re-enabling writes when an external HEAD move (a host `git reset`, an
-	// out-of-band landing) stranded a clean project. MsgRecoverAck carries the
-	// resulting state back so the badge updates and the operator learns whether the
-	// project recovered. It wires storage.ResyncToHead (the same call the MCP
-	// recover_project tool uses) — NON-DESTRUCTIVE: it never commits or discards
-	// working-tree content, so a genuinely-drifted project stays corrupted (the ack
-	// says so, pointing the operator at the destructive accept-working-tree /
-	// accept-head modes on the adminapi recover endpoint).
+	// MsgRecoverProject is the in-product recovery for a project stuck in `corrupted`:
+	// it re-syncs the write-path baseline to the ACTUAL on-disk git HEAD and clears a
+	// FALSE corrupted flag. MsgRecoverAck carries the resulting state back. It wires
+	// storage.ResyncToHead — NON-DESTRUCTIVE.
 	MsgRecoverProject MessageType = "RECOVER_PROJECT"
 	MsgRecoverAck     MessageType = "RECOVER_ACK"
-	// MsgOAuthList enumerates the live OAuth/MCP connections (token series) the
-	// built-in authorization server holds, and MsgOAuthList carries the summaries
-	// back; MsgOAuthRevoke revokes one connection by series id and acks. This is
-	// the operator-facing management surface over the (b) oauthstore's List/Revoke
-	// (the 2026-06-03 MCP OAuth (c) directive). NO SECRETS cross the wire: the
-	// response carries oauthstore.SeriesInfo only (client identity, principal,
-	// times, series id) — never an access/refresh token, code, or PKCE value.
-	//
-	// Both requests are ADMINISTRATOR-ONLY, gated server-side (the authoritative
-	// gate): a non-admin caller receives MsgOAuthDenied, not data — hiding the UI
-	// is not sufficient. They are also refused (MsgOAuthDenied) when OAuth is not
-	// enabled (no store) — the capability check in the OAUTH_* handlers.
-	MsgOAuthList   MessageType = "OAUTH_LIST"
-	MsgOAuthRevoke MessageType = "OAUTH_REVOKE"
-	// MsgOAuthIssueSelf mints a fresh access token for the current-mode operator
-	// (the "token to self" path, B-46b §2.2) and returns it ONCE in the response.
-	// This is the single deliberate exception to "no secret crosses /ws/ui": the
-	// operator copies the displayed token into their CLI client config. It is
-	// admin-gated by the dispatch authz gate (like List/Revoke) and the token is never logged
-	// or persisted anywhere on the server beyond the normal token store.
-	MsgOAuthIssueSelf MessageType = "OAUTH_ISSUE_SELF"
-	// MsgOAuthDenied is the typed refusal frame for the admin-only OAuth requests:
-	// reason "forbidden" (the caller is not an administrator) or "oauth_disabled"
-	// (OAuth is off, so there is no connection store). It is distinct from the
-	// generic ERROR frame so the client can recognise an authorization refusal
-	// (and hide the management surface) rather than treat it as a transport error.
-	MsgOAuthDenied MessageType = "OAUTH_DENIED"
-
-	// B-71 Stage 2d: domain-mode management — CRUD over the dynamic "domain" registration
-	// store (trusted domain + per-domain TTL + per-domain consent), admin-gated.
-	MsgDomainList   MessageType = "DOMAIN_LIST"
-	MsgDomainCreate MessageType = "DOMAIN_CREATE"
-	MsgDomainUpdate MessageType = "DOMAIN_UPDATE"
-	MsgDomainDelete MessageType = "DOMAIN_DELETE"
-	// MsgDomainGenerateConsent mints (or re-rolls) a domain's per-domain consent value and returns
-	// it PLAINTEXT (2026-06-20 model — operator-readable, refreshable).
-	MsgDomainGenerateConsent MessageType = "DOMAIN_GENERATE_CONSENT"
-	// B-71 Stage 3: confidential-mode management — issue / list / revoke pre-issued client
-	// credentials (Client ID + Secret), admin-gated. The secret is shown ONCE on issue, never
-	// returned by list.
-	MsgClientIssue  MessageType = "CLIENT_ISSUE"
-	MsgClientList   MessageType = "CLIENT_LIST"
-	MsgClientRevoke MessageType = "CLIENT_REVOKE"
-	// MsgNotify carries one notify.Event pushed from the server to the browser
-	// (the 2026-05-31 auto-refresh directive). It is additive: it rides the same
-	// {type,payload} envelope as every other message, so existing consumers that
-	// switch on type are unaffected.
+	// MsgNotify carries one notify.Event pushed from the server to the browser (the
+	// 2026-05-31 auto-refresh directive). It rides the same {type,payload} envelope.
 	MsgNotify MessageType = "NOTIFY"
-	Error     MessageType = "ERROR"
-	// User-management ops (B-28 stage 3) — all super-user-only (admin level, global),
-	// enforced by the stage-2 dispatch gate; the destructive ones additionally refuse
-	// the caller's own account (server-side self-guard, defence in depth).
-	MsgAdminListUsers      MessageType = "ADMIN_LIST_USERS"
-	MsgAdminSetUserScope   MessageType = "ADMIN_SET_USER_SCOPE"
-	MsgAdminSetUserEnabled MessageType = "ADMIN_SET_USER_ENABLED"
-	// MsgAdminSetUserPassword resets a target user's password (the admin recovery for a
-	// forgotten password — B-28 password recovery case 1). Admin-gated like the other
-	// ADMIN_* ops; argon2id re-hash; on success the target's sessions are dropped and
-	// their OAuth revoked, forcing a re-login. Unlike the destructive ops it has NO
-	// isSelf refusal — an admin may reset their own password — but its value is for
-	// OTHER users (a locked-out SOLE admin uses the server startup-flag reset instead).
-	MsgAdminSetUserPassword MessageType = "ADMIN_SET_USER_PASSWORD"
-	MsgAdminRemoveUser      MessageType = "ADMIN_REMOVE_USER"
-	MsgAdminCreateInvite    MessageType = "ADMIN_CREATE_INVITE"
-	MsgAdminListInvites     MessageType = "ADMIN_LIST_INVITES"
-	MsgAdminRevokeInvite    MessageType = "ADMIN_REVOKE_INVITE"
-	// Self-service "My Account" ops (B-28) — the per-user account page, reachable by
-	// ANY authenticated user for THEIR OWN account (read-level, global in wsLevels —
-	// NOT admin-gated, unlike the ADMIN_*/OAUTH_* pages). Self-access is STRUCTURAL:
-	// these act on the connection's session identity only and carry NO target-id field,
-	// so a caller cannot name another account. ACCOUNT_GET returns the acting user's own
-	// info (never a password hash); ACCOUNT_SET_NAME changes the display name;
-	// ACCOUNT_SET_PASSWORD verifies the current password then re-hashes (argon2id). Email
-	// is the account id and has no setter.
-	MsgAccountGet         MessageType = "ACCOUNT_GET"
-	MsgAccountSetName     MessageType = "ACCOUNT_SET_NAME"
-	MsgAccountSetPassword MessageType = "ACCOUNT_SET_PASSWORD"
-	// MsgPermissionDenied is the authorization-refusal frame for the /ws/ui dispatch
-	// gate (the B-28 stage-2 enforcement flip): a session principal whose scope lacks
-	// the level the requested operation requires gets this instead of the handler
-	// running. Distinct from ERROR so the client can surface a clear, non-fatal "you
-	// do not have permission" toast (a read-only user attempting a write).
-	MsgPermissionDenied MessageType = "PERMISSION_DENIED"
 )
-
-type WSMessage struct {
-	Type    MessageType     `json:"type"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
 
 type CreateProjectPayload struct {
 	Namespace   string `json:"namespace"`
@@ -241,15 +126,11 @@ type SaveFilePayload struct {
 	// write_file tool: empty/"utf8" is literal text (the existing editor/create
 	// behaviour, unchanged); "base64" decodes Content from base64 to raw bytes via
 	// the shared ingest helper, enforcing the closed markdown/json/yaml allowlist.
-	// The base64 path is the external file drag-and-drop ADD route (B-28): a
-	// dropped file is byte-faithful and a name collision is refused, not silently
-	// overwritten (see handleSaveFile).
 	ContentEncoding string `json:"content_encoding,omitempty"`
 }
 
 // ConflictPayload is the CONFLICT frame's body: the path that conflicted and the
-// file's current etag, so the client can re-base its edit (e.g. show the
-// four-button conflict UX) without parsing the error message.
+// file's current etag, so the client can re-base its edit without parsing the error.
 type ConflictPayload struct {
 	Path        string `json:"path"`
 	CurrentETag string `json:"current_etag"`
@@ -257,8 +138,7 @@ type ConflictPayload struct {
 }
 
 // SearchFilesPayload is the SEARCH_FILES request body. SearchIn is optional and
-// defaults to "both" (filename + content) in the storage layer; it mirrors the
-// MCP search_files tool's input minus the tool-only validation.
+// defaults to "both" (filename + content) in the storage layer.
 type SearchFilesPayload struct {
 	Namespace   string `json:"namespace"`
 	ProjectName string `json:"projectName"`
@@ -266,8 +146,7 @@ type SearchFilesPayload struct {
 	SearchIn    string `json:"search_in,omitempty"`
 }
 
-// MoveFilePayload is the MOVE_FILE request body. IfMatch is optional and carries
-// the same dual semantic as the storage layer: it validates the target's etag
+// MoveFilePayload is the MOVE_FILE request body. IfMatch validates the target's etag
 // when the target exists (explicit overwrite), otherwise the source's etag.
 type MoveFilePayload struct {
 	Namespace   string `json:"namespace"`
@@ -277,11 +156,9 @@ type MoveFilePayload struct {
 	IfMatch     string `json:"if_match,omitempty"`
 }
 
-// MoveAckPayload is the MOVE_ACK frame's body: the source and target paths, the
-// destination's new etag (usable as if_match for a follow-up edit), and
-// LinksRewritten. A move is a pure path change, so LinksRewritten is currently
-// always 0; the field is reserved for the future reverse-link-index
-// re-enablement (B-33/B-34) and is kept in the shape deliberately, not removed.
+// MoveAckPayload is the MOVE_ACK frame's body. LinksRewritten is currently always 0
+// (a move is a pure path change); the field is reserved for the future reverse-link
+// index re-enablement (B-33/B-34).
 type MoveAckPayload struct {
 	SourcePath     string `json:"source_path"`
 	TargetPath     string `json:"target_path"`
@@ -289,11 +166,8 @@ type MoveAckPayload struct {
 	LinksRewritten int    `json:"links_rewritten"`
 }
 
-// DeleteFilePayload is the DELETE_FILE request body. IfMatch is optional and
-// carries the same optimistic-concurrency semantic as SAVE_FILE: the delete
-// proceeds only if the file's current etag equals it, otherwise a CONFLICT frame
-// is returned (the file changed during the client-side grace). Omitted only by a
-// caller that did not capture an etag; an empty IfMatch takes the unchecked path.
+// DeleteFilePayload is the DELETE_FILE request body. IfMatch carries the same
+// optimistic-concurrency semantic as SAVE_FILE.
 type DeleteFilePayload struct {
 	Namespace   string `json:"namespace"`
 	ProjectName string `json:"projectName"`
@@ -301,23 +175,19 @@ type DeleteFilePayload struct {
 	IfMatch     string `json:"if_match,omitempty"`
 }
 
-// DeleteAckPayload is the DELETE_ACK frame's body: the path that was deleted, so
-// the client can drop it from its caches/tree and clear the trash item.
+// DeleteAckPayload is the DELETE_ACK frame's body: the path that was deleted.
 type DeleteAckPayload struct {
 	Path string `json:"path"`
 }
 
-// RecoverProjectPayload is the RECOVER_PROJECT request body: which project to
-// re-sync to its on-disk git HEAD.
+// RecoverProjectPayload is the RECOVER_PROJECT request body.
 type RecoverProjectPayload struct {
 	Namespace   string `json:"namespace"`
 	ProjectName string `json:"projectName"`
 }
 
 // RecoverAckPayload is the RECOVER_ACK frame's body: the project's resulting health
-// after the re-sync. Recovered is true iff it is now healthy (writes enabled);
-// otherwise State explains why (corrupted = genuine drift, dangerous = unreadable
-// .git) and Message carries operator-facing guidance.
+// after the re-sync.
 type RecoverAckPayload struct {
 	Namespace string `json:"namespace"`
 	Project   string `json:"project"`
@@ -326,81 +196,8 @@ type RecoverAckPayload struct {
 	Message   string `json:"message"`
 }
 
-// OAuthConnectionInfo is one live OAuth/MCP connection in the OAUTH_LIST
-// response — the no-secret view of an oauthstore.SeriesInfo. It carries the
-// connecting client's identity (its CIMD metadata URL, the Claude side — shown
-// to tell connections apart), the bound principal, the issued/expiry times, and
-// the series id (the revoke target, plus a short prefix for display). It NEVER
-// carries an access/refresh token, authorization code, or PKCE value — those
-// live only in the store's SeriesRecord/CodeRecord and never reach List.
-type OAuthConnectionInfo struct {
-	// SeriesID is the full opaque series identifier — the OAUTH_REVOKE target. It
-	// is NOT a bearer credential (it cannot authenticate anything; only access
-	// tokens can), so exposing it to an admin client is safe.
-	SeriesID      string `json:"series_id"`
-	SeriesIDShort string `json:"series_id_short"`
-	// ClientID is the connecting client's CIMD metadata URL (its identity). Shown
-	// at runtime only; no concrete value is ever written into source/tests.
-	ClientID       string    `json:"client_id"`
-	PrincipalName  string    `json:"principal_name"`
-	PrincipalEmail string    `json:"principal_email"`
-	IssuedAt       time.Time `json:"issued_at"`
-	AccessExpiry   time.Time `json:"access_expiry"`
-	// Scope is the token's authorization grant (the 2026-06-15 authz foundation):
-	// "*" for an all-access (DCR/self-issued) token, or a namespace grant for a
-	// future pre-issued scoped token. It is non-secret routing metadata, shown in
-	// the admin connections table so the operator can see what each token may reach.
-	Scope string `json:"scope"`
-	// Domain is the trusted-"domain" entry this connection groups under (B-71 Stage 2d) —
-	// the matched entry's identifier (CIMD + DCR connections sit under their domain); "" for
-	// the operator self-issued / confidential / untrusted-leftover section. Non-secret.
-	Domain string `json:"domain"`
-}
-
-// OAuthListPayload is the OAUTH_LIST response body: the live connections. The
-// slice is always non-nil so the client receives [] rather than null on zero
-// connections (the empty-state case).
-type OAuthListPayload struct {
-	Connections []OAuthConnectionInfo `json:"connections"`
-}
-
-// OAuthRevokeRequest is the OAUTH_REVOKE request body: the series id to revoke.
-type OAuthRevokeRequest struct {
-	SeriesID string `json:"series_id"`
-}
-
-// OAuthRevokePayload is the OAUTH_REVOKE ack: the series id that was revoked.
-type OAuthRevokePayload struct {
-	SeriesID string `json:"series_id"`
-	Status   string `json:"status"`
-}
-
-// OAuthDeniedPayload is the OAUTH_DENIED frame's body. Reason is "forbidden"
-// (caller is not an administrator) or "oauth_disabled" (OAuth is off).
-type OAuthDeniedPayload struct {
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
-}
-
-// OAuthIssueSelfPayload is the OAUTH_ISSUE_SELF response body: the freshly minted
-// access token (display-once — the operator copies it into their CLI config) and
-// its expiry, so the UI can warn how long it lasts. The token is the one secret
-// that crosses /ws/ui; it is never logged or stored beyond the token store.
-type OAuthIssueSelfPayload struct {
-	AccessToken  string    `json:"access_token"`
-	AccessExpiry time.Time `json:"access_expiry"`
-}
-
-// OAuthIssueSelfRequest carries the operator's per-issuance FINITE expiry (B-71 Stage 4):
-// validity_seconds is the chosen token lifetime in whole seconds. 0/absent ⇒ the finite global
-// default (never infinite); a NEGATIVE value is rejected (no indefinite).
-type OAuthIssueSelfRequest struct {
-	ValiditySeconds int64 `json:"validity_seconds"`
-}
-
 // SearchResultPayload is the SEARCH_RESULT frame's body: the matches, each a
-// {path, snippet}. The slice is always non-nil so the client receives [] rather
-// than null on a no-match query.
+// {path, snippet}. The slice is always non-nil so the client receives [] on no match.
 type SearchResultPayload struct {
 	Matches []storage.SearchMatch `json:"matches"`
 }
@@ -412,189 +209,19 @@ type FileNode struct {
 	Children []FileNode `json:"children,omitempty"`
 }
 
-// wsClient wraps one WebSocket connection with a write mutex. gorilla/websocket
-// permits only one concurrent writer per connection; the read-loop's responses
-// and the notify-drain goroutine both write, so every write goes through here.
-//
-// id is this connection's sender identity (the 2026-06-01 sender-exclusion
-// directive): the connection subscribes to the notify center under it, and its
-// own writes carry it (via notify.WithSender on the write context) so the center
-// does not echo the write back to this connection. It is unique per connection
-// for the life of the process ("ws-<seq>").
-type wsClient struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
-	id      string
-	// req is the upgraded connection's HTTP request, retained so the admin-gated
-	// OAUTH_ISSUE_SELF handler can derive the RFC 8707 resource (forwarded-header
-	// aware) the same way /authorize does. It is read-only after the upgrade.
-	req *http.Request
-	// principal is the authenticated WebUI session principal carried on the upgrade
-	// request context (the B-28 stage-1 login: authapi.Middleware attaches it). Zero
-	// when no user has logged in yet (the no-lockout single-operator path); when set,
-	// hasPrincipal is true and the user's email becomes the git Author on web writes.
-	principal    auth.Principal
-	hasPrincipal bool
-}
-
-// userIdentity returns the owning-user identity for a web write. When the connection
-// carries an authenticated session principal (B-28 stage 1), the logged-in user's
-// email is the git Author (email = account = git author). Otherwise it returns the
-// empty User, which identity.Resolve fills with the configured single operator — the
-// pre-login behaviour, preserved so an empty user store is never locked out.
-func (c *wsClient) userIdentity() identity.User {
-	if c.hasPrincipal {
-		return identity.User{Name: c.principal.Name, Email: c.principal.Email}
-	}
-	return identity.User{}
-}
-
-// scope returns the connection's authorization scope: the session principal's scope,
-// or "*" (super-user) for the no-principal / no-lockout single-operator connection.
-func (c *wsClient) scope() string {
-	if c.hasPrincipal {
-		return c.principal.Scope
-	}
-	return "*"
-}
-
-// canRead reports whether the connection may read the given namespace (the
-// global-read result filter, B-28 stage 3).
-func (c *wsClient) canRead(namespace string) bool {
-	return authz.Authorize(c.scope(), namespace, "", authz.LevelRead) == nil
-}
-
-func (c *wsClient) writeMessage(msgType MessageType, payload interface{}) error {
-	payloadData, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	msg := WSMessage{Type: msgType, Payload: json.RawMessage(payloadData)}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return c.conn.WriteMessage(websocket.TextMessage, data)
-}
-
-func (c *wsClient) sendError(errMsg string) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	msg := WSMessage{
-		Type:    Error,
-		Payload: json.RawMessage(fmt.Sprintf(`{"message": %q}`, errMsg)),
-	}
-	data, _ := json.Marshal(msg)
-	_ = c.conn.WriteMessage(websocket.TextMessage, data)
-}
-
-func (c *wsClient) sendResponse(msgType MessageType, payload interface{}) {
-	if err := c.writeMessage(msgType, payload); err != nil {
-		c.sendError("Failed to marshal response")
-	}
-}
-
-// OAuthConnectionStore is the narrow capability the OAuth management requests
-// (OAUTH_LIST/OAUTH_REVOKE) depend on — exactly the (b) oauthstore's no-secret
-// List and per-series Revoke. The Manager depends on this interface, not the
-// concrete *oauthstore.Store, so the handle stays nil when OAuth is disabled and
-// tests can inject a fake. NO store change is implied: *oauthstore.Store already
-// satisfies it.
-type OAuthConnectionStore interface {
-	List() ([]oauthstore.SeriesInfo, error)
-	Revoke(seriesID string) error
-	// RevokeByPrincipalEmail revokes every token series (and pending auth code) for a
-	// principal email — the cross-store access cut when a user is disabled or deleted
-	// (B-28). Returns the number of series revoked.
-	RevokeByPrincipalEmail(email string) (int, error)
-
-	// B-71 Stage 2d — the dynamic "domain" registration store the domain-mode management
-	// screen drives (DOMAIN_* ws ops) + the connection grouping. *oauthstore.Store already
-	// satisfies these.
-	ListRegistrations() ([]oauthstore.RegistrationEntry, error)
-	CreateRegistration(mode, identifier string, now time.Time) (oauthstore.RegistrationEntry, error)
-	GetRegistration(id string) (oauthstore.RegistrationEntry, error)
-	UpdateRegistration(entry oauthstore.RegistrationEntry) error
-	DeleteRegistration(id string) error
-	// GenerateDomainConsent mints (or re-rolls) a domain entry's plaintext per-domain consent and
-	// returns it (2026-06-20 model — operator-readable, refreshable).
-	GenerateDomainConsent(id string) (string, error)
-	// RevokeByDomain revokes every token series under a domain (the Stage 2d domain-delete
-	// cascade). Returns the number revoked.
-	RevokeByDomain(domain string) (int, error)
-	// DomainEntryForClient returns the "domain" entry a connection's client_id belongs to (for
-	// grouping); ok=false for a self-issued/confidential or untrusted-leftover connection.
-	DomainEntryForClient(clientID string) (oauthstore.RegistrationEntry, bool)
-	// IssueConfidentialClient mints a confidential pre-issued client (B-71 Stage 3): a client_id
-	// + a high-entropy secret; only the hash is stored; the RAW secret is returned ONCE.
-	IssueConfidentialClient(scope string, validity time.Duration, now time.Time) (oauthstore.RegistrationEntry, string, error)
-	// RevokeByClientID revokes every token series issued to a client_id (the confidential-client
-	// delete cascade). Returns the number revoked.
-	RevokeByClientID(clientID string) (int, error)
-}
-
-// OAuthSelfIssuer mints a fresh access token bound to the current-mode operator
-// (the "token to self" path, B-46b §2.2). It is a SEPARATE capability from
-// OAuthConnectionStore so the manager stays free of oauth/serverurl/identity
-// wiring: the concrete issuer is built in cmd/shoka (it holds the store, the
-// operator principal, the TTLs, and the resource deriver) and injected via
-// SetOAuthSelfIssuer. The request is passed so the issuer can derive the RFC 8707
-// resource exactly as /authorize does (forwarded-header aware). accessTTL is the
-// operator's per-issuance FINITE lifetime chosen at issue time (B-71 Stage 4); a
-// 0/non-positive value means "use the finite global default" — never infinite. It
-// returns the access token and its expiry; the manager never sees how it is minted.
-// nil when OAuth is disabled.
-type OAuthSelfIssuer interface {
-	IssueSelf(r *http.Request, accessTTL time.Duration) (accessToken string, accessExpiry time.Time, err error)
-}
-
-// OAuthSelfIssuerFunc adapts a function to OAuthSelfIssuer.
-type OAuthSelfIssuerFunc func(r *http.Request, accessTTL time.Duration) (string, time.Time, error)
-
-// IssueSelf calls f.
-func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
-	return f(r, accessTTL)
-}
-
-// UserAdminStore is the narrow capability the super-user-only user-management ops
-// (B-28 stage 3) depend on — exactly the userstore admin/invite methods. The Manager
-// depends on this interface, not the concrete *userstore.Store, so the handle stays
-// nil when the user store is absent and tests can inject a fake. *userstore.Store
-// already satisfies it.
-type UserAdminStore interface {
-	ListUsers() ([]userstore.UserInfo, error)
-	UpdateUserScope(email, scope string) error
-	SetUserDisabled(email string, disabled bool) error
-	RemoveUser(email string) error
-	CreateInvite(email, scope, createdBy string, now time.Time, ttl time.Duration) (string, userstore.InviteRecord, error)
-	ListInvites() ([]userstore.InviteInfo, error)
-	RevokeInvite(codeHash string) error
-	// GetUser / PutUser back the self-service "My Account" ops (read own record;
-	// persist a name or re-hashed password). *userstore.Store already satisfies them.
-	GetUser(email string) (*userstore.UserRecord, error)
-	PutUser(rec *userstore.UserRecord) error
-	// SetUserPassword resets a target's password hash and drops their sessions in one
-	// tx (the admin reset, case 1). *userstore.Store already satisfies it.
-	SetUserPassword(email, passwordHash string) error
-}
-
-// Administrator authorization for the OAUTH_* management requests is enforced by the
-// single stage-2 dispatch authzGate (OAUTH_* are admin-level in wsLevels) — there is
-// no separate admin seam. The former singleUserAdmin/AdminAuthorizer/adminGate
-// (a redundant always-true seam, "config-admin") was retired in stage 4 once the DB
-// super-user + the empty-store first-run wizard became the only admin paths (B-28).
+// Administrator authorization for the OAUTH_*/ADMIN_* management requests is enforced by
+// the single dispatch gate (Client.Gate over the merged level table; those ops are
+// admin-level in uiws.CoreLevels) — there is no separate admin seam.
 
 type Manager struct {
-	// CoreHandlers is the embedded auth/user/OAuth slice (the 2026-06-21 extraction):
-	// it owns the user + OAuth stores and the ACCOUNT_*/ADMIN_*/OAUTH_* handlers + the
-	// shared authzGate. Embedding (a pointer, so the setters mutate the shared holder)
-	// promotes every core method/field onto *Manager, so the dispatch switch, the
-	// SetUserStore/SetOAuthStore wiring in cmd/shoka, and the tests reach them exactly
-	// as before — Shoka's behaviour is unchanged. The holder needs NO StorageService,
-	// so the slice is independently constructible by a second program (GitYard).
-	*CoreHandlers
+	// CoreHandlers is the embedded auth/user/OAuth slice (the 2026-06-21 extraction,
+	// now living in pkg/uiws): it owns the user + OAuth stores and the ACCOUNT_*/
+	// ADMIN_*/OAUTH_* handlers. Embedding a pointer (so the setters mutate the shared
+	// holder) promotes every core method/field onto *Manager, so the dispatch switch,
+	// the SetUserStore/SetOAuthStore wiring in cmd/shoka, and the tests reach them
+	// exactly as before — Shoka's behaviour is unchanged. The holder needs NO
+	// StorageService, so the slice is independently constructible by a second program.
+	*uiws.CoreHandlers
 	storage       storage.StorageService
 	drafts        *drafts.Manager
 	notify        *notify.Center
@@ -604,17 +231,35 @@ type Manager struct {
 	// connSeq assigns each connection a unique sender id ("ws-<seq>"). Atomic so
 	// concurrent upgrades never collide on an id.
 	connSeq atomic.Uint64
+	// levels / superOps are the merged /ws/ui authorization tables passed to
+	// client.Gate on every message: uiws.CoreLevels (the auth/user/OAuth core rows)
+	// unioned with the document rows (wsLevels), plus the super-user-only ops
+	// (wsSuperUserOps). Built once in NewManager. The union is asserted byte-equal to
+	// the pre-extraction single wsLevels table by the gate-equivalence test, so the
+	// gating decision is unchanged.
+	levels   map[MessageType]uiws.Op
+	superOps map[MessageType]bool
 }
 
 // NewManager builds the /ws/ui manager. notifyCenter may be nil (e.g. in tests);
 // when nil, no NOTIFY events are pushed but every other message works unchanged.
 func NewManager(s storage.StorageService, d *drafts.Manager, notifyCenter *notify.Center) *Manager {
 	m := &Manager{
-		CoreHandlers: &CoreHandlers{},
+		CoreHandlers: &uiws.CoreHandlers{},
 		storage:      s,
 		drafts:       d,
 		notify:       notifyCenter,
 	}
+	// Merge the core rows (pkg/uiws) with the document rows into the single gate table,
+	// exactly reproducing the pre-extraction wsLevels (see the equivalence test).
+	m.levels = make(map[MessageType]uiws.Op, len(uiws.CoreLevels)+len(wsLevels))
+	for k, v := range uiws.CoreLevels {
+		m.levels[k] = v
+	}
+	for k, v := range wsLevels {
+		m.levels[k] = v
+	}
+	m.superOps = wsSuperUserOps
 	m.upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			if m.originChecker != nil {
@@ -633,135 +278,77 @@ func (m *Manager) SetOriginChecker(fn func(*http.Request) bool) {
 }
 
 // The OAuth/user store setters (SetOAuthStore/SetOAuthSelfIssuer/SetUserStore) live on
-// the embedded *CoreHandlers (core.go) and are promoted onto *Manager, so cmd/shoka and
-// the tests call m.SetOAuthStore/… unchanged.
+// the embedded *uiws.CoreHandlers and are promoted onto *Manager, so cmd/shoka and the
+// tests call m.SetOAuthStore/… unchanged.
 
 // NotifyDrops reports how many notify events were dropped because a client's
 // send buffer was full (observability; used by tests).
 func (m *Manager) NotifyDrops() int64 { return m.notifyDrops.Load() }
 
-// PermissionDeniedPayload is the body of a PERMISSION_DENIED frame: which operation
-// was refused, the target namespace, the level it required, and a human reason.
-type PermissionDeniedPayload struct {
-	Op        string `json:"op"`
-	Namespace string `json:"namespace,omitempty"`
-	Required  string `json:"required"`
-	Message   string `json:"message"`
+// userIdentity returns the owning-user identity for a web write. When the connection
+// carries an authenticated session principal (B-28 stage 1), the logged-in user's
+// email is the git Author (email = account = git author). Otherwise it returns the
+// empty User, which identity.Resolve fills with the configured single operator — the
+// pre-login behaviour, preserved so an empty user store is never locked out. It reads
+// the connection's exported principal (the uiws.Client carries it; identity is the
+// document/git concern and stays in internal/ui, never in pkg/uiws).
+func userIdentity(c *uiws.Client) identity.User {
+	if c.HasPrincipal() {
+		p := c.Principal()
+		return identity.User{Name: p.Name, Email: p.Email}
+	}
+	return identity.User{}
 }
 
-// wsOp is a /ws/ui message's authorization requirement: the level it needs, and
-// whether it is a GLOBAL op (no target namespace — its target is the whole server, so
-// the gate ignores any payload namespace and uses the principal's max level anywhere).
-type wsOp struct {
-	level  authz.Level
-	global bool
-}
+// wsLevels is the DOCUMENT half of the /ws/ui authorization table (the core half is
+// uiws.CoreLevels; NewManager unions them). Reads need read; content mutations need
+// write; project recovery and the ns/proj admin ops need admin. A message absent from
+// the merged table fails CLOSED at admin (global) in the gate.
+var wsLevels = map[MessageType]uiws.Op{
+	GetProjects:    {Level: authz.LevelRead, Global: true}, // global: lists every namespace
+	GetTree:        {Level: authz.LevelRead, Global: false},
+	ReadFile:       {Level: authz.LevelRead, Global: false},
+	MsgSearchFiles: {Level: authz.LevelRead, Global: false},
+	MsgGetHistory:  {Level: authz.LevelRead, Global: false},
+	MsgGetFileAt:   {Level: authz.LevelRead, Global: false},
+	MsgGetDiff:     {Level: authz.LevelRead, Global: false},
 
-// wsLevels is the single registry mapping each /ws/ui message to its required level —
-// the WebUI counterpart of the MCP toolLevels table, feeding the SAME authz.Authorize.
-// Reads need read; content mutations need write; project recovery and the OAuth
-// connection-management ops need admin. A message absent from this table fails CLOSED
-// at admin (global), so a newly-added message must be classified before a
-// non-super-user can reach it.
-var wsLevels = map[MessageType]wsOp{
-	GetProjects:    {authz.LevelRead, true}, // global: lists every namespace
-	GetTree:        {authz.LevelRead, false},
-	ReadFile:       {authz.LevelRead, false},
-	MsgSearchFiles: {authz.LevelRead, false},
-	MsgGetHistory:  {authz.LevelRead, false},
-	MsgGetFileAt:   {authz.LevelRead, false},
-	MsgGetDiff:     {authz.LevelRead, false},
-
-	WriteDraft:    {authz.LevelWrite, false},
-	SaveFile:      {authz.LevelWrite, false},
-	MsgMoveFile:   {authz.LevelWrite, false},
-	MsgDeleteFile: {authz.LevelWrite, false},
+	WriteDraft:    {Level: authz.LevelWrite, Global: false},
+	SaveFile:      {Level: authz.LevelWrite, Global: false},
+	MsgMoveFile:   {Level: authz.LevelWrite, Global: false},
+	MsgDeleteFile: {Level: authz.LevelWrite, Global: false},
 
 	// Project create/delete = admin on the target namespace (B-28; create RAISED from
-	// write — a write-only principal can no longer create projects). The namespace ops
-	// (CREATE_NAMESPACE/DELETE_NAMESPACE) are NOT here: they are super-user only and
-	// handled by wsSuperUserOps, not the namespace-targeted gate.
-	MsgCreateProject: {authz.LevelAdmin, false},
-	MsgDeleteProject: {authz.LevelAdmin, false},
+	// write). The namespace ops (CREATE/DELETE_NAMESPACE) are super-user only —
+	// wsSuperUserOps, not this namespace-targeted table.
+	MsgCreateProject: {Level: authz.LevelAdmin, Global: false},
+	MsgDeleteProject: {Level: authz.LevelAdmin, Global: false},
 
-	// RENAME_PROJECT = admin on the namespace (the project stays in its namespace — looser
-	// than MOVE_PROJECT, which is super-user). RENAME_NAMESPACE is NOT here: it is super-user
-	// only and handled by wsSuperUserOps.
-	MsgRenameProject: {authz.LevelAdmin, false},
+	// RENAME_PROJECT = admin on the namespace (looser than MOVE_PROJECT, super-user).
+	MsgRenameProject: {Level: authz.LevelAdmin, Global: false},
 
-	MsgRecoverProject: {authz.LevelAdmin, false},
+	MsgRecoverProject: {Level: authz.LevelAdmin, Global: false},
 
-	// Deleted-file log ops (B-28, the 2026-06-18 directive): admin on the target
-	// namespace (the recover_project template; namespace-scoped, not global).
-	MsgListDeleted: {authz.LevelAdmin, false},
-	MsgReviveFile:  {authz.LevelAdmin, false},
-
-	MsgOAuthList:      {authz.LevelAdmin, true},
-	MsgOAuthRevoke:    {authz.LevelAdmin, true},
-	MsgOAuthIssueSelf: {authz.LevelAdmin, true},
-
-	// Domain-mode management (B-71 Stage 2d): admin, global.
-	MsgDomainList:            {authz.LevelAdmin, true},
-	MsgDomainCreate:          {authz.LevelAdmin, true},
-	MsgDomainUpdate:          {authz.LevelAdmin, true},
-	MsgDomainDelete:          {authz.LevelAdmin, true},
-	MsgDomainGenerateConsent: {authz.LevelAdmin, true},
-	MsgClientIssue:           {authz.LevelAdmin, true},
-	MsgClientList:            {authz.LevelAdmin, true},
-	MsgClientRevoke:          {authz.LevelAdmin, true},
-
-	// Self-service account ops: read-level, GLOBAL — reachable by ANY authenticated user
-	// (a global read check passes for any principal with read access anywhere, incl. a
-	// namespace-scoped read-only user). NOT admin: self-access is structural (no target
-	// id), enforced in the handlers by acting on the session identity only.
-	MsgAccountGet:         {authz.LevelRead, true},
-	MsgAccountSetName:     {authz.LevelRead, true},
-	MsgAccountSetPassword: {authz.LevelRead, true},
-
-	MsgAdminListUsers:       {authz.LevelAdmin, true},
-	MsgAdminSetUserScope:    {authz.LevelAdmin, true},
-	MsgAdminSetUserEnabled:  {authz.LevelAdmin, true},
-	MsgAdminSetUserPassword: {authz.LevelAdmin, true},
-	MsgAdminRemoveUser:      {authz.LevelAdmin, true},
-	MsgAdminCreateInvite:    {authz.LevelAdmin, true},
-	MsgAdminListInvites:     {authz.LevelAdmin, true},
-	MsgAdminRevokeInvite:    {authz.LevelAdmin, true},
+	// Deleted-file log ops: admin on the target namespace.
+	MsgListDeleted: {Level: authz.LevelAdmin, Global: false},
+	MsgReviveFile:  {Level: authz.LevelAdmin, Global: false},
 
 	// Health read = admin-somewhere (global admin target; the handler filters to the
-	// principal's admin namespaces). Recovery = admin on the target namespace (the handler
-	// tightens whole-namespace actions to super-user).
-	MsgNamespaceHealth:  {authz.LevelAdmin, true},
-	MsgNamespaceRecover: {authz.LevelAdmin, false},
+	// principal's admin namespaces). Recovery = admin on the target namespace (the
+	// handler tightens whole-namespace actions to super-user).
+	MsgNamespaceHealth:  {Level: authz.LevelAdmin, Global: true},
+	MsgNamespaceRecover: {Level: authz.LevelAdmin, Global: false},
 }
 
 // wsSuperUserOps are the /ws/ui messages that require a SUPER-USER (wildcard admin), not
-// merely admin-on-a-namespace — namespace create/delete (B-28). They are gated via
-// authz.IsSuperUser, NOT the namespace-targeted Authorize a namespace-admin would satisfy
-// for its own namespace (the loose empty-target footgun). They are deliberately absent
-// from wsLevels so authzGate routes them through the super-user check, checked FIRST.
+// merely admin-on-a-namespace — namespace create/delete/move/rename (B-28). They are
+// gated via authz.IsSuperUser, checked FIRST, and are deliberately absent from the level
+// tables. They are all document ops (the auth/user/OAuth core contributes none).
 var wsSuperUserOps = map[MessageType]bool{
 	MsgCreateNamespace: true,
 	MsgDeleteNamespace: true,
 	MsgMoveProject:     true,
 	MsgRenameNamespace: true, // a namespace rename relabels the whole namespace + all its grants
-}
-
-// authzGate (the single /ws/ui enforcement site) lives on the embedded *CoreHandlers
-// (core.go) so the core slice and the file/ns-proj handlers gate through the same
-// decision; it is promoted onto *Manager, so the dispatch loop below calls m.authzGate
-// for EVERY message exactly as before.
-
-// wsTarget decodes the target namespace/project from a /ws/ui message payload (the
-// uniform `namespace`/`projectName` keys every namespaced payload carries).
-func wsTarget(payload json.RawMessage) (namespace, project string) {
-	var t struct {
-		Namespace   string `json:"namespace"`
-		ProjectName string `json:"projectName"`
-	}
-	if len(payload) > 0 {
-		_ = json.Unmarshal(payload, &t)
-	}
-	return t.Namespace, t.ProjectName
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -771,15 +358,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-	client := &wsClient{conn: conn, id: fmt.Sprintf("ws-%d", m.connSeq.Add(1)), req: r}
-	// The WebUI session principal (B-28 stage 1) rides the upgrade request context,
-	// attached by authapi.Middleware from the session cookie. Capturing it here lets
-	// web writes be authored as the logged-in user (email = git author) and is the
-	// seam the later enforcement sweep reads. Absent when no user has logged in.
-	if p, ok := auth.PrincipalFrom(r.Context()); ok {
-		client.principal = p
-		client.hasPrincipal = true
-	}
+	// NewClient captures the WebUI session principal (B-28 stage 1) from the upgrade
+	// request context (attached by authapi.Middleware) so web writes are authored as
+	// the logged-in user and the gate can read the connection's scope.
+	client := uiws.NewClient(conn, fmt.Sprintf("ws-%d", m.connSeq.Add(1)), r)
 
 	// Subscribe to the notification center and forward events to this browser as
 	// NOTIFY messages. The callback is non-blocking: it pushes onto a bounded
@@ -791,7 +373,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// sender-exclusion directive): a write made on this connection is not echoed
 	// back to it as if a second actor had made it.
 	events := make(chan notify.Event, 64)
-	unsubscribe := m.notify.SubscribeAs(client.id, func(e notify.Event) {
+	unsubscribe := m.notify.SubscribeAs(client.ID, func(e notify.Event) {
 		select {
 		case events <- e:
 		default:
@@ -805,7 +387,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer close(drainDone)
 		for e := range events {
-			if err := client.writeMessage(MsgNotify, e); err != nil {
+			if err := client.WriteMessage(MsgNotify, e); err != nil {
 				return // write failure: the connection is going away
 			}
 		}
@@ -818,9 +400,9 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		var wsMsg WSMessage
+		var wsMsg uiws.WSMessage
 		if err := json.Unmarshal(message, &wsMsg); err != nil {
-			client.sendError("Invalid message format")
+			client.SendError("Invalid message format")
 			continue
 		}
 
@@ -828,7 +410,14 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// checked here, before its handler, through the shared authz.Authorize — not
 		// scattered into the handlers. A refusal sends PERMISSION_DENIED and skips the
 		// handler.
-		if !m.authzGate(client, wsMsg.Type, wsMsg.Payload) {
+		if !client.Gate(wsMsg.Type, wsMsg.Payload, m.levels, m.superOps) {
+			continue
+		}
+
+		// Core ops (ACCOUNT_*/ADMIN_*/OAUTH_*/DOMAIN_*/CLIENT_*) are owned by the
+		// embedded CoreHandlers; Dispatch returns true when it handled the message.
+		// Everything else is a document op handled by the switch below.
+		if m.Dispatch(client, wsMsg.Type, wsMsg.Payload) {
 			continue
 		}
 
@@ -879,52 +468,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleListDeleted(client, wsMsg.Payload)
 		case MsgReviveFile:
 			m.handleReviveFile(client, wsMsg.Payload)
-		case MsgOAuthList:
-			m.handleOAuthList(client)
-		case MsgOAuthRevoke:
-			m.handleOAuthRevoke(client, wsMsg.Payload)
-		case MsgOAuthIssueSelf:
-			m.handleOAuthIssueSelf(client, wsMsg.Payload)
-		case MsgDomainList:
-			m.handleDomainList(client)
-		case MsgDomainCreate:
-			m.handleDomainCreate(client, wsMsg.Payload)
-		case MsgDomainUpdate:
-			m.handleDomainUpdate(client, wsMsg.Payload)
-		case MsgDomainDelete:
-			m.handleDomainDelete(client, wsMsg.Payload)
-		case MsgDomainGenerateConsent:
-			m.handleDomainGenerateConsent(client, wsMsg.Payload)
-		case MsgClientList:
-			m.handleConfidentialList(client)
-		case MsgClientIssue:
-			m.handleConfidentialIssue(client, wsMsg.Payload)
-		case MsgClientRevoke:
-			m.handleConfidentialRevoke(client, wsMsg.Payload)
-		case MsgAccountGet:
-			m.handleAccountGet(client)
-		case MsgAccountSetName:
-			m.handleAccountSetName(client, wsMsg.Payload)
-		case MsgAccountSetPassword:
-			m.handleAccountSetPassword(client, wsMsg.Payload)
-		case MsgAdminListUsers:
-			m.handleAdminListUsers(client)
-		case MsgAdminSetUserScope:
-			m.handleAdminSetUserScope(client, wsMsg.Payload)
-		case MsgAdminSetUserEnabled:
-			m.handleAdminSetUserEnabled(client, wsMsg.Payload)
-		case MsgAdminSetUserPassword:
-			m.handleAdminSetUserPassword(client, wsMsg.Payload)
-		case MsgAdminRemoveUser:
-			m.handleAdminRemoveUser(client, wsMsg.Payload)
-		case MsgAdminCreateInvite:
-			m.handleAdminCreateInvite(client, wsMsg.Payload)
-		case MsgAdminListInvites:
-			m.handleAdminListInvites(client)
-		case MsgAdminRevokeInvite:
-			m.handleAdminRevokeInvite(client, wsMsg.Payload)
 		default:
-			client.sendError("Unknown message type")
+			client.SendError("Unknown message type")
 		}
 	}
 
@@ -1003,10 +548,10 @@ type namespaceRecoverer interface {
 // is ignored: the Web UI receives the full set and filters client-side (B-13 /
 // B-22). The state badge and recovery dialog (storage redesign) read the same
 // state field, unchanged.
-func (m *Manager) handleGetProjects(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleGetProjects(client *uiws.Client, payload json.RawMessage) {
 	namespaces, err := m.storage.ListNamespaces()
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to list namespaces: %v", err))
+		client.SendError(fmt.Sprintf("Failed to list namespaces: %v", err))
 		return
 	}
 
@@ -1015,14 +560,14 @@ func (m *Manager) handleGetProjects(client *wsClient, payload json.RawMessage) {
 	for _, ns := range namespaces {
 		projects, err := m.storage.ListProjects(ns)
 		if err != nil {
-			client.sendError(fmt.Sprintf("Failed to list projects: %v", err))
+			client.SendError(fmt.Sprintf("Failed to list projects: %v", err))
 			return
 		}
 		// Global-read filter (B-28 stage 3, the deferred stage-2 item): a logged-in
 		// scoped user sees only the namespaces it has at least read on; a super-user
 		// (or the no-principal no-lockout connection) sees all. Result-shaping after
 		// the gate already authorized the global read.
-		if !client.canRead(ns) {
+		if !client.CanRead(ns) {
 			continue
 		}
 		for _, name := range projects {
@@ -1033,25 +578,25 @@ func (m *Manager) handleGetProjects(client *wsClient, payload json.RawMessage) {
 			infos = append(infos, ProjectInfo{Namespace: ns, Name: name, State: state})
 		}
 	}
-	client.sendResponse(GetProjects, infos)
+	client.SendResponse(GetProjects, infos)
 }
 
-func (m *Manager) handleCreateProject(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleCreateProject(client *uiws.Client, payload json.RawMessage) {
 	var p CreateProjectPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for CREATE_PROJECT")
+		client.SendError("Invalid payload for CREATE_PROJECT")
 		return
 	}
 
 	// Sender identity: this connection originated the create, so the resulting
 	// project.create NOTIFY must not be echoed back to it (2026-06-01 directive).
-	ctx := notify.WithSender(context.Background(), client.id)
+	ctx := notify.WithSender(context.Background(), client.ID)
 	if err := m.storage.CreateProjectCtx(ctx, p.Namespace, p.ProjectName); err != nil {
-		client.sendError(fmt.Sprintf("Failed to create project: %v", err))
+		client.SendError(fmt.Sprintf("Failed to create project: %v", err))
 		return
 	}
 
-	client.sendResponse(MsgCreateProject, map[string]string{
+	client.SendResponse(MsgCreateProject, map[string]string{
 		"status": "ok",
 	})
 }
@@ -1061,60 +606,60 @@ type NamespacePayload struct {
 	Namespace string `json:"namespace"`
 }
 
-func (m *Manager) handleDeleteProject(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleDeleteProject(client *uiws.Client, payload json.RawMessage) {
 	var p CreateProjectPayload // {namespace, projectName} — same shape as create
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for DELETE_PROJECT")
+		client.SendError("Invalid payload for DELETE_PROJECT")
 		return
 	}
 	pd, ok := m.storage.(projectDeleter)
 	if !ok {
-		client.sendError("project deletion is not available on this server")
+		client.SendError("project deletion is not available on this server")
 		return
 	}
-	ctx := notify.WithSender(context.Background(), client.id)
+	ctx := notify.WithSender(context.Background(), client.ID)
 	if err := pd.DeleteProject(ctx, p.Namespace, p.ProjectName); err != nil {
-		client.sendError(fmt.Sprintf("Failed to delete project: %v", err))
+		client.SendError(fmt.Sprintf("Failed to delete project: %v", err))
 		return
 	}
-	client.sendResponse(MsgDeleteProject, map[string]string{"status": "ok"})
+	client.SendResponse(MsgDeleteProject, map[string]string{"status": "ok"})
 }
 
-func (m *Manager) handleCreateNamespace(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleCreateNamespace(client *uiws.Client, payload json.RawMessage) {
 	var p NamespacePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for CREATE_NAMESPACE")
+		client.SendError("Invalid payload for CREATE_NAMESPACE")
 		return
 	}
 	nm, ok := m.storage.(namespaceManager)
 	if !ok {
-		client.sendError("namespace management is not available on this server")
+		client.SendError("namespace management is not available on this server")
 		return
 	}
 	if err := nm.CreateNamespace(p.Namespace); err != nil {
-		client.sendError(fmt.Sprintf("Failed to create namespace: %v", err))
+		client.SendError(fmt.Sprintf("Failed to create namespace: %v", err))
 		return
 	}
-	client.sendResponse(MsgCreateNamespace, map[string]string{"status": "ok"})
+	client.SendResponse(MsgCreateNamespace, map[string]string{"status": "ok"})
 }
 
-func (m *Manager) handleDeleteNamespace(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleDeleteNamespace(client *uiws.Client, payload json.RawMessage) {
 	var p NamespacePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for DELETE_NAMESPACE")
+		client.SendError("Invalid payload for DELETE_NAMESPACE")
 		return
 	}
 	nm, ok := m.storage.(namespaceManager)
 	if !ok {
-		client.sendError("namespace management is not available on this server")
+		client.SendError("namespace management is not available on this server")
 		return
 	}
-	ctx := notify.WithSender(context.Background(), client.id)
+	ctx := notify.WithSender(context.Background(), client.ID)
 	if err := nm.DeleteNamespace(ctx, p.Namespace); err != nil {
-		client.sendError(fmt.Sprintf("Failed to delete namespace: %v", err))
+		client.SendError(fmt.Sprintf("Failed to delete namespace: %v", err))
 		return
 	}
-	client.sendResponse(MsgDeleteNamespace, map[string]string{"status": "ok"})
+	client.SendResponse(MsgDeleteNamespace, map[string]string{"status": "ok"})
 }
 
 // MoveProjectPayload is the /ws/ui project-move request (B-28). namespace is the SOURCE;
@@ -1125,23 +670,23 @@ type MoveProjectPayload struct {
 	NewNamespace string `json:"newNamespace"`
 }
 
-func (m *Manager) handleMoveProject(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleMoveProject(client *uiws.Client, payload json.RawMessage) {
 	var p MoveProjectPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for MOVE_PROJECT")
+		client.SendError("Invalid payload for MOVE_PROJECT")
 		return
 	}
 	mv, ok := m.storage.(projectMover)
 	if !ok {
-		client.sendError("project move is not available on this server")
+		client.SendError("project move is not available on this server")
 		return
 	}
-	ctx := notify.WithSender(context.Background(), client.id)
+	ctx := notify.WithSender(context.Background(), client.ID)
 	if err := mv.MoveProject(ctx, p.Namespace, p.ProjectName, p.NewNamespace); err != nil {
-		client.sendError(fmt.Sprintf("Failed to move project: %v", err))
+		client.SendError(fmt.Sprintf("Failed to move project: %v", err))
 		return
 	}
-	client.sendResponse(MsgMoveProject, map[string]string{"status": "ok"})
+	client.SendResponse(MsgMoveProject, map[string]string{"status": "ok"})
 }
 
 // RenameProjectPayload is the /ws/ui project-rename request (B-28). namespace + projectName
@@ -1153,23 +698,23 @@ type RenameProjectPayload struct {
 	NewProjectName string `json:"newProjectName"`
 }
 
-func (m *Manager) handleRenameProject(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleRenameProject(client *uiws.Client, payload json.RawMessage) {
 	var p RenameProjectPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for RENAME_PROJECT")
+		client.SendError("Invalid payload for RENAME_PROJECT")
 		return
 	}
 	rn, ok := m.storage.(projectRenamer)
 	if !ok {
-		client.sendError("project rename is not available on this server")
+		client.SendError("project rename is not available on this server")
 		return
 	}
-	ctx := notify.WithSender(context.Background(), client.id)
+	ctx := notify.WithSender(context.Background(), client.ID)
 	if err := rn.RenameProject(ctx, p.Namespace, p.ProjectName, p.NewProjectName); err != nil {
-		client.sendError(fmt.Sprintf("Failed to rename project: %v", err))
+		client.SendError(fmt.Sprintf("Failed to rename project: %v", err))
 		return
 	}
-	client.sendResponse(MsgRenameProject, map[string]string{"status": "ok"})
+	client.SendResponse(MsgRenameProject, map[string]string{"status": "ok"})
 }
 
 // RenameNamespacePayload is the /ws/ui namespace-rename request (B-28). namespace is the
@@ -1179,23 +724,23 @@ type RenameNamespacePayload struct {
 	NewNamespace string `json:"newNamespace"`
 }
 
-func (m *Manager) handleRenameNamespace(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleRenameNamespace(client *uiws.Client, payload json.RawMessage) {
 	var p RenameNamespacePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for RENAME_NAMESPACE")
+		client.SendError("Invalid payload for RENAME_NAMESPACE")
 		return
 	}
 	rn, ok := m.storage.(namespaceRenamer)
 	if !ok {
-		client.sendError("namespace rename is not available on this server")
+		client.SendError("namespace rename is not available on this server")
 		return
 	}
-	ctx := notify.WithSender(context.Background(), client.id)
+	ctx := notify.WithSender(context.Background(), client.ID)
 	if err := rn.RenameNamespace(ctx, p.Namespace, p.NewNamespace); err != nil {
-		client.sendError(fmt.Sprintf("Failed to rename namespace: %v", err))
+		client.SendError(fmt.Sprintf("Failed to rename namespace: %v", err))
 		return
 	}
-	client.sendResponse(MsgRenameNamespace, map[string]string{"status": "ok"})
+	client.SendResponse(MsgRenameNamespace, map[string]string{"status": "ok"})
 }
 
 // NamespaceRecoverPayload is the /ws/ui recovery request. ProjectName empty ⇒ a
@@ -1206,15 +751,15 @@ type NamespaceRecoverPayload struct {
 	ProjectName string `json:"projectName"`
 }
 
-func (m *Manager) handleNamespaceHealth(client *wsClient) {
+func (m *Manager) handleNamespaceHealth(client *uiws.Client) {
 	hr, ok := m.storage.(namespaceHealthReader)
 	if !ok {
-		client.sendError("namespace health is not available on this server")
+		client.SendError("namespace health is not available on this server")
 		return
 	}
 	// The gate authorized admin-somewhere; filter the picture to the principal's admin
 	// namespaces (a super-user sees all, incl. base-level foreign namespaces).
-	client.sendResponse(MsgNamespaceHealth, filterHealthByAdminScope(hr.CheckAllHealth(), client.scope()))
+	client.SendResponse(MsgNamespaceHealth, filterHealthByAdminScope(hr.CheckAllHealth(), client.Scope()))
 }
 
 // filterHealthByAdminScope narrows a health report to what the principal may see: a
@@ -1238,15 +783,15 @@ func filterHealthByAdminScope(report storage.HealthReport, scope string) storage
 	return out
 }
 
-func (m *Manager) handleNamespaceRecover(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleNamespaceRecover(client *uiws.Client, payload json.RawMessage) {
 	var p NamespaceRecoverPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for NAMESPACE_RECOVER")
+		client.SendError("Invalid payload for NAMESPACE_RECOVER")
 		return
 	}
 	nr, ok := m.storage.(namespaceRecoverer)
 	if !ok {
-		client.sendError("namespace recovery is not available on this server")
+		client.SendError("namespace recovery is not available on this server")
 		return
 	}
 	if p.Namespace == "" {
@@ -1258,8 +803,8 @@ func (m *Manager) handleNamespaceRecover(client *wsClient, payload json.RawMessa
 	// admin-on-the-namespace (which a namespace-admin satisfies for its own namespace), so
 	// tighten here — mirroring the MCP handler / the create/delete-namespace ops.
 	denyNamespaceLevel := func() bool {
-		if nsLevel && !authz.IsSuperUser(client.scope()) {
-			client.sendResponse(MsgPermissionDenied, PermissionDeniedPayload{
+		if nsLevel && !authz.IsSuperUser(client.Scope()) {
+			client.SendResponse(uiws.MsgPermissionDenied, uiws.PermissionDeniedPayload{
 				Op:       string(MsgNamespaceRecover),
 				Required: "super-user",
 				Message:  "permission denied: a whole-namespace recovery action requires a super-user",
@@ -1282,7 +827,7 @@ func (m *Manager) handleNamespaceRecover(client *wsClient, payload json.RawMessa
 		}
 	case "clean_orphaned":
 		if nsLevel {
-			client.sendError("clean_orphaned requires projectName (the stray's base name)")
+			client.SendError("clean_orphaned requires projectName (the stray's base name)")
 			return
 		}
 		err = nr.CleanOrphanedSibling(p.Namespace, p.ProjectName)
@@ -1292,30 +837,30 @@ func (m *Manager) handleNamespaceRecover(client *wsClient, payload json.RawMessa
 		}
 		err = nr.AdoptForeign(p.Namespace, p.ProjectName)
 	default:
-		client.sendError("invalid action: must be drop_missing | clean_orphaned | adopt")
+		client.SendError("invalid action: must be drop_missing | clean_orphaned | adopt")
 		return
 	}
 	if err != nil {
-		client.sendError(fmt.Sprintf("namespace recovery failed: %v", err))
+		client.SendError(fmt.Sprintf("namespace recovery failed: %v", err))
 		return
 	}
-	client.sendResponse(MsgNamespaceRecover, map[string]string{"status": "ok"})
+	client.SendResponse(MsgNamespaceRecover, map[string]string{"status": "ok"})
 }
 
-func (m *Manager) handleGetTree(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleGetTree(client *uiws.Client, payload json.RawMessage) {
 	var p GetTreePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for GET_TREE")
+		client.SendError("Invalid payload for GET_TREE")
 		return
 	}
 
 	tree, err := m.getTree(p.Namespace, p.ProjectName, "")
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to get tree: %v", err))
+		client.SendError(fmt.Sprintf("Failed to get tree: %v", err))
 		return
 	}
 
-	client.sendResponse(GetTree, tree)
+	client.SendResponse(GetTree, tree)
 }
 
 func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, error) {
@@ -1350,22 +895,22 @@ func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, erro
 	return nodes, nil
 }
 
-func (m *Manager) handleReadFile(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleReadFile(client *uiws.Client, payload json.RawMessage) {
 	var p ReadFilePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for READ_FILE")
+		client.SendError("Invalid payload for READ_FILE")
 		return
 	}
 
 	content, etag, err := m.storage.ReadFileWithETag(p.Namespace, p.ProjectName, p.Path)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to read file: %v", err))
+		client.SendError(fmt.Sprintf("Failed to read file: %v", err))
 		return
 	}
 
 	// etag travels with the content so the client can send it back as if_match on
 	// a subsequent SAVE_FILE. Clients that ignore the field are unaffected.
-	client.sendResponse(ReadFile, map[string]string{
+	client.SendResponse(ReadFile, map[string]string{
 		"path":    p.Path,
 		"content": content,
 		"etag":    etag,
@@ -1377,23 +922,23 @@ func (m *Manager) handleReadFile(client *wsClient, payload json.RawMessage) {
 // commit, no NOTIFY — so, like handleReadFile, it carries no identity or sender
 // context. A nil result is normalised to an empty slice so the wire shape is
 // always {"matches": [...]}.
-func (m *Manager) handleSearchFiles(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleSearchFiles(client *uiws.Client, payload json.RawMessage) {
 	var p SearchFilesPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for SEARCH_FILES")
+		client.SendError("Invalid payload for SEARCH_FILES")
 		return
 	}
 
 	matches, err := m.storage.SearchFiles(p.Namespace, p.ProjectName, p.Query, p.SearchIn)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to search files: %v", err))
+		client.SendError(fmt.Sprintf("Failed to search files: %v", err))
 		return
 	}
 	if matches == nil {
 		matches = []storage.SearchMatch{}
 	}
 
-	client.sendResponse(MsgSearchResult, SearchResultPayload{Matches: matches})
+	client.SendResponse(MsgSearchResult, SearchResultPayload{Matches: matches})
 }
 
 // handleMoveFile renames/moves a file via storage.Move. Like SAVE_FILE it is the
@@ -1404,15 +949,15 @@ func (m *Manager) handleSearchFiles(client *wsClient, payload json.RawMessage) {
 // uses; success returns MOVE_ACK with the new etag and an always-0
 // links_rewritten count (a move is a pure path change; inbound-link rewriting is
 // disabled and the rewriter retained dormant per B-33).
-func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleMoveFile(client *uiws.Client, payload json.RawMessage) {
 	var p MoveFilePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for MOVE_FILE")
+		client.SendError("Invalid payload for MOVE_FILE")
 		return
 	}
 
-	ctx := identity.WithUser(context.Background(), client.userIdentity())
-	ctx = notify.WithSender(ctx, client.id)
+	ctx := identity.WithUser(context.Background(), userIdentity(client))
+	ctx = notify.WithSender(ctx, client.ID)
 
 	var ifMatch *string
 	if p.IfMatch != "" {
@@ -1423,18 +968,18 @@ func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
 	if err != nil {
 		var conflict *storage.VersionConflictError
 		if errors.As(err, &conflict) {
-			client.sendResponse(MsgConflict, ConflictPayload{
+			client.SendResponse(MsgConflict, ConflictPayload{
 				Path:        p.TargetPath,
 				CurrentETag: conflict.Current,
 				Message:     "Move rejected: the file was modified or the target already exists",
 			})
 			return
 		}
-		client.sendError(fmt.Sprintf("Failed to move file: %v", err))
+		client.SendError(fmt.Sprintf("Failed to move file: %v", err))
 		return
 	}
 
-	client.sendResponse(MsgMoveAck, MoveAckPayload{
+	client.SendResponse(MsgMoveAck, MoveAckPayload{
 		SourcePath:     p.SourcePath,
 		TargetPath:     p.TargetPath,
 		NewETag:        newEtag,
@@ -1451,15 +996,15 @@ func (m *Manager) handleMoveFile(client *wsClient, payload json.RawMessage) {
 // surfaced rather than silently destroyed; success returns DELETE_ACK with the
 // deleted path. No storage or tool change — the delete is git-tracked and
 // recoverable via History.
-func (m *Manager) handleDeleteFile(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleDeleteFile(client *uiws.Client, payload json.RawMessage) {
 	var p DeleteFilePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for DELETE_FILE")
+		client.SendError("Invalid payload for DELETE_FILE")
 		return
 	}
 
-	ctx := identity.WithUser(context.Background(), client.userIdentity())
-	ctx = notify.WithSender(ctx, client.id)
+	ctx := identity.WithUser(context.Background(), userIdentity(client))
+	ctx = notify.WithSender(ctx, client.ID)
 
 	var ifMatch *string
 	if p.IfMatch != "" {
@@ -1469,18 +1014,18 @@ func (m *Manager) handleDeleteFile(client *wsClient, payload json.RawMessage) {
 	if err := m.storage.Delete(ctx, "", p.Namespace, p.ProjectName, p.Path, ifMatch); err != nil {
 		var conflict *storage.VersionConflictError
 		if errors.As(err, &conflict) {
-			client.sendResponse(MsgConflict, ConflictPayload{
+			client.SendResponse(MsgConflict, ConflictPayload{
 				Path:        p.Path,
 				CurrentETag: conflict.Current,
 				Message:     "Delete rejected: the file was modified after it was queued",
 			})
 			return
 		}
-		client.sendError(fmt.Sprintf("Failed to delete file: %v", err))
+		client.SendError(fmt.Sprintf("Failed to delete file: %v", err))
 		return
 	}
 
-	client.sendResponse(MsgDeleteAck, DeleteAckPayload{Path: p.Path})
+	client.SendResponse(MsgDeleteAck, DeleteAckPayload{Path: p.Path})
 }
 
 // handleRecoverProject re-syncs a project's write-path baseline to the actual
@@ -1489,25 +1034,25 @@ func (m *Manager) handleDeleteFile(client *wsClient, payload json.RawMessage) {
 // false `corrupted` is restored to healthy and writes re-enable; a project with
 // genuine uncommitted drift stays corrupted and the ack says so. Non-destructive —
 // no commit, no discard.
-func (m *Manager) handleRecoverProject(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleRecoverProject(client *uiws.Client, payload json.RawMessage) {
 	var p RecoverProjectPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for RECOVER_PROJECT")
+		client.SendError("Invalid payload for RECOVER_PROJECT")
 		return
 	}
 	if p.ProjectName == "" {
-		client.sendError("RECOVER_PROJECT requires projectName")
+		client.SendError("RECOVER_PROJECT requires projectName")
 		return
 	}
 
 	rec, ok := m.storage.(projectRecoverer)
 	if !ok {
-		client.sendError("Recovery is not supported by this server")
+		client.SendError("Recovery is not supported by this server")
 		return
 	}
 	state, err := rec.ResyncToHead(p.Namespace, p.ProjectName)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to recover project: %v", err))
+		client.SendError(fmt.Sprintf("Failed to recover project: %v", err))
 		return
 	}
 
@@ -1527,40 +1072,40 @@ func (m *Manager) handleRecoverProject(client *wsClient, payload json.RawMessage
 	default:
 		ack.Message = fmt.Sprintf("Project state: %s.", state)
 	}
-	client.sendResponse(MsgRecoverAck, ack)
+	client.SendResponse(MsgRecoverAck, ack)
 }
 
 // The OAuth/domain/confidential handlers (OAUTH_*/DOMAIN_*/CLIENT_*) live on the
 // embedded *CoreHandlers in core_oauth.go (the 2026-06-21 extraction) and are
 // promoted onto *Manager, so the dispatch switch reaches them unchanged.
 
-func (m *Manager) handleWriteDraft(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleWriteDraft(client *uiws.Client, payload json.RawMessage) {
 	var p WriteDraftPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for WRITE_DRAFT")
+		client.SendError("Invalid payload for WRITE_DRAFT")
 		return
 	}
 
 	draftPath, err := m.drafts.GetDraftPath(p.Namespace, p.ProjectName, p.Path)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to get draft path: %v", err))
+		client.SendError(fmt.Sprintf("Failed to get draft path: %v", err))
 		return
 	}
 
 	if err := m.drafts.SaveDraft(draftPath, []byte(p.Content)); err != nil {
-		client.sendError(fmt.Sprintf("Failed to save draft: %v", err))
+		client.SendError(fmt.Sprintf("Failed to save draft: %v", err))
 		return
 	}
 
-	client.sendResponse(WriteDraft, map[string]string{
+	client.SendResponse(WriteDraft, map[string]string{
 		"status": "ok",
 	})
 }
 
-func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleSaveFile(client *uiws.Client, payload json.RawMessage) {
 	var p SaveFilePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for SAVE_FILE")
+		client.SendError("Invalid payload for SAVE_FILE")
 		return
 	}
 
@@ -1570,10 +1115,10 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	// the actual user at this call site. The ctx-aware Write carries the identity
 	// (the old WriteFile path used context.Background() and resolved to the default
 	// agent).
-	ctx := identity.WithUser(context.Background(), client.userIdentity())
+	ctx := identity.WithUser(context.Background(), userIdentity(client))
 	// Sender identity: this connection originated the write, so the resulting
 	// file.write NOTIFY must not be echoed back to it (2026-06-01 directive).
-	ctx = notify.WithSender(ctx, client.id)
+	ctx = notify.WithSender(ctx, client.ID)
 
 	// Resolve Content per content_encoding through the SAME shared helper the MCP
 	// write_file tool uses (no duplicate allowlist): empty/"utf8" is literal text
@@ -1583,7 +1128,7 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	// base64) is surfaced as an ERROR frame and nothing is written.
 	content, msg, _, ok := ingest.DecodeContent(p.Path, p.Content, p.ContentEncoding)
 	if !ok {
-		client.sendError(msg)
+		client.SendError(msg)
 		return
 	}
 
@@ -1604,7 +1149,7 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	// bypass it); the etag carried back lets the client confirm-then-overwrite.
 	if p.ContentEncoding == "base64" && ifMatch == nil {
 		if _, curETag, rerr := m.storage.ReadFileWithETag(p.Namespace, p.ProjectName, p.Path); rerr == nil {
-			client.sendResponse(MsgConflict, ConflictPayload{
+			client.SendResponse(MsgConflict, ConflictPayload{
 				Path:        p.Path,
 				CurrentETag: curETag,
 				Message:     "A file already exists at this path; confirm to overwrite it",
@@ -1617,20 +1162,20 @@ func (m *Manager) handleSaveFile(client *wsClient, payload json.RawMessage) {
 	if err != nil {
 		var conflict *storage.VersionConflictError
 		if errors.As(err, &conflict) {
-			client.sendResponse(MsgConflict, ConflictPayload{
+			client.SendResponse(MsgConflict, ConflictPayload{
 				Path:        p.Path,
 				CurrentETag: conflict.Current,
 				Message:     "File was modified by someone else",
 			})
 			return
 		}
-		client.sendError(fmt.Sprintf("Failed to save file: %v", err))
+		client.SendError(fmt.Sprintf("Failed to save file: %v", err))
 		return
 	}
 
 	// Return the new etag so the client can use it as if_match for its next save
 	// (the editor's read-modify-write loop).
-	client.sendResponse(SaveAck, map[string]string{
+	client.SendResponse(SaveAck, map[string]string{
 		"path":   p.Path,
 		"status": "ok",
 		"etag":   etag,

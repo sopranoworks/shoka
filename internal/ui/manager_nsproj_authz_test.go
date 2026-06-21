@@ -3,6 +3,8 @@ package ui
 import (
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // #4 (/ws/ui side, B-28 ns/proj management). Project create/delete = admin on the target
@@ -22,27 +24,27 @@ func TestWSUI_NamespaceProjectOps_Authz(t *testing.T) {
 
 	// CREATE_PROJECT on foo → allowed (admin on the target namespace).
 	sendWS(t, conn, MsgCreateProject, CreateProjectPayload{Namespace: "foo", ProjectName: "newp"})
-	if ft := firstFrameType(t, conn); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft == uiws.MsgPermissionDenied {
 		t.Fatal("namespace:foo:admin must be allowed to CREATE_PROJECT on foo")
 	}
 	// DELETE_PROJECT on foo → allowed.
 	sendWS(t, conn, MsgDeleteProject, CreateProjectPayload{Namespace: "foo", ProjectName: "proj"})
-	if ft := firstFrameType(t, conn); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft == uiws.MsgPermissionDenied {
 		t.Fatal("namespace:foo:admin must be allowed to DELETE_PROJECT on foo")
 	}
 	// CREATE_PROJECT on bar (foreign namespace) → denied.
 	sendWS(t, conn, MsgCreateProject, CreateProjectPayload{Namespace: "bar", ProjectName: "x"})
-	if ft := firstFrameType(t, conn); ft != MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft != uiws.MsgPermissionDenied {
 		t.Fatalf("CREATE_PROJECT on bar must be DENIED for foo-admin, got %s", ft)
 	}
 	// CREATE_NAMESPACE → denied (super-user only; a namespace-admin must NOT pass).
 	sendWS(t, conn, MsgCreateNamespace, NamespacePayload{Namespace: "zed"})
-	if ft := firstFrameType(t, conn); ft != MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft != uiws.MsgPermissionDenied {
 		t.Fatalf("CREATE_NAMESPACE must be DENIED for a namespace-admin, got %s", ft)
 	}
 	// DELETE_NAMESPACE → denied.
 	sendWS(t, conn, MsgDeleteNamespace, NamespacePayload{Namespace: "foo"})
-	if ft := firstFrameType(t, conn); ft != MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft != uiws.MsgPermissionDenied {
 		t.Fatalf("DELETE_NAMESPACE must be DENIED for a namespace-admin, got %s", ft)
 	}
 
@@ -53,7 +55,7 @@ func TestWSUI_NamespaceProjectOps_Authz(t *testing.T) {
 	defer connSU.Close()
 
 	sendWS(t, connSU, MsgCreateNamespace, NamespacePayload{Namespace: "zed"})
-	if ft := firstFrameType(t, connSU); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, connSU); ft == uiws.MsgPermissionDenied {
 		t.Fatal("super-user must be allowed to CREATE_NAMESPACE")
 	}
 	// Confirm the namespace really exists now (the op ran, not just the gate).
@@ -61,7 +63,7 @@ func TestWSUI_NamespaceProjectOps_Authz(t *testing.T) {
 		t.Fatalf("super-user CREATE_NAMESPACE did not create zed: %v", nss)
 	}
 	sendWS(t, connSU, MsgDeleteNamespace, NamespacePayload{Namespace: "zed"})
-	if ft := firstFrameType(t, connSU); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, connSU); ft == uiws.MsgPermissionDenied {
 		t.Fatal("super-user must be allowed to DELETE_NAMESPACE")
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/ui"
 	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // TestEndToEndCredentialPath proves the B-46b foundation end to end, in the B-45b
@@ -90,7 +91,7 @@ func TestEndToEndCredentialPath(t *testing.T) {
 	}
 	m := ui.NewManager(s, dm, nil)
 	m.SetOAuthStore(store) // *oauthstore.Store satisfies OAuthConnectionStore
-	m.SetOAuthSelfIssuer(ui.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+	m.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
 		if accessTTL <= 0 {
 			accessTTL = time.Hour
 		}
@@ -282,23 +283,23 @@ func issueTokenOverWS(t *testing.T, httpURL string) string {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteJSON(ui.WSMessage{Type: ui.MsgOAuthIssueSelf}); err != nil {
+	if err := conn.WriteJSON(uiws.WSMessage{Type: uiws.MsgOAuthIssueSelf}); err != nil {
 		t.Fatalf("ws write: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	for {
-		var resp ui.WSMessage
+		var resp uiws.WSMessage
 		if err := conn.ReadJSON(&resp); err != nil {
 			t.Fatalf("ws read: %v", err)
 		}
 		switch resp.Type {
-		case ui.MsgOAuthIssueSelf:
-			var p ui.OAuthIssueSelfPayload
+		case uiws.MsgOAuthIssueSelf:
+			var p uiws.OAuthIssueSelfPayload
 			if err := json.Unmarshal(resp.Payload, &p); err != nil {
 				t.Fatalf("unmarshal issue-self payload: %v", err)
 			}
 			return p.AccessToken
-		case ui.MsgOAuthDenied, ui.Error:
+		case uiws.MsgOAuthDenied, uiws.Error:
 			t.Fatalf("mint refused: %s %s", resp.Type, resp.Payload)
 		default:
 			// Ignore any unrelated frame and keep reading for the response.

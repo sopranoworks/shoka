@@ -9,6 +9,8 @@ import (
 
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
 	"github.com/sopranoworks/shoka/pkg/userstore"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 func testUserStore(t *testing.T) *userstore.Store {
@@ -43,17 +45,17 @@ func TestWSUI_AdminOps_GatedAndSelfOmitted(t *testing.T) {
 	defer srvScoped.Close()
 	c1 := dialWS(t, srvScoped.URL)
 	defer c1.Close()
-	sendWS(t, c1, MsgAdminListUsers, struct{}{})
-	readUntil(t, c1, MsgPermissionDenied, nil, 2*time.Second)
+	sendWS(t, c1, uiws.MsgAdminListUsers, struct{}{})
+	readUntil(t, c1, uiws.MsgPermissionDenied, nil, 2*time.Second)
 
 	// Super-user → list returns users with SELF omitted.
 	srv := httptest.NewServer(withScope("*", m))
 	defer srv.Close()
 	c2 := dialWS(t, srv.URL)
 	defer c2.Close()
-	sendWS(t, c2, MsgAdminListUsers, struct{}{})
-	var users AdminUsersPayload
-	readUntil(t, c2, MsgAdminListUsers, &users, 2*time.Second)
+	sendWS(t, c2, uiws.MsgAdminListUsers, struct{}{})
+	var users uiws.AdminUsersPayload
+	readUntil(t, c2, uiws.MsgAdminListUsers, &users, 2*time.Second)
 	for _, u := range users.Users {
 		if u.Email == "u@example.com" {
 			t.Fatal("the calling admin (self) must be omitted from the user list")
@@ -70,8 +72,8 @@ func TestWSUI_AdminOps_GatedAndSelfOmitted(t *testing.T) {
 	}
 
 	// Self-guard: removing one's own account is refused (ERROR), not performed.
-	sendWS(t, c2, MsgAdminRemoveUser, adminRemoveUserRequest{Email: "u@example.com"})
-	if ft := firstFrameType(t, c2); ft != Error {
+	sendWS(t, c2, uiws.MsgAdminRemoveUser, uiws.AdminRemoveUserRequest{Email: "u@example.com"})
+	if ft := firstFrameType(t, c2); ft != uiws.Error {
 		t.Fatalf("self-removal must be refused with ERROR, got %s", ft)
 	}
 	if _, err := us.GetUser("u@example.com"); err != nil {
@@ -93,8 +95,8 @@ func TestWSUI_AdminSetUserEnabled_SelfGuard(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAdminSetUserEnabled, adminSetEnabledRequest{Email: "u@example.com", Enabled: false})
-	if ft := firstFrameType(t, c); ft != Error {
+	sendWS(t, c, uiws.MsgAdminSetUserEnabled, uiws.AdminSetEnabledRequest{Email: "u@example.com", Enabled: false})
+	if ft := firstFrameType(t, c); ft != uiws.Error {
 		t.Fatalf("self-disable must be refused with ERROR, got %s", ft)
 	}
 	u, err := us.GetUser("u@example.com")
@@ -128,9 +130,9 @@ func TestWSUI_AdminSetUserEnabled_DisableRevokesSessionsAndOAuth(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAdminSetUserEnabled, adminSetEnabledRequest{Email: "bob@x.com", Enabled: false})
-	var ack AdminAckPayload
-	readUntil(t, c, MsgAdminSetUserEnabled, &ack, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminSetUserEnabled, uiws.AdminSetEnabledRequest{Email: "bob@x.com", Enabled: false})
+	var ack uiws.AdminAckPayload
+	readUntil(t, c, uiws.MsgAdminSetUserEnabled, &ack, 2*time.Second)
 
 	u, err := us.GetUser("bob@x.com")
 	if err != nil || !u.Disabled {
@@ -168,9 +170,9 @@ func TestWSUI_AdminRemoveUser_RevokesOAuth(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAdminRemoveUser, adminRemoveUserRequest{Email: "bob@x.com"})
-	var ack AdminAckPayload
-	readUntil(t, c, MsgAdminRemoveUser, &ack, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminRemoveUser, uiws.AdminRemoveUserRequest{Email: "bob@x.com"})
+	var ack uiws.AdminAckPayload
+	readUntil(t, c, uiws.MsgAdminRemoveUser, &ack, 2*time.Second)
 
 	if _, err := us.GetUser("bob@x.com"); err == nil {
 		t.Fatal("bob must be removed")
@@ -198,26 +200,26 @@ func TestWSUI_AdminInviteLifecycle(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAdminCreateInvite, adminCreateInviteRequest{Email: "new@x.com", Scope: "namespace:foo:rw"})
-	var created AdminInviteCreatedPayload
-	readUntil(t, c, MsgAdminCreateInvite, &created, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminCreateInvite, uiws.AdminCreateInviteRequest{Email: "new@x.com", Scope: "namespace:foo:rw"})
+	var created uiws.AdminInviteCreatedPayload
+	readUntil(t, c, uiws.MsgAdminCreateInvite, &created, 2*time.Second)
 	if created.Code == "" || created.Email != "new@x.com" || created.CodeHash == "" {
 		t.Fatalf("invite create payload = %+v", created)
 	}
 
-	sendWS(t, c, MsgAdminListInvites, struct{}{})
-	var list AdminInvitesPayload
-	readUntil(t, c, MsgAdminListInvites, &list, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminListInvites, struct{}{})
+	var list uiws.AdminInvitesPayload
+	readUntil(t, c, uiws.MsgAdminListInvites, &list, 2*time.Second)
 	if len(list.Invites) != 1 || list.Invites[0].Email != "new@x.com" {
 		t.Fatalf("invite list = %+v", list.Invites)
 	}
 
-	sendWS(t, c, MsgAdminRevokeInvite, adminRevokeInviteRequest{CodeHash: created.CodeHash})
-	var ack AdminAckPayload
-	readUntil(t, c, MsgAdminRevokeInvite, &ack, 2*time.Second)
-	sendWS(t, c, MsgAdminListInvites, struct{}{})
-	var list2 AdminInvitesPayload
-	readUntil(t, c, MsgAdminListInvites, &list2, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminRevokeInvite, uiws.AdminRevokeInviteRequest{CodeHash: created.CodeHash})
+	var ack uiws.AdminAckPayload
+	readUntil(t, c, uiws.MsgAdminRevokeInvite, &ack, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminListInvites, struct{}{})
+	var list2 uiws.AdminInvitesPayload
+	readUntil(t, c, uiws.MsgAdminListInvites, &list2, 2*time.Second)
 	if len(list2.Invites) != 0 {
 		t.Fatalf("invite should be revoked, got %+v", list2.Invites)
 	}

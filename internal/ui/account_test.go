@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/sopranoworks/shoka/pkg/userstore"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // accountTestManager wires a real user store into a fresh manager; tests apply
@@ -30,9 +32,9 @@ func TestWSUI_AccountGet_ReturnsSelfNoSecret(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAccountGet, struct{}{})
-	var info AccountInfoPayload
-	readUntil(t, c, MsgAccountGet, &info, 2*time.Second)
+	sendWS(t, c, uiws.MsgAccountGet, struct{}{})
+	var info uiws.AccountInfoPayload
+	readUntil(t, c, uiws.MsgAccountGet, &info, 2*time.Second)
 	if info.Email != "u@example.com" || info.DisplayName != "Me" {
 		t.Fatalf("ACCOUNT_GET must return the session user's own info, got %+v", info)
 	}
@@ -50,8 +52,8 @@ func TestWSUI_Account_RequiresSession(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAccountGet, struct{}{})
-	if ft := firstFrameType(t, c); ft != Error {
+	sendWS(t, c, uiws.MsgAccountGet, struct{}{})
+	if ft := firstFrameType(t, c); ft != uiws.Error {
 		t.Fatalf("ACCOUNT_GET without a session must error, got %s", ft)
 	}
 }
@@ -70,9 +72,9 @@ func TestWSUI_AccountSetName_Persists(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAccountSetName, accountSetNameRequest{DisplayName: "New Name"})
-	var info AccountInfoPayload
-	readUntil(t, c, MsgAccountSetName, &info, 2*time.Second)
+	sendWS(t, c, uiws.MsgAccountSetName, uiws.AccountSetNameRequest{DisplayName: "New Name"})
+	var info uiws.AccountInfoPayload
+	readUntil(t, c, uiws.MsgAccountSetName, &info, 2*time.Second)
 	if info.DisplayName != "New Name" {
 		t.Fatalf("response should echo the new name, got %+v", info)
 	}
@@ -93,8 +95,8 @@ func TestWSUI_AccountSetName_EmptyRejected(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAccountSetName, accountSetNameRequest{DisplayName: "   "})
-	if ft := firstFrameType(t, c); ft != Error {
+	sendWS(t, c, uiws.MsgAccountSetName, uiws.AccountSetNameRequest{DisplayName: "   "})
+	if ft := firstFrameType(t, c); ft != uiws.Error {
 		t.Fatalf("empty name must be refused with ERROR, got %s", ft)
 	}
 	got, _ := us.GetUser("u@example.com")
@@ -121,12 +123,12 @@ func TestWSUI_AccountSetName_IgnoresCallerSuppliedTarget(t *testing.T) {
 	defer c.Close()
 
 	// Smuggle a foreign target email alongside the new name.
-	sendWS(t, c, MsgAccountSetName, map[string]any{
+	sendWS(t, c, uiws.MsgAccountSetName, map[string]any{
 		"display_name": "Pwned",
 		"email":        "victim@example.com",
 	})
-	var info AccountInfoPayload
-	readUntil(t, c, MsgAccountSetName, &info, 2*time.Second)
+	var info uiws.AccountInfoPayload
+	readUntil(t, c, uiws.MsgAccountSetName, &info, 2*time.Second)
 
 	if info.Email != "u@example.com" {
 		t.Fatalf("the op must act on the SESSION user, got %s", info.Email)
@@ -155,8 +157,8 @@ func TestWSUI_AccountSetPassword_RequiresCurrentAndRehashes(t *testing.T) {
 	defer c.Close()
 
 	// Wrong current password → rejected, hash unchanged.
-	sendWS(t, c, MsgAccountSetPassword, accountSetPasswordRequest{CurrentPassword: "wrongpassword", NewPassword: "newpassword1"})
-	if ft := firstFrameType(t, c); ft != Error {
+	sendWS(t, c, uiws.MsgAccountSetPassword, uiws.AccountSetPasswordRequest{CurrentPassword: "wrongpassword", NewPassword: "newpassword1"})
+	if ft := firstFrameType(t, c); ft != uiws.Error {
 		t.Fatalf("wrong current password must be refused with ERROR, got %s", ft)
 	}
 	after, _ := us.GetUser("u@example.com")
@@ -165,9 +167,9 @@ func TestWSUI_AccountSetPassword_RequiresCurrentAndRehashes(t *testing.T) {
 	}
 
 	// Correct current password → re-hash; new verifies, old does not.
-	sendWS(t, c, MsgAccountSetPassword, accountSetPasswordRequest{CurrentPassword: "oldpassword1", NewPassword: "newpassword1"})
-	var ack AdminAckPayload
-	readUntil(t, c, MsgAccountSetPassword, &ack, 2*time.Second)
+	sendWS(t, c, uiws.MsgAccountSetPassword, uiws.AccountSetPasswordRequest{CurrentPassword: "oldpassword1", NewPassword: "newpassword1"})
+	var ack uiws.AdminAckPayload
+	readUntil(t, c, uiws.MsgAccountSetPassword, &ack, 2*time.Second)
 	if ack.Status != "ok" {
 		t.Fatalf("expected ok ack, got %+v", ack)
 	}
@@ -192,8 +194,8 @@ func TestWSUI_AccountSetPassword_PolicyEnforced(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAccountSetPassword, accountSetPasswordRequest{CurrentPassword: "oldpassword1", NewPassword: "short"})
-	if ft := firstFrameType(t, c); ft != Error {
+	sendWS(t, c, uiws.MsgAccountSetPassword, uiws.AccountSetPasswordRequest{CurrentPassword: "oldpassword1", NewPassword: "short"})
+	if ft := firstFrameType(t, c); ft != uiws.Error {
 		t.Fatalf("a too-short new password must be refused with ERROR, got %s", ft)
 	}
 	got, _ := us.GetUser("u@example.com")

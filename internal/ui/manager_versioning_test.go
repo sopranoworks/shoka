@@ -13,6 +13,8 @@ import (
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // versioningFixture spins up a /ws/ui server backed by storage with a known
@@ -68,12 +70,12 @@ func mustDrafts(t *testing.T, dir string) *drafts.Manager {
 }
 
 // roundTrip sends one request and reads one response frame.
-func roundTrip(t *testing.T, conn *websocket.Conn, typ MessageType, payload string) WSMessage {
+func roundTrip(t *testing.T, conn *websocket.Conn, typ MessageType, payload string) uiws.WSMessage {
 	t.Helper()
-	if err := conn.WriteJSON(WSMessage{Type: typ, Payload: json.RawMessage(payload)}); err != nil {
+	if err := conn.WriteJSON(uiws.WSMessage{Type: typ, Payload: json.RawMessage(payload)}); err != nil {
 		t.Fatalf("write %s: %v", typ, err)
 	}
-	var resp WSMessage
+	var resp uiws.WSMessage
 	if err := conn.ReadJSON(&resp); err != nil {
 		t.Fatalf("read response to %s: %v", typ, err)
 	}
@@ -147,7 +149,7 @@ func TestWSUI_SaveWithStaleIfMatchReturnsConflict(t *testing.T) {
 	if c.CurrentETag == "" || c.CurrentETag == etag {
 		t.Errorf("conflict current_etag should be the new etag, got %q (stale was %q)", c.CurrentETag, etag)
 	}
-	if resp.Type == Error {
+	if resp.Type == uiws.Error {
 		t.Error("conflict must be structurally distinct from the generic ERROR frame")
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // TestWSUI_DeletedLog_AuthzAdminOnly: LIST_DELETED and REVIVE_FILE are admin on the
@@ -25,9 +27,9 @@ func TestWSUI_DeletedLog_AuthzAdminOnly(t *testing.T) {
 	defer conn.Close()
 
 	sendWS(t, conn, MsgListDeleted, ListDeletedRequest{Namespace: "foo", ProjectName: "proj"})
-	readUntil(t, conn, MsgPermissionDenied, nil, 2*time.Second)
+	readUntil(t, conn, uiws.MsgPermissionDenied, nil, 2*time.Second)
 	sendWS(t, conn, MsgReviveFile, ReviveFileRequest{Namespace: "foo", ProjectName: "proj", Path: "f.md"})
-	readUntil(t, conn, MsgPermissionDenied, nil, 2*time.Second)
+	readUntil(t, conn, uiws.MsgPermissionDenied, nil, 2*time.Second)
 
 	// Admin on foo → LIST_DELETED passes the gate (a real response, not a denial).
 	m2, s2, _ := newSharedCenterManager(t)
@@ -39,7 +41,7 @@ func TestWSUI_DeletedLog_AuthzAdminOnly(t *testing.T) {
 	conn2 := dialWS(t, srv2.URL)
 	defer conn2.Close()
 	sendWS(t, conn2, MsgListDeleted, ListDeletedRequest{Namespace: "foo", ProjectName: "proj"})
-	if ft := firstFrameType(t, conn2); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, conn2); ft == uiws.MsgPermissionDenied {
 		t.Fatal("admin on foo must be allowed to LIST_DELETED on foo")
 	}
 }

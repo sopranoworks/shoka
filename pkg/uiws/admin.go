@@ -1,4 +1,4 @@
-package ui
+package uiws
 
 import (
 	"encoding/json"
@@ -20,32 +20,32 @@ import (
 // not specify one.
 const defaultInviteTTL = 72 * time.Hour
 
-type adminSetScopeRequest struct {
+type AdminSetScopeRequest struct {
 	Email string `json:"email"`
 	Scope string `json:"scope"`
 }
 
-type adminRemoveUserRequest struct {
+type AdminRemoveUserRequest struct {
 	Email string `json:"email"`
 }
 
-type adminSetEnabledRequest struct {
+type AdminSetEnabledRequest struct {
 	Email   string `json:"email"`
 	Enabled bool   `json:"enabled"`
 }
 
-type adminSetPasswordRequest struct {
+type AdminSetPasswordRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
-type adminCreateInviteRequest struct {
+type AdminCreateInviteRequest struct {
 	Email    string `json:"email"`
 	Scope    string `json:"scope"`
 	TTLHours int    `json:"ttl_hours,omitempty"`
 }
 
-type adminRevokeInviteRequest struct {
+type AdminRevokeInviteRequest struct {
 	CodeHash string `json:"code_hash"`
 }
 
@@ -74,29 +74,29 @@ type AdminAckPayload struct {
 	Status string `json:"status"`
 }
 
-func (h *CoreHandlers) usersAvailable(client *wsClient) bool {
+func (h *CoreHandlers) usersAvailable(client *Client) bool {
 	if h.users == nil {
-		client.sendError("user management is not available on this server")
+		client.SendError("user management is not available on this server")
 		return false
 	}
 	return true
 }
 
 // selfEmail returns the connection's own normalized email (empty when no principal).
-func (c *wsClient) selfEmail() string {
+func (c *Client) selfEmail() string {
 	if !c.hasPrincipal {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(c.principal.Email))
 }
 
-func (h *CoreHandlers) handleAdminListUsers(client *wsClient) {
+func (h *CoreHandlers) handleAdminListUsers(client *Client) {
 	if !h.usersAvailable(client) {
 		return
 	}
 	users, err := h.users.ListUsers()
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to list users: %v", err))
+		client.SendError(fmt.Sprintf("Failed to list users: %v", err))
 		return
 	}
 	// Omit SELF so self-deletion/demotion is structurally impossible from the UI.
@@ -108,62 +108,62 @@ func (h *CoreHandlers) handleAdminListUsers(client *wsClient) {
 		}
 		out = append(out, u)
 	}
-	client.sendResponse(MsgAdminListUsers, AdminUsersPayload{Users: out})
+	client.SendResponse(MsgAdminListUsers, AdminUsersPayload{Users: out})
 }
 
-func (h *CoreHandlers) handleAdminSetUserScope(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAdminSetUserScope(client *Client, payload json.RawMessage) {
 	if !h.usersAvailable(client) {
 		return
 	}
-	var p adminSetScopeRequest
+	var p AdminSetScopeRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ADMIN_SET_USER_SCOPE")
+		client.SendError("Invalid payload for ADMIN_SET_USER_SCOPE")
 		return
 	}
 	if p.Email == "" {
-		client.sendError("ADMIN_SET_USER_SCOPE requires an email")
+		client.SendError("ADMIN_SET_USER_SCOPE requires an email")
 		return
 	}
 	if client.isSelf(p.Email) {
-		client.sendError("you cannot change your own permissions")
+		client.SendError("you cannot change your own permissions")
 		return
 	}
 	if err := h.users.UpdateUserScope(p.Email, p.Scope); err != nil {
-		client.sendError(fmt.Sprintf("Failed to update scope: %v", err))
+		client.SendError(fmt.Sprintf("Failed to update scope: %v", err))
 		return
 	}
-	client.sendResponse(MsgAdminSetUserScope, AdminAckPayload{Status: "ok"})
+	client.SendResponse(MsgAdminSetUserScope, AdminAckPayload{Status: "ok"})
 }
 
 // handleAdminSetUserEnabled enables or disables an account. Disabling locks the user
 // out immediately: SetUserDisabled drops their live UI sessions in its write, and we
 // additionally revoke their OAuth/MCP token series here (cross-store) so a live token
 // cannot outlive the disable. The isSelf self-guard refuses disabling one's own account.
-func (h *CoreHandlers) handleAdminSetUserEnabled(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAdminSetUserEnabled(client *Client, payload json.RawMessage) {
 	if !h.usersAvailable(client) {
 		return
 	}
-	var p adminSetEnabledRequest
+	var p AdminSetEnabledRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ADMIN_SET_USER_ENABLED")
+		client.SendError("Invalid payload for ADMIN_SET_USER_ENABLED")
 		return
 	}
 	if p.Email == "" {
-		client.sendError("ADMIN_SET_USER_ENABLED requires an email")
+		client.SendError("ADMIN_SET_USER_ENABLED requires an email")
 		return
 	}
 	if client.isSelf(p.Email) {
-		client.sendError("you cannot disable your own account")
+		client.SendError("you cannot disable your own account")
 		return
 	}
 	if err := h.users.SetUserDisabled(p.Email, !p.Enabled); err != nil {
-		client.sendError(fmt.Sprintf("Failed to update account state: %v", err))
+		client.SendError(fmt.Sprintf("Failed to update account state: %v", err))
 		return
 	}
 	if !p.Enabled {
 		h.revokeOAuthForUser(p.Email)
 	}
-	client.sendResponse(MsgAdminSetUserEnabled, AdminAckPayload{Status: "ok"})
+	client.SendResponse(MsgAdminSetUserEnabled, AdminAckPayload{Status: "ok"})
 }
 
 // revokeOAuthForUser revokes every OAuth/MCP token series bound to email when an OAuth
@@ -186,76 +186,76 @@ func (h *CoreHandlers) revokeOAuthForUser(email string) {
 // drops the target's sessions in the same tx; it then revokes their OAuth (cross-store),
 // so the user must re-login with the new password. NO isSelf refusal — an admin may
 // reset their own password — but the existing password hash is never returned.
-func (h *CoreHandlers) handleAdminSetUserPassword(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAdminSetUserPassword(client *Client, payload json.RawMessage) {
 	if !h.usersAvailable(client) {
 		return
 	}
-	var p adminSetPasswordRequest
+	var p AdminSetPasswordRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ADMIN_SET_USER_PASSWORD")
+		client.SendError("Invalid payload for ADMIN_SET_USER_PASSWORD")
 		return
 	}
 	if p.Email == "" {
-		client.sendError("ADMIN_SET_USER_PASSWORD requires an email")
+		client.SendError("ADMIN_SET_USER_PASSWORD requires an email")
 		return
 	}
 	if err := userstore.ValidatePassword(p.Password); err != nil {
-		client.sendError(err.Error())
+		client.SendError(err.Error())
 		return
 	}
 	hash, err := userstore.HashPassword(p.Password)
 	if err != nil {
-		client.sendError("could not hash the new password")
+		client.SendError("could not hash the new password")
 		return
 	}
 	if err := h.users.SetUserPassword(p.Email, hash); err != nil {
-		client.sendError(fmt.Sprintf("Failed to reset password: %v", err))
+		client.SendError(fmt.Sprintf("Failed to reset password: %v", err))
 		return
 	}
 	// Cross-store: revoke the user's OAuth/MCP token series so a reset also cuts any
 	// live token (mirrors the disable/remove cascade).
 	h.revokeOAuthForUser(p.Email)
-	client.sendResponse(MsgAdminSetUserPassword, AdminAckPayload{Status: "ok"})
+	client.SendResponse(MsgAdminSetUserPassword, AdminAckPayload{Status: "ok"})
 }
 
-func (h *CoreHandlers) handleAdminRemoveUser(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAdminRemoveUser(client *Client, payload json.RawMessage) {
 	if !h.usersAvailable(client) {
 		return
 	}
-	var p adminRemoveUserRequest
+	var p AdminRemoveUserRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ADMIN_REMOVE_USER")
+		client.SendError("Invalid payload for ADMIN_REMOVE_USER")
 		return
 	}
 	if p.Email == "" {
-		client.sendError("ADMIN_REMOVE_USER requires an email")
+		client.SendError("ADMIN_REMOVE_USER requires an email")
 		return
 	}
 	if client.isSelf(p.Email) {
-		client.sendError("you cannot remove your own account")
+		client.SendError("you cannot remove your own account")
 		return
 	}
 	if err := h.users.RemoveUser(p.Email); err != nil {
-		client.sendError(fmt.Sprintf("Failed to remove user: %v", err))
+		client.SendError(fmt.Sprintf("Failed to remove user: %v", err))
 		return
 	}
 	// RemoveUser cascades the user's sessions; close the cross-store gap by revoking
 	// their OAuth/MCP token series too, so a removed user's MCP access stops at once.
 	h.revokeOAuthForUser(p.Email)
-	client.sendResponse(MsgAdminRemoveUser, AdminAckPayload{Status: "ok"})
+	client.SendResponse(MsgAdminRemoveUser, AdminAckPayload{Status: "ok"})
 }
 
-func (h *CoreHandlers) handleAdminCreateInvite(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAdminCreateInvite(client *Client, payload json.RawMessage) {
 	if !h.usersAvailable(client) {
 		return
 	}
-	var p adminCreateInviteRequest
+	var p AdminCreateInviteRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ADMIN_CREATE_INVITE")
+		client.SendError("Invalid payload for ADMIN_CREATE_INVITE")
 		return
 	}
 	if p.Email == "" {
-		client.sendError("ADMIN_CREATE_INVITE requires an email")
+		client.SendError("ADMIN_CREATE_INVITE requires an email")
 		return
 	}
 	ttl := defaultInviteTTL
@@ -264,48 +264,48 @@ func (h *CoreHandlers) handleAdminCreateInvite(client *wsClient, payload json.Ra
 	}
 	code, rec, err := h.users.CreateInvite(p.Email, p.Scope, client.selfEmail(), time.Now(), ttl)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to create invite: %v", err))
+		client.SendError(fmt.Sprintf("Failed to create invite: %v", err))
 		return
 	}
-	client.sendResponse(MsgAdminCreateInvite, AdminInviteCreatedPayload{
+	client.SendResponse(MsgAdminCreateInvite, AdminInviteCreatedPayload{
 		Code: code, Email: rec.Email, Scope: rec.Scope, Expiry: rec.Expiry, CodeHash: rec.CodeHash,
 	})
 }
 
-func (h *CoreHandlers) handleAdminListInvites(client *wsClient) {
+func (h *CoreHandlers) handleAdminListInvites(client *Client) {
 	if !h.usersAvailable(client) {
 		return
 	}
 	invs, err := h.users.ListInvites()
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to list invites: %v", err))
+		client.SendError(fmt.Sprintf("Failed to list invites: %v", err))
 		return
 	}
-	client.sendResponse(MsgAdminListInvites, AdminInvitesPayload{Invites: invs})
+	client.SendResponse(MsgAdminListInvites, AdminInvitesPayload{Invites: invs})
 }
 
-func (h *CoreHandlers) handleAdminRevokeInvite(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAdminRevokeInvite(client *Client, payload json.RawMessage) {
 	if !h.usersAvailable(client) {
 		return
 	}
-	var p adminRevokeInviteRequest
+	var p AdminRevokeInviteRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ADMIN_REVOKE_INVITE")
+		client.SendError("Invalid payload for ADMIN_REVOKE_INVITE")
 		return
 	}
 	if p.CodeHash == "" {
-		client.sendError("ADMIN_REVOKE_INVITE requires a code_hash")
+		client.SendError("ADMIN_REVOKE_INVITE requires a code_hash")
 		return
 	}
 	if err := h.users.RevokeInvite(p.CodeHash); err != nil {
-		client.sendError(fmt.Sprintf("Failed to revoke invite: %v", err))
+		client.SendError(fmt.Sprintf("Failed to revoke invite: %v", err))
 		return
 	}
-	client.sendResponse(MsgAdminRevokeInvite, AdminAckPayload{Status: "ok"})
+	client.SendResponse(MsgAdminRevokeInvite, AdminAckPayload{Status: "ok"})
 }
 
 // isSelf reports whether email is the connection's own account (the self-guard).
-func (c *wsClient) isSelf(email string) bool {
+func (c *Client) isSelf(email string) bool {
 	self := c.selfEmail()
 	return self != "" && strings.EqualFold(strings.TrimSpace(email), self)
 }

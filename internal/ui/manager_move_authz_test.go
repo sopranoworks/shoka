@@ -3,6 +3,8 @@ package ui
 import (
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // #6 (/ws/ui side, B-28 project MOVE). MOVE_PROJECT is SUPER-USER only (wsSuperUserOps):
@@ -23,7 +25,7 @@ func TestWSUI_MoveProject_Authz(t *testing.T) {
 	conn := dialWS(t, srv.URL)
 	defer conn.Close()
 	sendWS(t, conn, MsgMoveProject, MoveProjectPayload{Namespace: "src", ProjectName: "proj", NewNamespace: "dst"})
-	if ft := firstFrameType(t, conn); ft != MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft != uiws.MsgPermissionDenied {
 		t.Fatalf("MOVE_PROJECT must be DENIED for an admin-on-both (super-user only), got %s", ft)
 	}
 	// The op did not run.
@@ -37,7 +39,7 @@ func TestWSUI_MoveProject_Authz(t *testing.T) {
 	connSU := dialWS(t, srvSU.URL)
 	defer connSU.Close()
 	sendWS(t, connSU, MsgMoveProject, MoveProjectPayload{Namespace: "src", ProjectName: "proj", NewNamespace: "dst"})
-	if ft := firstFrameType(t, connSU); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, connSU); ft == uiws.MsgPermissionDenied {
 		t.Fatal("super-user must be allowed to MOVE_PROJECT")
 	}
 	if ps, _ := s.ListProjects("dst"); !nsListed(ps, "proj") {

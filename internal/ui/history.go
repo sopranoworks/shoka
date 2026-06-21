@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // History read messages (B-31 phase 2). All three are READ-ONLY: they delegate
@@ -81,10 +83,10 @@ type GetDiffPayload struct {
 // handleGetHistory returns the commit list for one file via the lock-free
 // storage.GetHistory, mapping each commit to its subject (the first line of the
 // message) + commit date + committer + hash. It surfaces no changed-file list.
-func (m *Manager) handleGetHistory(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleGetHistory(client *uiws.Client, payload json.RawMessage) {
 	var p GetHistoryPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for GET_HISTORY")
+		client.SendError("Invalid payload for GET_HISTORY")
 		return
 	}
 
@@ -95,7 +97,7 @@ func (m *Manager) handleGetHistory(client *wsClient, payload json.RawMessage) {
 
 	commits, err := m.storage.GetHistory(p.Namespace, p.ProjectName, p.Path, limit)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to get history: %v", err))
+		client.SendError(fmt.Sprintf("Failed to get history: %v", err))
 		return
 	}
 
@@ -108,45 +110,45 @@ func (m *Manager) handleGetHistory(client *wsClient, payload json.RawMessage) {
 			CommitDate: c.CommitDate,
 		})
 	}
-	client.sendResponse(MsgGetHistory, HistoryPayload{Commits: rows})
+	client.SendResponse(MsgGetHistory, HistoryPayload{Commits: rows})
 }
 
 // handleGetFileAt returns a file's content at one explicit commit via the
 // lock-free storage.ReadFileAtVersion.
-func (m *Manager) handleGetFileAt(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleGetFileAt(client *uiws.Client, payload json.RawMessage) {
 	var p GetFileAtPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for GET_FILE_AT")
+		client.SendError("Invalid payload for GET_FILE_AT")
 		return
 	}
 
 	content, err := m.storage.ReadFileAtVersion(p.Namespace, p.ProjectName, p.Path, p.Hash)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to read file version: %v", err))
+		client.SendError(fmt.Sprintf("Failed to read file version: %v", err))
 		return
 	}
 
-	client.sendResponse(MsgGetFileAt, FileAtPayload{Path: p.Path, Hash: p.Hash, Content: content})
+	client.SendResponse(MsgGetFileAt, FileAtPayload{Path: p.Path, Hash: p.Hash, Content: content})
 }
 
 // handleGetDiff returns the structured diff of one file between two explicit
 // commits via the phase-1 lock-free storage.DiffVersions, serialised verbatim.
 // The read loop has no per-request context; DiffVersions applies its own
 // deadline internally (context.WithTimeout), so the phase-1 time-cap still holds.
-func (m *Manager) handleGetDiff(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleGetDiff(client *uiws.Client, payload json.RawMessage) {
 	var p GetDiffPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for GET_DIFF")
+		client.SendError("Invalid payload for GET_DIFF")
 		return
 	}
 
 	diff, err := m.storage.DiffVersions(context.Background(), p.Namespace, p.ProjectName, p.Path, p.FromHash, p.ToHash)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to diff versions: %v", err))
+		client.SendError(fmt.Sprintf("Failed to diff versions: %v", err))
 		return
 	}
 
-	client.sendResponse(MsgGetDiff, diff)
+	client.SendResponse(MsgGetDiff, diff)
 }
 
 // subjectOf returns the first line of a commit message (the subject), trimmed.

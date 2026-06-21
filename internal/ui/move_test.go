@@ -12,6 +12,8 @@ import (
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // readUntil reads frames until one of msgType arrives (decoding its payload into
@@ -20,7 +22,7 @@ func readUntil(t *testing.T, conn *websocket.Conn, msgType MessageType, dst inte
 	t.Helper()
 	conn.SetReadDeadline(time.Now().Add(within))
 	for {
-		var msg WSMessage
+		var msg uiws.WSMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			t.Fatalf("did not receive %s: %v", msgType, err)
 		}
@@ -91,7 +93,7 @@ func TestWSUI_MoveFileEndToEnd(t *testing.T) {
 	connB.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var moved *notify.Event
 	for moved == nil {
-		var msg WSMessage
+		var msg uiws.WSMessage
 		if err := connB.ReadJSON(&msg); err != nil {
 			t.Fatalf("B never received file.move: %v", err)
 		}

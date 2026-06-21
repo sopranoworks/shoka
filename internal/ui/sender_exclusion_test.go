@@ -12,6 +12,8 @@ import (
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // newSharedCenterManager builds a Manager whose storage and /ws/ui share one
@@ -43,7 +45,7 @@ func sendWS(t *testing.T, conn *websocket.Conn, msgType MessageType, payload int
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	data, err := json.Marshal(WSMessage{Type: msgType, Payload: raw})
+	data, err := json.Marshal(uiws.WSMessage{Type: msgType, Payload: raw})
 	if err != nil {
 		t.Fatalf("marshal message: %v", err)
 	}
@@ -59,7 +61,7 @@ func expectNoNotify(t *testing.T, conn *websocket.Conn, kind, path string, withi
 	t.Helper()
 	conn.SetReadDeadline(time.Now().Add(within))
 	for {
-		var msg WSMessage
+		var msg uiws.WSMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			return // timeout / closed: no offending NOTIFY arrived
 		}
@@ -82,7 +84,7 @@ func expectNotify(t *testing.T, conn *websocket.Conn, kind, path string, within 
 	t.Helper()
 	conn.SetReadDeadline(time.Now().Add(within))
 	for {
-		var msg WSMessage
+		var msg uiws.WSMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			t.Fatalf("did not receive NOTIFY kind=%s path=%s: %v", kind, path, err)
 		}

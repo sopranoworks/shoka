@@ -8,6 +8,8 @@ import (
 
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
 	"github.com/sopranoworks/shoka/pkg/userstore"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // B-28 password recovery case 1: ADMIN_SET_USER_PASSWORD — an admin resets another
@@ -40,9 +42,9 @@ func TestWSUI_AdminSetUserPassword_ResetsAndCascades(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAdminSetUserPassword, adminSetPasswordRequest{Email: "bob@x.com", Password: "bobnewpassword"})
-	var ack AdminAckPayload
-	readUntil(t, c, MsgAdminSetUserPassword, &ack, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminSetUserPassword, uiws.AdminSetPasswordRequest{Email: "bob@x.com", Password: "bobnewpassword"})
+	var ack uiws.AdminAckPayload
+	readUntil(t, c, uiws.MsgAdminSetUserPassword, &ack, 2*time.Second)
 	if ack.Status != "ok" {
 		t.Fatalf("expected ok ack, got %+v", ack)
 	}
@@ -68,7 +70,7 @@ func TestWSUI_AdminSetUserPassword_ResetsAndCascades(t *testing.T) {
 
 // TestWSUI_AdminSetUserPassword_NonAdminRefused is the admin-gate proof: a non-super-user
 // caller is refused by the dispatch gate (PERMISSION_DENIED), never reaching the handler.
-// RED proof: lowering MsgAdminSetUserPassword from LevelAdmin in wsLevels lets the
+// RED proof: lowering uiws.MsgAdminSetUserPassword from LevelAdmin in wsLevels lets the
 // non-admin through → this fails.
 func TestWSUI_AdminSetUserPassword_NonAdminRefused(t *testing.T) {
 	m, _, _ := newSharedCenterManager(t)
@@ -83,8 +85,8 @@ func TestWSUI_AdminSetUserPassword_NonAdminRefused(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAdminSetUserPassword, adminSetPasswordRequest{Email: "bob@x.com", Password: "hijackpassword"})
-	readUntil(t, c, MsgPermissionDenied, nil, 2*time.Second)
+	sendWS(t, c, uiws.MsgAdminSetUserPassword, uiws.AdminSetPasswordRequest{Email: "bob@x.com", Password: "hijackpassword"})
+	readUntil(t, c, uiws.MsgPermissionDenied, nil, 2*time.Second)
 	// bob's password is unchanged (the handler never ran).
 	bob, _ := us.GetUser("bob@x.com")
 	if ok, _ := userstore.VerifyPassword("hijackpassword", bob.PasswordHash); ok {
@@ -108,8 +110,8 @@ func TestWSUI_AdminSetUserPassword_PolicyEnforced(t *testing.T) {
 	c := dialWS(t, srv.URL)
 	defer c.Close()
 
-	sendWS(t, c, MsgAdminSetUserPassword, adminSetPasswordRequest{Email: "bob@x.com", Password: "short"})
-	if ft := firstFrameType(t, c); ft != Error {
+	sendWS(t, c, uiws.MsgAdminSetUserPassword, uiws.AdminSetPasswordRequest{Email: "bob@x.com", Password: "short"})
+	if ft := firstFrameType(t, c); ft != uiws.Error {
 		t.Fatalf("a too-short password must be refused with ERROR, got %s", ft)
 	}
 	bob, _ := us.GetUser("bob@x.com")

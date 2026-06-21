@@ -3,6 +3,8 @@ package ui
 import (
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // #7 (/ws/ui side, B-28 project RENAME). RENAME_PROJECT is admin-on-the-namespace (wsLevels,
@@ -20,7 +22,7 @@ func TestWSUI_RenameProject_Authz(t *testing.T) {
 	connBar := dialWS(t, srvBar.URL)
 	defer connBar.Close()
 	sendWS(t, connBar, MsgRenameProject, RenameProjectPayload{Namespace: "foo", ProjectName: "p", NewProjectName: "q"})
-	if ft := firstFrameType(t, connBar); ft != MsgPermissionDenied {
+	if ft := firstFrameType(t, connBar); ft != uiws.MsgPermissionDenied {
 		t.Fatalf("RENAME_PROJECT must be DENIED for an admin on another namespace, got %s", ft)
 	}
 	if ps, _ := s.ListProjects("foo"); nsListed(ps, "q") {
@@ -33,7 +35,7 @@ func TestWSUI_RenameProject_Authz(t *testing.T) {
 	conn := dialWS(t, srv.URL)
 	defer conn.Close()
 	sendWS(t, conn, MsgRenameProject, RenameProjectPayload{Namespace: "foo", ProjectName: "p", NewProjectName: "q"})
-	if ft := firstFrameType(t, conn); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft == uiws.MsgPermissionDenied {
 		t.Fatal("admin-on-namespace must be allowed to RENAME_PROJECT")
 	}
 	if ps, _ := s.ListProjects("foo"); !nsListed(ps, "q") {
@@ -59,7 +61,7 @@ func TestWSUI_RenameNamespace_Authz(t *testing.T) {
 	conn := dialWS(t, srv.URL)
 	defer conn.Close()
 	sendWS(t, conn, MsgRenameNamespace, RenameNamespacePayload{Namespace: "src", NewNamespace: "dst"})
-	if ft := firstFrameType(t, conn); ft != MsgPermissionDenied {
+	if ft := firstFrameType(t, conn); ft != uiws.MsgPermissionDenied {
 		t.Fatalf("RENAME_NAMESPACE must be DENIED for a namespace-admin (super-user only), got %s", ft)
 	}
 	if ps, _ := s.ListProjects("src"); !nsListed(ps, "x") {
@@ -72,7 +74,7 @@ func TestWSUI_RenameNamespace_Authz(t *testing.T) {
 	connSU := dialWS(t, srvSU.URL)
 	defer connSU.Close()
 	sendWS(t, connSU, MsgRenameNamespace, RenameNamespacePayload{Namespace: "src", NewNamespace: "dst"})
-	if ft := firstFrameType(t, connSU); ft == MsgPermissionDenied {
+	if ft := firstFrameType(t, connSU); ft == uiws.MsgPermissionDenied {
 		t.Fatal("super-user must be allowed to RENAME_NAMESPACE")
 	}
 	if ps, _ := s.ListProjects("dst"); !nsListed(ps, "x") {

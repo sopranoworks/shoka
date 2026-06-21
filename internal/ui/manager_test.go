@@ -10,6 +10,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 func TestManager_ServeHTTP(t *testing.T) {
@@ -41,7 +43,7 @@ func TestManager_ServeHTTP(t *testing.T) {
 	defer conn.Close()
 
 	// Test GET_PROJECTS
-	req := WSMessage{
+	req := uiws.WSMessage{
 		Type:    GetProjects,
 		Payload: json.RawMessage(`{"namespace": "default"}`),
 	}
@@ -49,7 +51,7 @@ func TestManager_ServeHTTP(t *testing.T) {
 		t.Fatalf("failed to send GET_PROJECTS: %v", err)
 	}
 
-	var resp WSMessage
+	var resp uiws.WSMessage
 	if err := conn.ReadJSON(&resp); err != nil {
 		t.Fatalf("failed to read GET_PROJECTS response: %v", err)
 	}
@@ -61,7 +63,7 @@ func TestManager_ServeHTTP(t *testing.T) {
 	if err := s.CreateProject("default", "test-project"); err != nil {
 		t.Fatalf("failed to create project: %v", err)
 	}
-	req = WSMessage{
+	req = uiws.WSMessage{
 		Type:    GetTree,
 		Payload: json.RawMessage(`{"namespace": "default", "projectName": "test-project"}`),
 	}
@@ -79,7 +81,7 @@ func TestManager_ServeHTTP(t *testing.T) {
 	if err := s.WriteFile("default", "test-project", "hello.txt", "world"); err != nil {
 		t.Fatalf("failed to write file: %v", err)
 	}
-	req = WSMessage{
+	req = uiws.WSMessage{
 		Type:    ReadFile,
 		Payload: json.RawMessage(`{"namespace": "default", "projectName": "test-project", "path": "hello.txt"}`),
 	}
@@ -94,7 +96,7 @@ func TestManager_ServeHTTP(t *testing.T) {
 	}
 
 	// Test WRITE_DRAFT
-	req = WSMessage{
+	req = uiws.WSMessage{
 		Type:    WriteDraft,
 		Payload: json.RawMessage(`{"namespace": "default", "projectName": "test-project", "path": "hello.txt", "content": "draft world"}`),
 	}

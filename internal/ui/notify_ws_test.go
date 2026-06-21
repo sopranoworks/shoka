@@ -14,6 +14,8 @@ import (
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 func newNotifyManager(t *testing.T) (*Manager, *notify.Center) {
@@ -88,7 +90,7 @@ func TestNotifyWS_EndToEndStorageWrite(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var sawWrite bool
 	for i := 0; i < 5 && !sawWrite; i++ {
-		var msg WSMessage
+		var msg uiws.WSMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			break
 		}
@@ -121,7 +123,7 @@ func TestNotifyWS_DeliversEventToClient(t *testing.T) {
 	center.Notify("file.write", "ns/proj", "backlog.md")
 
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var msg WSMessage
+	var msg uiws.WSMessage
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("read NOTIFY: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestNotifyWS_MultipleClientsEachReceive(t *testing.T) {
 
 	for i, c := range []*websocket.Conn{c1, c2} {
 		c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		var msg WSMessage
+		var msg uiws.WSMessage
 		if err := c.ReadJSON(&msg); err != nil {
 			t.Fatalf("client %d read: %v", i, err)
 		}

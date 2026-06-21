@@ -3,6 +3,8 @@ package ui
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // The SEARCH_FILES request wires the existing project-scoped storage.SearchFiles
@@ -10,7 +12,7 @@ import (
 // over a real ws connection using the shared versioningFixture (project ns/proj
 // with one committed file "f.md" containing "v1").
 
-func decodeSearch(t *testing.T, resp WSMessage) SearchResultPayload {
+func decodeSearch(t *testing.T, resp uiws.WSMessage) SearchResultPayload {
 	t.Helper()
 	if resp.Type != MsgSearchResult {
 		t.Fatalf("type = %s, want SEARCH_RESULT (payload=%s)", resp.Type, resp.Payload)

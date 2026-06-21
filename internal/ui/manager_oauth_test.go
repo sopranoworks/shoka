@@ -13,6 +13,8 @@ import (
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // The OAUTH_LIST/OAUTH_REVOKE requests (the 2026-06-03 MCP OAuth (c) directive)
@@ -23,7 +25,7 @@ import (
 // Confidentiality (directive §0): no concrete client-metadata domain or Shoka
 // deployment value appears here — fixtures use RFC 2606 placeholders.
 
-// fakeOAuthStore is an in-memory OAuthConnectionStore for the /ws/ui tests. It
+// fakeOAuthStore is an in-memory uiws.OAuthConnectionStore for the /ws/ui tests. It
 // deliberately models the real store's contract: List returns no-secret
 // SeriesInfo (it CANNOT carry a token — there is no field for one), and Revoke is
 // idempotent and drops exactly one series.
@@ -60,7 +62,7 @@ func (f *fakeOAuthStore) Revoke(seriesID string) error {
 }
 
 // B-71 Stage 2d: the fake has no dynamic "domain" registration store — these stubs satisfy
-// the extended OAuthConnectionStore interface for the basic OAUTH_LIST/REVOKE tests. The
+// the extended uiws.OAuthConnectionStore interface for the basic OAUTH_LIST/REVOKE tests. The
 // DOMAIN_* + grouping tests use a REAL *oauthstore.Store instead.
 func (f *fakeOAuthStore) ListRegistrations() ([]oauthstore.RegistrationEntry, error) { return nil, nil }
 func (f *fakeOAuthStore) CreateRegistration(string, string, time.Time) (oauthstore.RegistrationEntry, error) {
@@ -137,7 +139,7 @@ func seedConnections() []oauthstore.SeriesInfo {
 // = no session principal = the empty-store super-user pass-through (an admin-equivalent
 // connection); a non-super-user scope (e.g. "namespace:foo:r") is denied OAUTH_* by the
 // gate with a PERMISSION_DENIED frame.
-func newOAuthManager(t *testing.T, scope string, store OAuthConnectionStore) *websocket.Conn {
+func newOAuthManager(t *testing.T, scope string, store uiws.OAuthConnectionStore) *websocket.Conn {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := storage.NewFSGitStorageWithOptions(dir, storage.Options{
@@ -173,24 +175,24 @@ func newOAuthManager(t *testing.T, scope string, store OAuthConnectionStore) *we
 	return conn
 }
 
-func decodeOAuthList(t *testing.T, resp WSMessage) OAuthListPayload {
+func decodeOAuthList(t *testing.T, resp uiws.WSMessage) uiws.OAuthListPayload {
 	t.Helper()
-	if resp.Type != MsgOAuthList {
+	if resp.Type != uiws.MsgOAuthList {
 		t.Fatalf("type = %s, want OAUTH_LIST (payload=%s)", resp.Type, resp.Payload)
 	}
-	var out OAuthListPayload
+	var out uiws.OAuthListPayload
 	if err := json.Unmarshal(resp.Payload, &out); err != nil {
 		t.Fatalf("unmarshal OAUTH_LIST: %v", err)
 	}
 	return out
 }
 
-func decodeOAuthDenied(t *testing.T, resp WSMessage) OAuthDeniedPayload {
+func decodeOAuthDenied(t *testing.T, resp uiws.WSMessage) uiws.OAuthDeniedPayload {
 	t.Helper()
-	if resp.Type != MsgOAuthDenied {
+	if resp.Type != uiws.MsgOAuthDenied {
 		t.Fatalf("type = %s, want OAUTH_DENIED (payload=%s)", resp.Type, resp.Payload)
 	}
-	var out OAuthDeniedPayload
+	var out uiws.OAuthDeniedPayload
 	if err := json.Unmarshal(resp.Payload, &out); err != nil {
 		t.Fatalf("unmarshal OAUTH_DENIED: %v", err)
 	}
@@ -201,7 +203,7 @@ func TestWSUI_OAuthListReturnsSummaries(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
 	conn := newOAuthManager(t, "", store) // default single-user admin
 
-	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
+	resp := roundTrip(t, conn, uiws.MsgOAuthList, `{}`)
 	out := decodeOAuthList(t, resp)
 
 	if len(out.Connections) != 2 {
@@ -240,7 +242,7 @@ func TestWSUI_OAuthListSortedNewestFirstAndCarriesScope(t *testing.T) {
 	}}
 	conn := newOAuthManager(t, "", store)
 
-	out := decodeOAuthList(t, roundTrip(t, conn, MsgOAuthList, `{}`))
+	out := decodeOAuthList(t, roundTrip(t, conn, uiws.MsgOAuthList, `{}`))
 	if len(out.Connections) != 2 {
 		t.Fatalf("connections = %d, want 2", len(out.Connections))
 	}
@@ -260,7 +262,7 @@ func TestWSUI_OAuthListEmptyReturnsEmptySlice(t *testing.T) {
 	store := &fakeOAuthStore{} // no connections
 	conn := newOAuthManager(t, "", store)
 
-	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
+	resp := roundTrip(t, conn, uiws.MsgOAuthList, `{}`)
 	out := decodeOAuthList(t, resp)
 
 	if len(out.Connections) != 0 {
@@ -279,7 +281,7 @@ func TestWSUI_OAuthListCarriesNoSecretFields(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
 	conn := newOAuthManager(t, "", store)
 
-	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
+	resp := roundTrip(t, conn, uiws.MsgOAuthList, `{}`)
 	wire := string(resp.Payload)
 	for _, secretKey := range []string{"access_token", "refresh_token", "\"code\"", "code_verifier", "code_challenge", "refresh"} {
 		if strings.Contains(wire, secretKey) {
@@ -293,11 +295,11 @@ func TestWSUI_OAuthRevokeTargetsOneSeries(t *testing.T) {
 	conn := newOAuthManager(t, "", store)
 
 	target := "series-aaaa-0000-1111-2222-333344445555"
-	resp := roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":"`+target+`"}`)
-	if resp.Type != MsgOAuthRevoke {
+	resp := roundTrip(t, conn, uiws.MsgOAuthRevoke, `{"series_id":"`+target+`"}`)
+	if resp.Type != uiws.MsgOAuthRevoke {
 		t.Fatalf("type = %s, want OAUTH_REVOKE ack (payload=%s)", resp.Type, resp.Payload)
 	}
-	var ack OAuthRevokePayload
+	var ack uiws.OAuthRevokePayload
 	if err := json.Unmarshal(resp.Payload, &ack); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +310,7 @@ func TestWSUI_OAuthRevokeTargetsOneSeries(t *testing.T) {
 		t.Fatalf("revoked = %v, want exactly [%s]", got, target)
 	}
 	// The other series survives: a follow-up LIST shows exactly one connection.
-	out := decodeOAuthList(t, roundTrip(t, conn, MsgOAuthList, `{}`))
+	out := decodeOAuthList(t, roundTrip(t, conn, uiws.MsgOAuthList, `{}`))
 	if len(out.Connections) != 1 || out.Connections[0].SeriesID == target {
 		t.Fatalf("after revoke, connections = %+v; want the other series intact", out.Connections)
 	}
@@ -318,8 +320,8 @@ func TestWSUI_OAuthRevokeEmptyIDIsError(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
 	conn := newOAuthManager(t, "", store)
 
-	resp := roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":""}`)
-	if resp.Type != Error {
+	resp := roundTrip(t, conn, uiws.MsgOAuthRevoke, `{"series_id":""}`)
+	if resp.Type != uiws.Error {
 		t.Fatalf("type = %s, want ERROR for an absent series_id", resp.Type)
 	}
 	if len(store.revokedIDs()) != 0 {
@@ -334,8 +336,8 @@ func TestWSUI_OAuthListRefusedForNonAdmin(t *testing.T) {
 	store := &fakeOAuthStore{series: seedConnections()}
 	conn := newOAuthManager(t, "namespace:foo:r", store)
 
-	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
-	if resp.Type != MsgPermissionDenied {
+	resp := roundTrip(t, conn, uiws.MsgOAuthList, `{}`)
+	if resp.Type != uiws.MsgPermissionDenied {
 		t.Fatalf("type = %s, want PERMISSION_DENIED (the dispatch authz gate)", resp.Type)
 	}
 }
@@ -345,8 +347,8 @@ func TestWSUI_OAuthRevokeRefusedForNonAdmin(t *testing.T) {
 	conn := newOAuthManager(t, "namespace:foo:r", store)
 
 	target := "series-aaaa-0000-1111-2222-333344445555"
-	resp := roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":"`+target+`"}`)
-	if resp.Type != MsgPermissionDenied {
+	resp := roundTrip(t, conn, uiws.MsgOAuthRevoke, `{"series_id":"`+target+`"}`)
+	if resp.Type != uiws.MsgPermissionDenied {
 		t.Fatalf("type = %s, want PERMISSION_DENIED", resp.Type)
 	}
 	// The gate refuses BEFORE the handler: nothing revoked.
@@ -360,11 +362,11 @@ func TestWSUI_OAuthRefusedWhenOAuthDisabled(t *testing.T) {
 	// refusal must be the distinct "oauth_disabled" reason, not "forbidden".
 	conn := newOAuthManager(t, "", nil)
 
-	list := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthList, `{}`))
+	list := decodeOAuthDenied(t, roundTrip(t, conn, uiws.MsgOAuthList, `{}`))
 	if list.Reason != "oauth_disabled" {
 		t.Fatalf("OAUTH_LIST reason = %q, want oauth_disabled", list.Reason)
 	}
-	revoke := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthRevoke, `{"series_id":"x"}`))
+	revoke := decodeOAuthDenied(t, roundTrip(t, conn, uiws.MsgOAuthRevoke, `{"series_id":"x"}`))
 	if revoke.Reason != "oauth_disabled" {
 		t.Fatalf("OAUTH_REVOKE reason = %q, want oauth_disabled", revoke.Reason)
 	}
@@ -376,8 +378,8 @@ func TestWSUI_OAuthRefusedWhenOAuthDisabled(t *testing.T) {
 func TestWSUI_OAuthNonAdminTakesPrecedenceOverDisabled(t *testing.T) {
 	conn := newOAuthManager(t, "namespace:foo:r", nil) // non-admin AND no store
 
-	resp := roundTrip(t, conn, MsgOAuthList, `{}`)
-	if resp.Type != MsgPermissionDenied {
+	resp := roundTrip(t, conn, uiws.MsgOAuthList, `{}`)
+	if resp.Type != uiws.MsgPermissionDenied {
 		t.Fatalf("type = %s, want PERMISSION_DENIED (authz before capability)", resp.Type)
 	}
 }

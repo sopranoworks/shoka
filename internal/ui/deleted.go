@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // The /ws/ui deleted-file log handlers (B-28, the 2026-06-18 deleted-log
@@ -50,15 +52,15 @@ type ReviveAckPayload struct {
 	Revived     bool   `json:"revived"`
 }
 
-func (m *Manager) handleListDeleted(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleListDeleted(client *uiws.Client, payload json.RawMessage) {
 	var p ListDeletedRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for LIST_DELETED")
+		client.SendError("Invalid payload for LIST_DELETED")
 		return
 	}
 	recs, err := m.storage.ListDeleted(p.Namespace, p.ProjectName)
 	if err != nil {
-		client.sendError(fmt.Sprintf("Failed to list deleted files: %v", err))
+		client.SendError(fmt.Sprintf("Failed to list deleted files: %v", err))
 		return
 	}
 	entries := make([]DeletedEntry, 0, len(recs))
@@ -69,30 +71,30 @@ func (m *Manager) handleListDeleted(client *wsClient, payload json.RawMessage) {
 			DeletedAt:      r.DeletedAt,
 		})
 	}
-	client.sendResponse(MsgListDeleted, ListDeletedResponse{
+	client.SendResponse(MsgListDeleted, ListDeletedResponse{
 		Namespace:   p.Namespace,
 		ProjectName: p.ProjectName,
 		Deleted:     entries,
 	})
 }
 
-func (m *Manager) handleReviveFile(client *wsClient, payload json.RawMessage) {
+func (m *Manager) handleReviveFile(client *uiws.Client, payload json.RawMessage) {
 	var p ReviveFileRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for REVIVE_FILE")
+		client.SendError("Invalid payload for REVIVE_FILE")
 		return
 	}
 	if p.Path == "" {
-		client.sendError("path is required for REVIVE_FILE")
+		client.SendError("path is required for REVIVE_FILE")
 		return
 	}
 	if err := m.storage.ReviveFile(context.Background(), p.Namespace, p.ProjectName, p.Path, p.FromCommit); err != nil {
 		// The typed divergence error (and any other failure) is surfaced clearly —
 		// never a silent failure. The client shows it as a non-fatal error toast.
-		client.sendError(fmt.Sprintf("Failed to revive file: %v", err))
+		client.SendError(fmt.Sprintf("Failed to revive file: %v", err))
 		return
 	}
-	client.sendResponse(MsgReviveAck, ReviveAckPayload{
+	client.SendResponse(MsgReviveAck, ReviveAckPayload{
 		Namespace:   p.Namespace,
 		ProjectName: p.ProjectName,
 		Path:        p.Path,

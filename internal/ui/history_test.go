@@ -11,6 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // TestManager_HistoryReads drives the three B-31 phase-2 read messages
@@ -155,7 +157,7 @@ func TestManager_HistoryReads(t *testing.T) {
 // payload, failing on an ERROR frame.
 func historyRoundTrip(t *testing.T, conn *websocket.Conn, typ MessageType, payloadJSON string) json.RawMessage {
 	t.Helper()
-	req := WSMessage{Type: typ, Payload: json.RawMessage(payloadJSON)}
+	req := uiws.WSMessage{Type: typ, Payload: json.RawMessage(payloadJSON)}
 	if err := conn.WriteJSON(req); err != nil {
 		t.Fatalf("write %s: %v", typ, err)
 	}
@@ -163,14 +165,14 @@ func historyRoundTrip(t *testing.T, conn *websocket.Conn, typ MessageType, paylo
 		t.Fatalf("set read deadline: %v", err)
 	}
 	for {
-		var resp WSMessage
+		var resp uiws.WSMessage
 		if err := conn.ReadJSON(&resp); err != nil {
 			t.Fatalf("read %s response: %v", typ, err)
 		}
 		if resp.Type == MsgNotify {
 			continue
 		}
-		if resp.Type == Error {
+		if resp.Type == uiws.Error {
 			t.Fatalf("%s returned ERROR: %s", typ, string(resp.Payload))
 		}
 		return resp.Payload

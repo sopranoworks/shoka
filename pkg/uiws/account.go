@@ -1,4 +1,4 @@
-package ui
+package uiws
 
 import (
 	"encoding/json"
@@ -16,16 +16,16 @@ import (
 // NO target email/id, so a caller cannot name another account. Email is the account
 // id — it is returned for display but has no setter.
 
-// accountSetNameRequest changes the acting user's display name. It deliberately has
+// AccountSetNameRequest changes the acting user's display name. It deliberately has
 // NO email field: the target is always the session user.
-type accountSetNameRequest struct {
+type AccountSetNameRequest struct {
 	DisplayName string `json:"display_name"`
 }
 
-// accountSetPasswordRequest resets the acting user's password. It requires the
+// AccountSetPasswordRequest resets the acting user's password. It requires the
 // current password (defence against a hijacked session) and carries NO email field:
 // the target is always the session user.
-type accountSetPasswordRequest struct {
+type AccountSetPasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
 }
@@ -46,18 +46,18 @@ type AccountInfoPayload struct {
 // returns false. It enforces that a user store is wired AND the connection carries a
 // session principal (a logged-in user). The no-lockout single-operator path has no
 // account record, so "My Account" is only meaningful once signed in.
-func (h *CoreHandlers) selfRecord(client *wsClient) (*userstore.UserRecord, bool) {
+func (h *CoreHandlers) selfRecord(client *Client) (*userstore.UserRecord, bool) {
 	if !h.usersAvailable(client) {
 		return nil, false
 	}
 	email := client.selfEmail()
 	if email == "" {
-		client.sendError("you are not signed in")
+		client.SendError("you are not signed in")
 		return nil, false
 	}
 	rec, err := h.users.GetUser(email)
 	if err != nil {
-		client.sendError("your account could not be loaded")
+		client.SendError("your account could not be loaded")
 		return nil, false
 	}
 	return rec, true
@@ -75,37 +75,37 @@ func accountInfo(rec *userstore.UserRecord) AccountInfoPayload {
 }
 
 // handleAccountGet returns the acting user's OWN account info (never a secret).
-func (h *CoreHandlers) handleAccountGet(client *wsClient) {
+func (h *CoreHandlers) handleAccountGet(client *Client) {
 	rec, ok := h.selfRecord(client)
 	if !ok {
 		return
 	}
-	client.sendResponse(MsgAccountGet, accountInfo(rec))
+	client.SendResponse(MsgAccountGet, accountInfo(rec))
 }
 
 // handleAccountSetName changes the acting user's display name (non-empty). It acts on
 // the session identity only — the payload has no target email.
-func (h *CoreHandlers) handleAccountSetName(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAccountSetName(client *Client, payload json.RawMessage) {
 	rec, ok := h.selfRecord(client)
 	if !ok {
 		return
 	}
-	var p accountSetNameRequest
+	var p AccountSetNameRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ACCOUNT_SET_NAME")
+		client.SendError("Invalid payload for ACCOUNT_SET_NAME")
 		return
 	}
 	name := strings.TrimSpace(p.DisplayName)
 	if name == "" {
-		client.sendError("display name must not be empty")
+		client.SendError("display name must not be empty")
 		return
 	}
 	rec.DisplayName = name
 	if err := h.users.PutUser(rec); err != nil {
-		client.sendError("could not save your name")
+		client.SendError("could not save your name")
 		return
 	}
-	client.sendResponse(MsgAccountSetName, accountInfo(rec))
+	client.SendResponse(MsgAccountSetName, accountInfo(rec))
 }
 
 // handleAccountSetPassword resets the acting user's password: it verifies the CURRENT
@@ -113,34 +113,34 @@ func (h *CoreHandlers) handleAccountSetName(client *wsClient, payload json.RawMe
 // persists. It acts on the session identity only (no target email). The current
 // session stays valid; other sessions are deliberately NOT invalidated (operator
 // floor). No password value is ever logged.
-func (h *CoreHandlers) handleAccountSetPassword(client *wsClient, payload json.RawMessage) {
+func (h *CoreHandlers) handleAccountSetPassword(client *Client, payload json.RawMessage) {
 	rec, ok := h.selfRecord(client)
 	if !ok {
 		return
 	}
-	var p accountSetPasswordRequest
+	var p AccountSetPasswordRequest
 	if err := json.Unmarshal(payload, &p); err != nil {
-		client.sendError("Invalid payload for ACCOUNT_SET_PASSWORD")
+		client.SendError("Invalid payload for ACCOUNT_SET_PASSWORD")
 		return
 	}
 	matched, err := userstore.VerifyPassword(p.CurrentPassword, rec.PasswordHash)
 	if err != nil || !matched {
-		client.sendError("current password is incorrect")
+		client.SendError("current password is incorrect")
 		return
 	}
 	if err := userstore.ValidatePassword(p.NewPassword); err != nil {
-		client.sendError(err.Error())
+		client.SendError(err.Error())
 		return
 	}
 	hash, err := userstore.HashPassword(p.NewPassword)
 	if err != nil {
-		client.sendError("could not hash the new password")
+		client.SendError("could not hash the new password")
 		return
 	}
 	rec.PasswordHash = hash
 	if err := h.users.PutUser(rec); err != nil {
-		client.sendError("could not save your new password")
+		client.SendError("could not save your new password")
 		return
 	}
-	client.sendResponse(MsgAccountSetPassword, AdminAckPayload{Status: "ok"})
+	client.SendResponse(MsgAccountSetPassword, AdminAckPayload{Status: "ok"})
 }

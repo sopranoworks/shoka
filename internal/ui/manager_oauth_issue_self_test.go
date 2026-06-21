@@ -11,6 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
 // OAUTH_ISSUE_SELF (B-46b §2.2) is the admin-gated "token to self" mint: the only
@@ -19,11 +21,11 @@ import (
 // cycle over a real ws connection with a fake issuer and the same admin/store
 // gating as List/Revoke.
 
-// newOAuthIssueSelfManager wires an OAuthConnectionStore (so the oauth!=nil capability
+// newOAuthIssueSelfManager wires an uiws.OAuthConnectionStore (so the oauth!=nil capability
 // check passes) and a self-issuer, connecting a /ws/ui client at the given session
 // scope (B-28 stage 4: admin authorization is the dispatch authzGate; "" = empty-store
 // super-user, a non-super-user scope is denied by the gate).
-func newOAuthIssueSelfManager(t *testing.T, scope string, store OAuthConnectionStore, issuer OAuthSelfIssuer) *websocket.Conn {
+func newOAuthIssueSelfManager(t *testing.T, scope string, store uiws.OAuthConnectionStore, issuer uiws.OAuthSelfIssuer) *websocket.Conn {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := storage.NewFSGitStorageWithOptions(dir, storage.Options{
@@ -67,18 +69,18 @@ func TestWSUI_OAuthIssueSelfReturnsToken(t *testing.T) {
 	exp := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	var gotReq bool
 	var gotTTL time.Duration
-	issuer := OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+	issuer := uiws.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
 		gotReq = r != nil // the request must reach the issuer (for resource derivation)
 		gotTTL = accessTTL
 		return want, exp, nil
 	})
 	conn := newOAuthIssueSelfManager(t, "", &fakeOAuthStore{}, issuer)
 
-	resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{}`)
-	if resp.Type != MsgOAuthIssueSelf {
+	resp := roundTrip(t, conn, uiws.MsgOAuthIssueSelf, `{}`)
+	if resp.Type != uiws.MsgOAuthIssueSelf {
 		t.Fatalf("type = %s, want OAUTH_ISSUE_SELF (payload=%s)", resp.Type, resp.Payload)
 	}
-	var out OAuthIssueSelfPayload
+	var out uiws.OAuthIssueSelfPayload
 	if err := json.Unmarshal(resp.Payload, &out); err != nil {
 		t.Fatal(err)
 	}
@@ -102,14 +104,14 @@ func TestWSUI_OAuthIssueSelfReturnsToken(t *testing.T) {
 // validity_seconds threading (always pass the old fixed TTL) → gotTTL != the chosen value → fail.
 func TestWSUI_OAuthIssueSelfThreadsChosenExpiry(t *testing.T) {
 	var gotTTL time.Duration
-	issuer := OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+	issuer := uiws.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
 		gotTTL = accessTTL
 		return "tok", time.Unix(1, 0), nil
 	})
 	conn := newOAuthIssueSelfManager(t, "", &fakeOAuthStore{}, issuer)
 
 	// A chosen 7-day expiry is threaded through to the issuer.
-	if resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{"validity_seconds":604800}`); resp.Type != MsgOAuthIssueSelf {
+	if resp := roundTrip(t, conn, uiws.MsgOAuthIssueSelf, `{"validity_seconds":604800}`); resp.Type != uiws.MsgOAuthIssueSelf {
 		t.Fatalf("issue with chosen expiry: %s (%s)", resp.Type, resp.Payload)
 	}
 	if gotTTL != 7*24*time.Hour {
@@ -118,7 +120,7 @@ func TestWSUI_OAuthIssueSelfThreadsChosenExpiry(t *testing.T) {
 
 	// A negative validity is rejected (no indefinite) and the issuer is NOT called.
 	gotTTL = -1
-	if resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{"validity_seconds":-5}`); resp.Type != Error {
+	if resp := roundTrip(t, conn, uiws.MsgOAuthIssueSelf, `{"validity_seconds":-5}`); resp.Type != uiws.Error {
 		t.Fatalf("a negative validity must error, got %s", resp.Type)
 	}
 	if gotTTL != -1 {
@@ -128,14 +130,14 @@ func TestWSUI_OAuthIssueSelfThreadsChosenExpiry(t *testing.T) {
 
 func TestWSUI_OAuthIssueSelfRefusedForNonAdmin(t *testing.T) {
 	var called bool
-	issuer := OAuthSelfIssuerFunc(func(*http.Request, time.Duration) (string, time.Time, error) {
+	issuer := uiws.OAuthSelfIssuerFunc(func(*http.Request, time.Duration) (string, time.Time, error) {
 		called = true
 		return "should-not-be-minted", time.Time{}, nil
 	})
 	conn := newOAuthIssueSelfManager(t, "namespace:foo:r", &fakeOAuthStore{}, issuer)
 
-	resp := roundTrip(t, conn, MsgOAuthIssueSelf, `{}`)
-	if resp.Type != MsgPermissionDenied {
+	resp := roundTrip(t, conn, uiws.MsgOAuthIssueSelf, `{}`)
+	if resp.Type != uiws.MsgPermissionDenied {
 		t.Fatalf("type = %s, want PERMISSION_DENIED (the dispatch authz gate)", resp.Type)
 	}
 	// The gate refuses BEFORE minting.
@@ -149,7 +151,7 @@ func TestWSUI_OAuthIssueSelfRefusedWhenDisabled(t *testing.T) {
 	// (true), so the refusal must be "oauth_disabled", not "forbidden".
 	conn := newOAuthIssueSelfManager(t, "", nil, nil)
 
-	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthIssueSelf, `{}`))
+	denied := decodeOAuthDenied(t, roundTrip(t, conn, uiws.MsgOAuthIssueSelf, `{}`))
 	if denied.Reason != "oauth_disabled" {
 		t.Fatalf("reason = %q, want oauth_disabled", denied.Reason)
 	}
@@ -160,7 +162,7 @@ func TestWSUI_OAuthIssueSelfDeniedWhenIssuerMissing(t *testing.T) {
 	// action reports oauth_disabled rather than nil-panicking.
 	conn := newOAuthIssueSelfManager(t, "", &fakeOAuthStore{}, nil)
 
-	denied := decodeOAuthDenied(t, roundTrip(t, conn, MsgOAuthIssueSelf, `{}`))
+	denied := decodeOAuthDenied(t, roundTrip(t, conn, uiws.MsgOAuthIssueSelf, `{}`))
 	if denied.Reason != "oauth_disabled" {
 		t.Fatalf("reason = %q, want oauth_disabled", denied.Reason)
 	}

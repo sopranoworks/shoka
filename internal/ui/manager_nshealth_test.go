@@ -8,12 +8,14 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/storage"
+
+	"github.com/sopranoworks/shoka/pkg/uiws"
 )
 
-func readFrame(t *testing.T, conn *websocket.Conn) WSMessage {
+func readFrame(t *testing.T, conn *websocket.Conn) uiws.WSMessage {
 	t.Helper()
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var msg WSMessage
+	var msg uiws.WSMessage
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("read frame: %v", err)
 	}
@@ -52,7 +54,7 @@ func TestWSUI_NamespaceHealth_Authz(t *testing.T) {
 	defer connFoo.Close()
 	sendWS(t, connFoo, MsgNamespaceHealth, struct{}{})
 	frame := readFrame(t, connFoo)
-	if frame.Type == MsgPermissionDenied {
+	if frame.Type == uiws.MsgPermissionDenied {
 		t.Fatal("a namespace-admin must be allowed to read NAMESPACE_HEALTH")
 	}
 	if names := nsHealthNames(t, frame.Payload); len(names) != 1 || names[0] != "foo" {
@@ -66,7 +68,7 @@ func TestWSUI_NamespaceHealth_Authz(t *testing.T) {
 	defer connSU.Close()
 	sendWS(t, connSU, MsgNamespaceHealth, struct{}{})
 	frame = readFrame(t, connSU)
-	if frame.Type == MsgPermissionDenied {
+	if frame.Type == uiws.MsgPermissionDenied {
 		t.Fatal("a super-user must read NAMESPACE_HEALTH")
 	}
 	if names := nsHealthNames(t, frame.Payload); len(names) != 2 {
@@ -79,7 +81,7 @@ func TestWSUI_NamespaceHealth_Authz(t *testing.T) {
 	connRO := dialWS(t, srvRO.URL)
 	defer connRO.Close()
 	sendWS(t, connRO, MsgNamespaceHealth, struct{}{})
-	if ft := readFrame(t, connRO).Type; ft != MsgPermissionDenied {
+	if ft := readFrame(t, connRO).Type; ft != uiws.MsgPermissionDenied {
 		t.Fatalf("read-only must be DENIED NAMESPACE_HEALTH, got %s", ft)
 	}
 }
@@ -96,12 +98,12 @@ func TestWSUI_NamespaceRecover_Authz(t *testing.T) {
 	connFoo := dialWS(t, srvFoo.URL)
 	defer connFoo.Close()
 	sendWS(t, connFoo, MsgNamespaceRecover, NamespaceRecoverPayload{Action: "drop_missing", Namespace: "foo"})
-	if ft := readFrame(t, connFoo).Type; ft != MsgPermissionDenied {
+	if ft := readFrame(t, connFoo).Type; ft != uiws.MsgPermissionDenied {
 		t.Fatalf("namespace-level recover must be DENIED for a namespace-admin, got %s", ft)
 	}
 	// But a PROJECT-level recover on its own namespace is allowed (reaches the op).
 	sendWS(t, connFoo, MsgNamespaceRecover, NamespaceRecoverPayload{Action: "drop_missing", Namespace: "foo", ProjectName: "ghost"})
-	if ft := readFrame(t, connFoo).Type; ft == MsgPermissionDenied {
+	if ft := readFrame(t, connFoo).Type; ft == uiws.MsgPermissionDenied {
 		t.Fatal("project-level recover on its own namespace must be allowed for the namespace-admin")
 	}
 
@@ -111,7 +113,7 @@ func TestWSUI_NamespaceRecover_Authz(t *testing.T) {
 	connBar := dialWS(t, srvBar.URL)
 	defer connBar.Close()
 	sendWS(t, connBar, MsgNamespaceRecover, NamespaceRecoverPayload{Action: "drop_missing", Namespace: "foo", ProjectName: "ghost"})
-	if ft := readFrame(t, connBar).Type; ft != MsgPermissionDenied {
+	if ft := readFrame(t, connBar).Type; ft != uiws.MsgPermissionDenied {
 		t.Fatalf("admin on bar must be DENIED recover on foo, got %s", ft)
 	}
 
@@ -121,7 +123,7 @@ func TestWSUI_NamespaceRecover_Authz(t *testing.T) {
 	connSU := dialWS(t, srvSU.URL)
 	defer connSU.Close()
 	sendWS(t, connSU, MsgNamespaceRecover, NamespaceRecoverPayload{Action: "adopt", Namespace: "foo"})
-	if ft := readFrame(t, connSU).Type; ft == MsgPermissionDenied {
+	if ft := readFrame(t, connSU).Type; ft == uiws.MsgPermissionDenied {
 		t.Fatal("super-user must pass a whole-namespace recovery action")
 	}
 }

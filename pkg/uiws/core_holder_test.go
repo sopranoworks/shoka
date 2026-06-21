@@ -1,6 +1,7 @@
-package ui
+package uiws
 
-// Holder-without-StorageService proof (the 2026-06-21 core-handler extraction, step b).
+// Holder-without-StorageService proof (the 2026-06-21 core-handler extraction, step b;
+// moved to pkg/uiws by the ui-split step). It now proves the capability from pkg/.
 //
 // This file deliberately imports NO internal/storage (the document store): it proves the
 // auth/user/OAuth slice — CoreHandlers — is constructible and operable with ONLY a user
@@ -8,8 +9,8 @@ package ui
 // (GitYard, a feature-reduced Shoka with no document store) can therefore mount these
 // handlers on its OWN ws manager. serveCoreOnly below IS that second ws manager, in
 // miniature: it upgrades the socket, attaches the session principal, runs the SAME
-// shared authzGate, and dispatches a few core ops to the holder — with no Manager and no
-// StorageService anywhere in scope.
+// shared gate (Client.Gate over uiws.CoreLevels), and dispatches a few core ops to the
+// holder — with no Manager and no StorageService anywhere in scope.
 
 import (
 	"encoding/json"
@@ -19,7 +20,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
@@ -35,11 +35,7 @@ func serveCoreOnly(core *CoreHandlers) http.Handler {
 			return
 		}
 		defer conn.Close()
-		client := &wsClient{conn: conn, id: "ws-core-test", req: r}
-		if p, ok := auth.PrincipalFrom(r.Context()); ok {
-			client.principal = p
-			client.hasPrincipal = true
-		}
+		client := NewClient(conn, "ws-core-test", r)
 		for {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
@@ -47,11 +43,13 @@ func serveCoreOnly(core *CoreHandlers) http.Handler {
 			}
 			var msg WSMessage
 			if err := json.Unmarshal(message, &msg); err != nil {
-				client.sendError("Invalid message format")
+				client.SendError("Invalid message format")
 				continue
 			}
-			// The SAME shared gate Shoka uses, reached through the holder (not a Manager).
-			if !core.authzGate(client, msg.Type, msg.Payload) {
+			// The SAME shared gate Shoka uses, reached through the holder (not a Manager):
+			// Client.Gate over the core level table, with no super-user ops (the core
+			// contributes none).
+			if !client.Gate(msg.Type, msg.Payload, CoreLevels, nil) {
 				continue
 			}
 			switch msg.Type {
@@ -62,7 +60,7 @@ func serveCoreOnly(core *CoreHandlers) http.Handler {
 			case MsgDomainList:
 				core.handleDomainList(client)
 			default:
-				client.sendError("Unknown message type")
+				client.SendError("Unknown message type")
 			}
 		}
 	})
