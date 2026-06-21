@@ -40,6 +40,8 @@ import (
 	"github.com/sopranoworks/shoka/internal/webhooks"
 	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/authapi"
+	"github.com/sopranoworks/shoka/pkg/librarian"
+	"github.com/sopranoworks/shoka/pkg/librarian/llm"
 	"github.com/sopranoworks/shoka/pkg/oauth"
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
 	"github.com/sopranoworks/shoka/pkg/serverurl"
@@ -867,6 +869,28 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 		Name:        "unsubscribe",
 		Description: "Remove a change-notification pattern previously registered with subscribe; omit the pattern to clear ALL of this session's subscriptions (Redis UNSUBSCRIBE semantics)",
 	}, tools.LoggedTool(logger, "unsubscribe", subMgr.UnsubscribeHandler()))
+
+	// ask_the_librarian (B-73): registered ONLY when the LLM is configured (the
+	// translate_file/OAuth conditional-registration pattern). An internal,
+	// constraint-bearing LLM reads the project through read-only, root-confined,
+	// ignore-filtered tools and returns just the answer, so a consulting agent's
+	// context is never filled by the corpus. It rides AuthzMiddleware above
+	// (read-level), so the caller still needs the namespace/project scope; the
+	// inner read/list/search tools are in-process Go, not separately MCP-exposed.
+	if cfg.LLM.IsConfigured() {
+		llmClient := llm.NewAnthropicClient(llm.LLMConfig{
+			Provider: cfg.LLM.Provider,
+			BaseURL:  cfg.LLM.BaseURL,
+			APIKey:   cfg.LLM.APIKey,
+			Model:    cfg.LLM.Model,
+			MaxSteps: cfg.LLM.MaxSteps,
+		})
+		lib := librarian.New(llmClient, cfg.LLM.MaxSteps)
+		mcp.AddTool(mcpServer, &mcp.Tool{
+			Name:        "ask_the_librarian",
+			Description: "Ask a natural-language question about a project's documents and get back just the answer. An internal LLM reads the project's files (read-only) and synthesizes the answer, so your own context is not filled by the corpus — ideal for consulting a large body of docs (specs, backlog, reports). Requires read access to the namespace/project.",
+		}, tools.LoggedTool(logger, "ask_the_librarian", tools.AskTheLibrarianHandler(s, lib)))
+	}
 
 	// Wire the reaper to the live session set and start it (drops subscriptions for
 	// disconnected sessions; the SDK exposes no tool-session close hook).

@@ -3,6 +3,8 @@ package librarian
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,21 +62,80 @@ func TestLoop_HappyPath(t *testing.T) {
 			t.Errorf("in-root call %q was refused: %s", c.Tool, c.Detail)
 		}
 	}
-	// The tool defs handed to the model are EXACTLY {read, list} — no
-	// write/delete/move/search (B-49).
+	// The tool defs handed to the model are EXACTLY {read, list, search} — no
+	// write/delete/move (B-49).
 	defs := client.seen[0].Tools
 	names := map[string]bool{}
 	for _, d := range defs {
 		names[d.Name] = true
 	}
-	if len(defs) != 2 || !names["read"] || !names["list"] {
-		t.Errorf("tool defs = %v, want exactly {read, list}", names)
+	if len(defs) != 3 || !names["read"] || !names["list"] || !names["search"] {
+		t.Errorf("tool defs = %v, want exactly {read, list, search}", names)
 	}
-	for _, banned := range []string{"write", "delete", "move", "search"} {
+	for _, banned := range []string{"write", "delete", "move"} {
 		if names[banned] {
 			t.Errorf("forbidden tool %q is registered", banned)
 		}
 	}
+}
+
+// TestLoop_SearchThenRangedRead: the model searches by content, then reads the
+// hit's passage via a ranged read, then answers — the search->read->answer
+// shape proven on the fixture, model-independent.
+func TestLoop_SearchThenRangedRead(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		if i == 150 {
+			b.WriteString("ANSWER: the port is 8443\n")
+		} else {
+			b.WriteString("noise\n")
+		}
+	}
+	if err := writeFileErr(filepath.Join(root, "notes.md"), b.String()); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &scriptedClient{replies: []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("s1", "search", searchArgs{Query: "the port is"})}},
+		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("r1", "read", readArgs{Path: "notes.md", Offset: 150, Limit: 1})}},
+		{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "The port is 8443."}}},
+	}}
+
+	lib := New(client, 8)
+	res, err := lib.Ask(context.Background(), Request{Question: "what port?", Root: root})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if len(res.Calls) != 2 || res.Calls[0].Tool != "search" || res.Calls[1].Tool != "read" {
+		t.Fatalf("calls = %+v, want [search, read]", res.Calls)
+	}
+	for _, c := range res.Calls {
+		if c.Refused {
+			t.Errorf("call %q refused: %s", c.Tool, c.Detail)
+		}
+	}
+	// The read fed back to the model must be the bounded passage, not the whole file.
+	var fedRead string
+	for _, p := range client.seen {
+		for _, m := range p.Messages {
+			for _, blk := range m.Content {
+				if blk.Type == llm.BlockToolResult && strings.Contains(blk.Content, "8443") {
+					fedRead = blk.Content
+				}
+			}
+		}
+	}
+	if strings.TrimSpace(fedRead) != "ANSWER: the port is 8443" {
+		t.Errorf("ranged read fed to model = %q, want just the passage line", fedRead)
+	}
+	if strings.Count(fedRead, "\n") > 1 {
+		t.Errorf("read was not bounded; got %d lines", strings.Count(fedRead, "\n")+1)
+	}
+}
+
+func writeFileErr(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 // TestLoop_EscapeRefused: even when the model insists on escaping the root, the

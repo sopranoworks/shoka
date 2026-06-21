@@ -24,9 +24,13 @@ type FileChange struct {
 }
 
 // SearchMatch is a file matching a query, with an optional context snippet.
+// Offset is the 0-based line of the first content match (0 for filename-only
+// matches); it lets a passage-oriented reader (e.g. the librarian's ranged read,
+// B-73) seek to the hit instead of reading the whole file.
 type SearchMatch struct {
 	Path    string `json:"path"`
 	Snippet string `json:"snippet,omitempty"`
+	Offset  int    `json:"offset,omitempty"`
 }
 
 const snippetRunes = 100
@@ -218,6 +222,7 @@ func (s *FSGitStorage) SearchFiles(namespace, projectName, query, searchIn strin
 
 		contentMatch := false
 		snippet := ""
+		matchLine := 0
 		if searchesContent {
 			// Gate the content read on the index: skip only when it definitively
 			// knows this file cannot contain the query (record present AND its
@@ -234,7 +239,7 @@ func (s *FSGitStorage) SearchFiles(namespace, projectName, query, searchIn strin
 				data, readErr := os.ReadFile(p)
 				if readErr == nil && strings.Contains(strings.ToLower(string(data)), q) {
 					contentMatch = true
-					snippet = makeSnippet(string(data), q)
+					snippet, matchLine = makeSnippet(string(data), q)
 				}
 			}
 		}
@@ -246,11 +251,11 @@ func (s *FSGitStorage) SearchFiles(namespace, projectName, query, searchIn strin
 			}
 		case "content":
 			if contentMatch {
-				matches = append(matches, SearchMatch{Path: rel, Snippet: snippet})
+				matches = append(matches, SearchMatch{Path: rel, Snippet: snippet, Offset: matchLine})
 			}
 		default: // both
 			if nameMatch || contentMatch {
-				matches = append(matches, SearchMatch{Path: rel, Snippet: snippet})
+				matches = append(matches, SearchMatch{Path: rel, Snippet: snippet, Offset: matchLine})
 			}
 		}
 		return nil
@@ -272,13 +277,15 @@ func (s *FSGitStorage) SearchFastpathStats() (fastpath, fallback int64) {
 }
 
 // makeSnippet returns up to snippetRunes runes of context on each side of the
-// first (case-insensitive) occurrence of queryLower in content. It is rune-aware
-// so multibyte content (e.g. Japanese) is never split mid-rune.
-func makeSnippet(content, queryLower string) string {
+// first (case-insensitive) occurrence of queryLower in content, plus the 0-based
+// line number of that occurrence. It is rune-aware so multibyte content (e.g.
+// Japanese) is never split mid-rune. A non-match returns ("", 0).
+func makeSnippet(content, queryLower string) (string, int) {
 	bidx := strings.Index(strings.ToLower(content), queryLower)
 	if bidx < 0 {
-		return ""
+		return "", 0
 	}
+	line := strings.Count(content[:bidx], "\n")
 	ridx := len([]rune(content[:bidx]))
 	qLen := len([]rune(content[bidx : bidx+len(queryLower)]))
 
@@ -291,5 +298,5 @@ func makeSnippet(content, queryLower string) string {
 	if end > len(runes) {
 		end = len(runes)
 	}
-	return strings.TrimSpace(string(runes[start:end]))
+	return strings.TrimSpace(string(runes[start:end])), line
 }

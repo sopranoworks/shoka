@@ -501,6 +501,14 @@ func (s *FSGitStorage) getProjectPath(namespace, projectName string) (string, er
 	return filepath.Join(s.baseDir, namespace, projectName), nil
 }
 
+// ProjectPath returns the absolute working-tree path of a project, validating
+// the namespace/project names the same way the read/write paths do. It is the
+// authorized root the ask_the_librarian guard confines reads to (B-73); it does
+// not require the project to exist.
+func (s *FSGitStorage) ProjectPath(namespace, projectName string) (string, error) {
+	return s.getProjectPath(namespace, projectName)
+}
+
 // relWithin validates path traversal and returns the slash-relative path.
 func relWithin(projectPath, path string) (string, string, error) {
 	fullPath := filepath.Join(projectPath, path)

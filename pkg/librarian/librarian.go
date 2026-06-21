@@ -25,17 +25,22 @@ import (
 // describes are advisory framing only — actual enforcement is in the Go guard
 // that wraps every tool dispatch (B-49), not in this text.
 const systemPrompt = "You are a librarian answering questions about a corpus of files. " +
-	"Use the 'list' tool to discover files and the 'read' tool to read them. " +
-	"Base your answer only on what you read. Be concise and answer the question directly. " +
-	"All access is read-only and confined to the corpus; some paths may be refused."
+	"Use the 'search' tool to find relevant files by content, the 'list' tool to " +
+	"discover files, and the 'read' tool to read them. For a large file, pass a search " +
+	"hit's 'offset' to 'read' to fetch just the matching passage. Base your answer only " +
+	"on what you read. Be concise and answer the question directly. All access is " +
+	"read-only and confined to the corpus; some paths may be refused."
 
 // Request is one librarian query: a natural-language question over a corpus
 // rooted at Root, with Root's contents filtered by IgnorePatterns (".git/" is
-// always added by the guard).
+// always added by the guard). Corpus is the data source; when nil it defaults
+// to a filesystem corpus rooted at Root (the fixture/debug path). Products
+// inject their own Corpus (e.g. the Shoka index-backed adapter).
 type Request struct {
 	Question       string
 	Root           string
 	IgnorePatterns []string
+	Corpus         Corpus
 }
 
 // Result is the librarian's answer plus the trace of tool calls it made (the
@@ -65,7 +70,11 @@ func New(client llm.Client, maxSteps int) *Librarian {
 // feature (the caller's context never sees the corpus).
 func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 	guard := NewGuard(req.Root, req.IgnorePatterns)
-	tools := buildTools(guard)
+	corpus := req.Corpus
+	if corpus == nil {
+		corpus = NewDirCorpus(req.Root)
+	}
+	tools := buildTools(guard, corpus)
 	answer, calls, err := runLoop(ctx, l.client, systemPrompt, req.Question, tools, l.maxSteps)
 	return Result{Answer: answer, Calls: calls}, err
 }

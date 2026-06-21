@@ -54,7 +54,7 @@ func readJSON(t *testing.T, args readArgs) json.RawMessage {
 func TestReadTool_Security(t *testing.T) {
 	root, ignore, secret := fixtureCorpus(t)
 	g := NewGuard(root, ignore)
-	read := readDispatch(g)
+	read := readDispatch(g, NewDirCorpus(root))
 	ctx := context.Background()
 
 	// In-root read works.
@@ -89,7 +89,7 @@ func TestReadTool_Ranged(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "lines.txt"), "L0\nL1\nL2\nL3\nL4")
 	g := NewGuard(root, nil)
-	read := readDispatch(g)
+	read := readDispatch(g, NewDirCorpus(root))
 	ctx := context.Background()
 
 	got := read(ctx, readJSON(t, readArgs{Path: "lines.txt", Offset: 1, Limit: 2}))
@@ -107,7 +107,7 @@ func TestReadTool_Ranged(t *testing.T) {
 func TestListTool_Security(t *testing.T) {
 	root, ignore, secret := fixtureCorpus(t)
 	g := NewGuard(root, ignore)
-	list := listDispatch(g)
+	list := listDispatch(g, NewDirCorpus(root))
 	ctx := context.Background()
 
 	res := list(ctx, json.RawMessage(`{}`)) // root listing
@@ -132,5 +132,75 @@ func TestListTool_Security(t *testing.T) {
 	out := list(ctx, json.RawMessage(`{"dir":"../"}`))
 	if !out.isError {
 		t.Errorf("list(../) was accepted; want refusal")
+	}
+}
+
+// TestSearchTool_Security proves the search tool returns in-root hits with a
+// line offset, drops ignored/symlink/out-of-root hits, and never surfaces the
+// secret — even though the secret lives in ignored files and an out-of-root
+// symlink target that a naive grep would otherwise find.
+func TestSearchTool_Security(t *testing.T) {
+	root, ignore, secret := fixtureCorpus(t)
+	// Add an in-root hit that mentions a unique token, on a known line.
+	writeFile(t, filepath.Join(root, "guide", "topic.md"), "intro\nintro\nThe widget config lives here.\n")
+	g := NewGuard(root, ignore)
+	search := searchDispatch(g, NewDirCorpus(root))
+	ctx := context.Background()
+
+	// A content search finds the in-root file and reports the match line.
+	res := search(ctx, json.RawMessage(`{"query":"widget config"}`))
+	if res.isError {
+		t.Fatalf("search refused: %v", res.content)
+	}
+	if !strings.Contains(res.content, "guide/topic.md") {
+		t.Errorf("search missed the in-root hit: %q", res.content)
+	}
+	if !strings.Contains(res.content, "offset 2") {
+		t.Errorf("search did not report the match line (offset 2): %q", res.content)
+	}
+
+	// Searching for the secret must surface NO hit (it lives only in ignored
+	// files and an out-of-root symlink target — all guard-dropped).
+	leak := search(ctx, json.RawMessage(`{"query":"`+secret+`"}`))
+	if strings.Contains(leak.content, secret) {
+		t.Errorf("search leaked the secret: %q", leak.content)
+	}
+	for _, hidden := range []string{".git", ".shoka.disposable", "leak.txt"} {
+		if strings.Contains(leak.content, hidden) {
+			t.Errorf("search surfaced an ignored/symlink path %q: %q", hidden, leak.content)
+		}
+	}
+}
+
+// TestSearchTool_RangedReadFlow proves the search->ranged-read shape: a search
+// hit's offset feeds a bounded read that returns only the passage.
+func TestSearchTool_RangedReadFlow(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	for i := 0; i < 500; i++ {
+		if i == 321 {
+			b.WriteString("THE-NEEDLE is on this line\n")
+		} else {
+			b.WriteString("filler line\n")
+		}
+	}
+	writeFile(t, filepath.Join(root, "big.md"), b.String())
+	g := NewGuard(root, nil)
+	corpus := NewDirCorpus(root)
+	ctx := context.Background()
+
+	hits, err := corpus.Search(ctx, "THE-NEEDLE", 0)
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("search = (%v, %v), want one hit", hits, err)
+	}
+	if hits[0].Offset != 321 {
+		t.Errorf("hit offset = %d, want 321", hits[0].Offset)
+	}
+	// A read seeded at the hit offset returns a BOUNDED span, not the whole file.
+	read := readDispatch(g, corpus)
+	args, _ := json.Marshal(readArgs{Path: "big.md", Offset: hits[0].Offset, Limit: 1})
+	r := read(ctx, args)
+	if r.isError || strings.TrimSpace(r.content) != "THE-NEEDLE is on this line" {
+		t.Errorf("ranged read = %q, want just the needle line", r.content)
 	}
 }

@@ -462,6 +462,25 @@ type IdentityConfig struct {
 	} `yaml:"agent_default"`
 }
 
+// LLMConfig configures the ask_the_librarian internal LLM (B-73). It maps to
+// pkg/librarian/llm.LLMConfig. The same shape selects live Anthropic (empty
+// base_url, a real key) and local-ollama debugging (base_url
+// http://localhost:11434, api_key "ollama", an ollama model) on ONE code path.
+// When unset (IsConfigured false), the ask_the_librarian tool is not registered.
+type LLMConfig struct {
+	Provider string `yaml:"provider"`
+	BaseURL  string `yaml:"base_url"`
+	APIKey   string `yaml:"api_key"`
+	Model    string `yaml:"model"`
+	MaxSteps int    `yaml:"max_steps"`
+}
+
+// IsConfigured reports whether the librarian tool should be registered: a
+// provider, a model, and a credential (a real key, or the ollama placeholder).
+func (c LLMConfig) IsConfigured() bool {
+	return c.Provider != "" && c.Model != "" && c.APIKey != ""
+}
+
 type Config struct {
 	Server struct {
 		HTTP  ServerSettings `yaml:"http"`
@@ -487,6 +506,7 @@ type Config struct {
 	Metrics   MetricsConfig   `yaml:"metrics"`
 	Catalog   CatalogConfig   `yaml:"catalog"`
 	Webhooks  []WebhookConfig `yaml:"webhooks"`
+	LLM       LLMConfig       `yaml:"llm"`
 }
 
 // OAuth token-lifetime defaults (B-71 Stage 5), finite and GitHub-informed. GitHub
@@ -597,6 +617,11 @@ func (c *Config) applyDefaults() {
 	if c.Storage.Backup.RetentionCount == nil {
 		seven := 7
 		c.Storage.Backup.RetentionCount = &seven
+	}
+	// ask_the_librarian (B-73): a sensible tool-call loop budget when the LLM is
+	// configured but max_steps is left unset.
+	if c.LLM.IsConfigured() && c.LLM.MaxSteps <= 0 {
+		c.LLM.MaxSteps = 8
 	}
 }
 

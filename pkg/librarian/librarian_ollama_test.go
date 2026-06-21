@@ -71,7 +71,7 @@ func TestAsk_OllamaEndToEnd(t *testing.T) {
 	defer cancel()
 
 	res, err := lib.Ask(ctx, Request{
-		Question:       "Use the list and read tools to inspect the corpus. What number is mentioned in doc.md?",
+		Question:       "Use the search, list, and read tools to inspect the corpus. What number is mentioned in doc.md?",
 		Root:           root,
 		IgnorePatterns: ignore,
 	})
@@ -94,6 +94,9 @@ func TestAsk_OllamaEndToEnd(t *testing.T) {
 	for _, c := range res.Calls {
 		if c.Refused {
 			continue // refusals are expected and safe
+		}
+		if c.Tool == "search" {
+			continue // search hits are guard-filtered inside the tool; the trace path is the query
 		}
 		isDir := c.Tool == "list"
 		if _, _, gerr := guard.Resolve(c.Path, isDir); gerr != nil {

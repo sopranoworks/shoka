@@ -85,6 +85,7 @@ var toolLevels = map[string]authz.Level{
 	"search_files":         authz.LevelRead,
 	"subscribe":            authz.LevelRead,
 	"unsubscribe":          authz.LevelRead,
+	"ask_the_librarian":    authz.LevelRead, // read-only consultation (B-73)
 	// write (the former mutatingTools set)
 	"write_file":     authz.LevelWrite,
 	"patch_file":     authz.LevelWrite,

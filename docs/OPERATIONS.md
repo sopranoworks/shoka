@@ -330,6 +330,28 @@ On-demand: `shoka snapshot [--scope …]` triggers a snapshot cycle on the **run
 |-----|------|----------|---------|---------|
 | `webhooks[].name` / `.url` / `.events` / `.secret` | strings / list | no | — | Outbound webhook subscriptions. `events` ⊆ {`file_written`,`file_deleted`,`project_created`}. `secret` enables the `X-Shoka-Signature` HMAC header. |
 
+### `llm` — ask_the_librarian (optional)
+
+When configured, Shoka registers the `ask_the_librarian` MCP tool (B-73): an
+internal LLM reads a project's documents through read-only, root-confined,
+ignore-filtered tools and returns only the **answer**, so a consulting agent's
+own context is never filled by the corpus. The tool rides the authorization
+middleware at **read** level — the caller still needs read access to the target
+namespace/project. The same keys serve live Anthropic and a local-ollama debug
+path on one code path (they differ only in `base_url`, `api_key`, `model`).
+
+| Key | Type | Required | Default | Meaning |
+|-----|------|----------|---------|---------|
+| `llm.provider` | string | to enable | — | LLM provider. Only `anthropic` today. |
+| `llm.base_url` | string | no | `""` | `""` ⇒ live Anthropic; `http://localhost:11434` ⇒ local ollama (Anthropic-compatible `/v1/messages`). |
+| `llm.api_key` | string | to enable | — | A real Anthropic key live; the placeholder `ollama` (accepted-but-ignored) for local ollama. |
+| `llm.model` | string | to enable | — | e.g. a `claude-*` model live, or an ollama tag like `Qwen3:1.7b-q4_K_M`. |
+| `llm.max_steps` | int | no | `8` | Tool-call loop budget (model round-trips). |
+
+The tool is registered **only** when `provider`, `model`, and `api_key` are all
+set (the `IsConfigured` gate); otherwise it is silently absent. The inner
+read/list/search tools are in-process Go, not separately MCP-exposed.
+
 Validation: the server refuses to start without `storage.base_dir`,
 `server.http.listen`, or at least one MCP transport (`server.mcp.plain.listen` /
 `server.mcp.oauth.listen`), and rejects an invalid `server.log.level`/`format` or

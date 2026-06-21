@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -14,7 +13,7 @@ import (
 // toolResult is the outcome of one tool dispatch. Errors are encoded as
 // isError + content (which becomes a tool_result error fed back to the model),
 // never as a Go error that would abort the loop — a refused access is data, not
-// a crash. path records the path/dir the call targeted, for the trace.
+// a crash. path records the path/dir/query the call targeted, for the trace.
 type toolResult struct {
 	content string
 	isError bool
@@ -30,7 +29,7 @@ type tool struct {
 	dispatch toolFunc
 }
 
-// readArgs / listArgs are the tool input shapes.
+// readArgs / listArgs / searchArgs are the tool input shapes.
 type readArgs struct {
 	Path   string `json:"path"`
 	Offset int    `json:"offset"`
@@ -41,18 +40,25 @@ type listArgs struct {
 	Dir string `json:"dir"`
 }
 
-// buildTools returns the read-only, constraint-wrapped tool set for one guard.
-// It is EXACTLY {read, list}; there is deliberately no write/delete/move/search
-// (B-49 — an out-of-bounds operation is not a registered hand). Every dispatch
-// runs through the guard BEFORE touching the filesystem.
-func buildTools(g *Guard) []tool {
+type searchArgs struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit"`
+}
+
+// buildTools returns the read-only, constraint-wrapped tool set for one guard +
+// corpus. It is EXACTLY {read, list, search}; there is deliberately no
+// write/delete/move (B-49 — an out-of-bounds operation is not a registered
+// hand). Every dispatch runs through the guard BEFORE the corpus is touched,
+// and every search hit is guard-filtered before the model sees it.
+func buildTools(g *Guard, c Corpus) []tool {
 	return []tool{
 		{
 			def: llm.ToolDef{
 				Name: "read",
 				Description: "Read a UTF-8 text file from the corpus. Supports ranged reads: " +
 					"'offset' skips that many leading lines (0-based) and 'limit' caps the " +
-					"number of lines returned (omit or 0 for the whole file). Paths are " +
+					"number of lines returned (omit or 0 for the whole file). Use the 'offset' " +
+					"from a search hit to read just the passage of a large file. Paths are " +
 					"relative to the corpus root; reads outside the root, of ignored files, " +
 					"or through symlinks are refused.",
 				Properties: map[string]any{
@@ -62,7 +68,7 @@ func buildTools(g *Guard) []tool {
 				},
 				Required: []string{"path"},
 			},
-			dispatch: readDispatch(g),
+			dispatch: readDispatch(g, c),
 		},
 		{
 			def: llm.ToolDef{
@@ -75,66 +81,50 @@ func buildTools(g *Guard) []tool {
 				},
 				Required: []string{},
 			},
-			dispatch: listDispatch(g),
+			dispatch: listDispatch(g, c),
+		},
+		{
+			def: llm.ToolDef{
+				Name: "search",
+				Description: "Search the corpus for a case-insensitive substring and return matching " +
+					"files with a context snippet and the 0-based line of the match ('offset'). " +
+					"Pass that 'offset' to the read tool to read just the matching passage of a " +
+					"large file. Out-of-root, ignored, and symlink hits are never returned.",
+				Properties: map[string]any{
+					"query": map[string]any{"type": "string", "description": "Substring to search for (case-insensitive)."},
+					"limit": map[string]any{"type": "integer", "description": "Maximum number of hits to return. Optional."},
+				},
+				Required: []string{"query"},
+			},
+			dispatch: searchDispatch(g, c),
 		},
 	}
 }
 
-func readDispatch(g *Guard) toolFunc {
-	return func(_ context.Context, input json.RawMessage) toolResult {
+func readDispatch(g *Guard, c Corpus) toolFunc {
+	return func(ctx context.Context, input json.RawMessage) toolResult {
 		var args readArgs
 		if err := json.Unmarshal(input, &args); err != nil {
 			return toolResult{content: fmt.Sprintf("invalid arguments: %v", err), isError: true}
 		}
 		res := toolResult{path: args.Path}
 
-		full, _, err := g.Resolve(args.Path, false)
-		if err != nil {
+		if _, _, err := g.Resolve(args.Path, false); err != nil {
 			res.content, res.isError = fmt.Sprintf("refused: %v", err), true
 			return res
 		}
-		info, err := os.Stat(full)
+		data, err := c.Read(ctx, args.Path, args.Offset, args.Limit)
 		if err != nil {
 			res.content, res.isError = fmt.Sprintf("cannot read %q: %v", args.Path, err), true
 			return res
 		}
-		if info.IsDir() {
-			res.content, res.isError = fmt.Sprintf("%q is a directory; use list", args.Path), true
-			return res
-		}
-		data, err := os.ReadFile(full)
-		if err != nil {
-			res.content, res.isError = fmt.Sprintf("cannot read %q: %v", args.Path, err), true
-			return res
-		}
-		res.content = applyLineRange(string(data), args.Offset, args.Limit)
+		res.content = string(data)
 		return res
 	}
 }
 
-// applyLineRange returns the [offset, offset+limit) slice of lines. A negative
-// offset is clamped to 0; limit <= 0 means "to the end". The shape is built for
-// the future ~368k single-file backlog (Stage 4): read spans, not the whole.
-func applyLineRange(content string, offset, limit int) string {
-	if offset <= 0 && limit <= 0 {
-		return content
-	}
-	lines := strings.Split(content, "\n")
-	if offset < 0 {
-		offset = 0
-	}
-	if offset >= len(lines) {
-		return ""
-	}
-	end := len(lines)
-	if limit > 0 && offset+limit < end {
-		end = offset + limit
-	}
-	return strings.Join(lines[offset:end], "\n")
-}
-
-func listDispatch(g *Guard) toolFunc {
-	return func(_ context.Context, input json.RawMessage) toolResult {
+func listDispatch(g *Guard, c Corpus) toolFunc {
+	return func(ctx context.Context, input json.RawMessage) toolResult {
 		var args listArgs
 		if len(input) > 0 {
 			if err := json.Unmarshal(input, &args); err != nil {
@@ -147,12 +137,12 @@ func listDispatch(g *Guard) toolFunc {
 		}
 		res := toolResult{path: dir}
 
-		full, rel, err := g.Resolve(dir, true)
+		_, rel, err := g.Resolve(dir, true)
 		if err != nil {
 			res.content, res.isError = fmt.Sprintf("refused: %v", err), true
 			return res
 		}
-		entries, err := os.ReadDir(full)
+		entries, err := c.List(ctx, dir)
 		if err != nil {
 			res.content, res.isError = fmt.Sprintf("cannot list %q: %v", dir, err), true
 			return res
@@ -160,20 +150,16 @@ func listDispatch(g *Guard) toolFunc {
 
 		var out []string
 		for _, e := range entries {
-			// DirEntry.Type comes from Lstat, so a symlink is reported as such
-			// and SKIPPED — never followed (the B-73 correction).
-			if e.Type()&os.ModeSymlink != 0 {
-				continue
-			}
-			childRel := e.Name()
+			childRel := e.Name
 			if rel != "." && rel != "" {
-				childRel = rel + "/" + e.Name()
+				childRel = rel + "/" + e.Name
 			}
-			if g.Ignored(childRel, e.IsDir()) {
+			// Drop ignored entries and symlinks — the guard refuses both.
+			if _, _, gerr := g.Resolve(childRel, e.IsDir); gerr != nil {
 				continue
 			}
-			name := e.Name()
-			if e.IsDir() {
+			name := e.Name
+			if e.IsDir {
 				name += "/"
 			}
 			out = append(out, name)
@@ -183,6 +169,42 @@ func listDispatch(g *Guard) toolFunc {
 			res.content = "(empty)"
 		} else {
 			res.content = strings.Join(out, "\n")
+		}
+		return res
+	}
+}
+
+func searchDispatch(g *Guard, c Corpus) toolFunc {
+	return func(ctx context.Context, input json.RawMessage) toolResult {
+		var args searchArgs
+		if err := json.Unmarshal(input, &args); err != nil {
+			return toolResult{content: fmt.Sprintf("invalid arguments: %v", err), isError: true}
+		}
+		res := toolResult{path: args.Query}
+		if strings.TrimSpace(args.Query) == "" {
+			res.content, res.isError = "query is required", true
+			return res
+		}
+
+		hits, err := c.Search(ctx, args.Query, args.Limit)
+		if err != nil {
+			res.content, res.isError = fmt.Sprintf("search failed: %v", err), true
+			return res
+		}
+
+		var lines []string
+		for _, h := range hits {
+			// Guard-filter: drop any hit whose path is out-of-root, ignored, or a
+			// symlink BEFORE it (or its snippet) ever reaches the model.
+			if _, _, gerr := g.Resolve(h.Path, false); gerr != nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s (offset %d): %s", h.Path, h.Offset, h.Snippet))
+		}
+		if len(lines) == 0 {
+			res.content = "(no matches)"
+		} else {
+			res.content = strings.Join(lines, "\n")
 		}
 		return res
 	}

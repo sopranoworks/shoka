@@ -29,6 +29,8 @@ func TestToolLevel_Registry(t *testing.T) {
 		"delete_project":   authz.LevelAdmin,
 		"create_namespace": authz.LevelAdmin,
 		"delete_namespace": authz.LevelAdmin,
+		// B-73: ask_the_librarian is a read-only consultation.
+		"ask_the_librarian": authz.LevelRead,
 	}
 	for tool, want := range cases {
 		if got := toolLevel(tool); got != want {
@@ -44,6 +46,21 @@ func TestToolLevel_Registry(t *testing.T) {
 	// write level — a positive check that the retired tool is gone from the surface.
 	if got := toolLevel("translate_file"); got != authz.LevelAdmin {
 		t.Errorf("retired translate_file must fall through to fail-closed admin, got %v", got)
+	}
+}
+
+// TestAuthzMiddleware_AskTheLibrarian: the librarian tool rides the same gate at
+// read level — a read scope on the target namespace passes, a no-access scope is
+// denied, and a foreign namespace is denied (B-73 Stage 5: scope still required).
+func TestAuthzMiddleware_AskTheLibrarian(t *testing.T) {
+	if reached, res := runGate(t, "namespace:foo:r", "ask_the_librarian", `{"namespace":"foo","project_name":"x"}`); !reached || isError(res) {
+		t.Fatal("read scope on foo must permit ask_the_librarian on foo")
+	}
+	if reached, res := runGate(t, authz.NoAccessScope, "ask_the_librarian", `{"namespace":"foo","project_name":"x"}`); reached || !isError(res) {
+		t.Fatal("a no-access scope must DENY ask_the_librarian")
+	}
+	if reached, res := runGate(t, "namespace:foo:r", "ask_the_librarian", `{"namespace":"bar","project_name":"x"}`); reached || !isError(res) {
+		t.Fatal("foo-only scope must DENY ask_the_librarian on bar")
 	}
 }
 

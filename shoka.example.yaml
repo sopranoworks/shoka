@@ -312,3 +312,18 @@ catalog: {}
 #     url: "https://example.com/shoka-hook"
 #     events: [file_written, file_deleted, project_created]
 #     secret: "shared-secret"
+
+# Optional: ask_the_librarian (B-73). When configured, Shoka registers an
+# `ask_the_librarian` MCP tool: an internal LLM reads a project's documents
+# through read-only, root-confined, ignore-filtered tools and returns just the
+# ANSWER, so a consulting agent's context is not filled by the corpus. The same
+# keys select live Anthropic and a local-ollama debug path on ONE code path —
+# they differ only in base_url, api_key, and model. Omit this block (or any of
+# provider/model/api_key) to leave the tool unregistered. Read access to the
+# target namespace/project is still required (it rides the authz middleware).
+# llm:
+#   provider: "anthropic"                 # the only provider today
+#   base_url: ""                          # "" => live Anthropic; "http://localhost:11434" => local ollama
+#   api_key: ""                           # a real Anthropic key live; "ollama" (accepted-but-ignored) for local
+#   model: "claude-3-5-haiku-latest"      # live model; e.g. "Qwen3:1.7b-q4_K_M" for local ollama
+#   max_steps: 8                          # tool-call loop budget (model round-trips); defaults to 8
