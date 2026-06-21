@@ -63,7 +63,7 @@ func TestAskTheLibrarian_ConditionalRegistration(t *testing.T) {
 
 	// On: a configured (ollama placeholder) LLM.
 	on := &config.Config{}
-	on.LLM = config.LLMConfig{
+	on.Librarian = config.LLMConfig{
 		Provider: "anthropic",
 		BaseURL:  "http://localhost:11434",
 		Model:    "Qwen3:1.7b-q4_K_M",

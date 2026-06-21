@@ -330,7 +330,7 @@ On-demand: `shoka snapshot [--scope …]` triggers a snapshot cycle on the **run
 |-----|------|----------|---------|---------|
 | `webhooks[].name` / `.url` / `.events` / `.secret` | strings / list | no | — | Outbound webhook subscriptions. `events` ⊆ {`file_written`,`file_deleted`,`project_created`}. `secret` enables the `X-Shoka-Signature` HMAC header. |
 
-### `llm` — ask_the_librarian (optional)
+### `librarian` — ask_the_librarian (optional)
 
 When configured, Shoka registers the `ask_the_librarian` MCP tool (B-73): an
 internal LLM reads a project's documents through read-only, root-confined,
@@ -350,15 +350,15 @@ a hard load error (the guardrail against committing a secret).
 
 | Key | Type | Required | Default | Meaning |
 |-----|------|----------|---------|---------|
-| `llm.provider` | string | yes (to enable) | — | `anthropic` or `openai`. |
-| `llm.model` | string | yes (to enable) | — | A current model id from the provider, e.g. a `claude-…` (Anthropic) or `gpt-…` (OpenAI) string. The provider has no model environment variable, so this is required. |
-| `llm.base_url` | string | no | `""` | Omit for production (the SDK's default endpoint). Set only for a proxy. |
-| `llm.max_steps` | int | no | `8` | Tool-call loop budget (model round-trips). |
+| `librarian.provider` | string | yes (to enable) | — | `anthropic` or `openai`. |
+| `librarian.model` | string | yes (to enable) | — | A current model id from the provider, e.g. a `claude-…` (Anthropic) or `gpt-…` (OpenAI) string. The provider has no model environment variable, so this is required. |
+| `librarian.base_url` | string | no | `""` | Omit for production (the SDK's default endpoint). Set only for a proxy. |
+| `librarian.max_steps` | int | no | `8` | Tool-call loop budget (model round-trips). |
 
 A minimal production config:
 
 ```yaml
-llm:
+librarian:
   provider: anthropic        # or: openai
   model: claude-3-5-haiku-latest   # use a current model id; openai e.g. gpt-4o
 # the API key is an environment variable (ANTHROPIC_API_KEY / OPENAI_API_KEY), NOT a config key

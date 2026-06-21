@@ -38,6 +38,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/storage/walworker"
 	"github.com/sopranoworks/shoka/internal/tools"
 	"github.com/sopranoworks/shoka/internal/ui"
+	"github.com/sopranoworks/shoka/internal/version"
 	"github.com/sopranoworks/shoka/internal/webhooks"
 	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/authapi"
@@ -69,6 +70,7 @@ func main() {
 		}
 	}
 
+	showVersion := flag.Bool("version", false, "Print the Shoka version and exit without starting the server.")
 	configPath := flag.String("config", "shoka.yaml", "Path to configuration file")
 	configCheck := flag.Bool("config-check", false, "Load and validate the config (strict — unknown/misplaced keys are errors), print 'config OK' or the exact error, and EXIT without starting the server or binding any port (Apache configtest-style).")
 	profileAddr := flag.String("profile-addr", "", "If set, serve net/http/pprof on this loopback address (e.g. localhost:9060). Empty disables profiling.")
@@ -80,6 +82,12 @@ func main() {
 	resetPassword := flag.String("reset-password", "", "Operator-local recovery: reset this account's password (prompted on the TTY — never an argument), then EXIT without serving. Run with the server stopped.")
 	clearTOTP := flag.String("clear-2fa", "", "Operator-local recovery: clear this account's two-factor (TOTP), then EXIT without serving. Run with the server stopped.")
 	flag.Parse()
+
+	// --version: print and exit without loading config or binding a port.
+	if *showVersion {
+		fmt.Printf("shoka %s\n", version.Version)
+		return
+	}
 
 	// B-58 config dry-run: validate the config and exit, binding no port and starting
 	// no server, so the operator can confirm a config (including a key's placement)
@@ -262,7 +270,7 @@ func main() {
 	// outcome. The WebUI reads the cached snapshot; a refresh re-runs the check.
 	libHealth := libstatus.New(llmConfig(cfg))
 	uim.SetLibrarianStatus(libHealth)
-	if cfg.LLM.IsConfigured() {
+	if cfg.Librarian.IsConfigured() {
 		go func() {
 			snap := libHealth.Refresh(ctx)
 			if snap.Kind == string(llm.HealthReady) {
@@ -717,10 +725,10 @@ func toWebhookConfigs(in []config.WebhookConfig) []webhooks.Config {
 // config (the API key is not carried — the SDK reads it from the environment).
 func llmConfig(cfg *config.Config) llm.LLMConfig {
 	return llm.LLMConfig{
-		Provider: cfg.LLM.Provider,
-		BaseURL:  cfg.LLM.BaseURL,
-		Model:    cfg.LLM.Model,
-		MaxSteps: cfg.LLM.MaxSteps,
+		Provider: cfg.Librarian.Provider,
+		BaseURL:  cfg.Librarian.BaseURL,
+		Model:    cfg.Librarian.Model,
+		MaxSteps: cfg.Librarian.MaxSteps,
 	}
 }
 
@@ -728,7 +736,7 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "shoka",
-			Version: "0.1.0",
+			Version: version.Version,
 		},
 		&mcp.ServerOptions{Logger: logger},
 	)
@@ -907,14 +915,14 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	// context is never filled by the corpus. It rides AuthzMiddleware above
 	// (read-level), so the caller still needs the namespace/project scope; the
 	// inner read/list/search tools are in-process Go, not separately MCP-exposed.
-	if cfg.LLM.IsConfigured() {
+	if cfg.Librarian.IsConfigured() {
 		llmClient, err := llm.NewClient(llmConfig(cfg))
 		if err != nil {
 			// Config was validated at load (known provider), so this should not
 			// happen; log and skip registration rather than crash serving.
 			logger.Error("ask_the_librarian: cannot build LLM client; tool not registered", "error", err)
 		} else {
-			lib := librarian.New(llmClient, cfg.LLM.MaxSteps)
+			lib := librarian.New(llmClient, cfg.Librarian.MaxSteps)
 			mcp.AddTool(mcpServer, &mcp.Tool{
 				Name:        "ask_the_librarian",
 				Description: "Ask a natural-language question about a project's documents and get back just the answer. An internal LLM reads the project's files (read-only) and synthesizes the answer, so your own context is not filled by the corpus — ideal for consulting a large body of docs (specs, backlog, reports). Requires read access to the namespace/project.",

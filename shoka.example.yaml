@@ -325,14 +325,16 @@ catalog: {}
 #   provider: openai     ->  set OPENAI_API_KEY    in the server's environment
 # There is no `api_key:` config key — including one is a hard load error.
 #
-# Pick ONE provider. Use a CURRENT model id from that provider:
-# llm:
+# Pick ONE provider. Use a CURRENT model id from that provider. The block is
+# keyed `librarian:` (scoped to ask_the_librarian — a future module that also
+# uses an LLM gets its own config key, no collision):
+# librarian:
 #   provider: "anthropic"
 #   model: "claude-3-5-haiku-latest"   # a current Anthropic model id
 #   max_steps: 8                       # tool-call loop budget (model round-trips); defaults to 8
 #
 # OpenAI instead:
-# llm:
+# librarian:
 #   provider: "openai"
 #   model: "gpt-4o"                    # a current OpenAI model id
 #

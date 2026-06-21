@@ -462,10 +462,13 @@ type IdentityConfig struct {
 	} `yaml:"agent_default"`
 }
 
-// LLMConfig configures the ask_the_librarian internal LLM (B-73). It maps to
-// pkg/librarian/llm.LLMConfig. provider selects the SDK (anthropic|openai);
-// model is REQUIRED (the SDKs have no model env var); base_url is OPTIONAL
-// (omitted ⇒ the SDK's production endpoint; set only for ollama/proxy).
+// LLMConfig configures the ask_the_librarian module (B-73). It is the Shoka
+// config that maps to pkg/librarian/llm.LLMConfig and is keyed `librarian:` in
+// YAML — scoped to this module, NOT a generic `llm:` key, so a future module
+// that also calls an LLM gets its own config namespace without colliding.
+// provider selects the SDK (anthropic|openai); model is REQUIRED (the SDKs have
+// no model env var); base_url is OPTIONAL (omitted ⇒ the SDK's production
+// endpoint; set only for ollama/proxy).
 //
 // There is DELIBERATELY no api_key field: the API key is read from the
 // environment by the SDK (ANTHROPIC_API_KEY / OPENAI_API_KEY), never from
@@ -487,14 +490,15 @@ func (c LLMConfig) IsConfigured() bool {
 }
 
 // Validate checks a configured librarian for internal consistency: a known
-// provider and a non-empty model. It is only meaningful when some llm field is
-// set; an entirely-empty LLMConfig is "not configured" and skipped by callers.
+// provider and a non-empty model. It is only meaningful when some librarian
+// field is set; an entirely-empty LLMConfig is "not configured" and skipped by
+// callers.
 func (c LLMConfig) Validate() error {
 	if c.Provider != llmProviderAnthropic && c.Provider != llmProviderOpenAI {
-		return fmt.Errorf("llm.provider must be %q or %q, got %q", llmProviderAnthropic, llmProviderOpenAI, c.Provider)
+		return fmt.Errorf("librarian.provider must be %q or %q, got %q", llmProviderAnthropic, llmProviderOpenAI, c.Provider)
 	}
 	if c.Model == "" {
-		return fmt.Errorf("llm.model is required (the provider has no model environment variable)")
+		return fmt.Errorf("librarian.model is required (the provider has no model environment variable)")
 	}
 	return nil
 }
@@ -531,7 +535,7 @@ type Config struct {
 	Metrics   MetricsConfig   `yaml:"metrics"`
 	Catalog   CatalogConfig   `yaml:"catalog"`
 	Webhooks  []WebhookConfig `yaml:"webhooks"`
-	LLM       LLMConfig       `yaml:"llm"`
+	Librarian LLMConfig       `yaml:"librarian"`
 }
 
 // OAuth token-lifetime defaults (B-71 Stage 5), finite and GitHub-informed. GitHub
@@ -643,10 +647,10 @@ func (c *Config) applyDefaults() {
 		seven := 7
 		c.Storage.Backup.RetentionCount = &seven
 	}
-	// ask_the_librarian (B-73): a sensible tool-call loop budget when the LLM is
-	// configured but max_steps is left unset.
-	if c.LLM.IsConfigured() && c.LLM.MaxSteps <= 0 {
-		c.LLM.MaxSteps = 8
+	// ask_the_librarian (B-73): a sensible tool-call loop budget when the
+	// librarian is configured but max_steps is left unset.
+	if c.Librarian.IsConfigured() && c.Librarian.MaxSteps <= 0 {
+		c.Librarian.MaxSteps = 8
 	}
 }
 
@@ -716,11 +720,11 @@ func (c *Config) Validate() error {
 	if c.Storage.Backup.RetentionDays < 0 {
 		return errors.New("storage.backup.retention_days must be non-negative (0 = off)")
 	}
-	// ask_the_librarian (B-73): if any llm field is set, the block must be a
-	// valid, consistent config (known provider + a model). An entirely-empty
+	// ask_the_librarian (B-73): if any librarian field is set, the block must be
+	// a valid, consistent config (known provider + a model). An entirely-empty
 	// block is "not configured" and skipped.
-	if c.LLM != (LLMConfig{}) {
-		if err := c.LLM.Validate(); err != nil {
+	if c.Librarian != (LLMConfig{}) {
+		if err := c.Librarian.Validate(); err != nil {
 			return err
 		}
 	}

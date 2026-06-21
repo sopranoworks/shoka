@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/sopranoworks/shoka/internal/version"
 )
 
 func main() {
@@ -61,6 +63,9 @@ func run(args []string) error {
 		return cmdWorkspace(args[1:])
 	case "init":
 		return cmdInit(args[1:])
+	case "version", "-v", "--version":
+		fmt.Println("shoka-cli " + version.Version)
+		return nil
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return nil
@@ -90,6 +95,7 @@ Usage:
                             [--repo URL-OR-PATH] [--ref REF] [--skill NAME ...] \
                             --namespace NS --project PROJ [--environment E] \
                             [--runtime claude|gemini] [--global]
+  shoka-cli version         Print the shoka-cli version and exit.
 
 The access token is read from --token-file or stdin (never from the command line,
 which would leak it into shell history) and stored at

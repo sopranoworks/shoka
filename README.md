@@ -1,5 +1,8 @@
 # Shoka
 
+[![version](https://img.shields.io/badge/version-1.0.0--rc1-blue)](#)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Shoka is a backend server that stores project documentation (milestones, specs,
 instructions) as plain Markdown files, versions every change with Git, and exposes
 it to coding agents over the **Model Context Protocol (MCP)** while letting humans
@@ -170,3 +173,13 @@ Google Cloud Translation v3 (optional). See `docs/ARCHITECTURE.md` for why.
 - `docs/contracts/mcp-v1.md` (interface), `docs/ARCHITECTURE.md` (design),
   `docs/OPERATIONS.md` (config). Quick-start config mirrors `shoka.example.yaml`
   and `internal/config/config.go:58-69` (required fields).
+
+## Version
+
+This is **1.0.0-rc1**. The running binary reports it via `shoka --version` (and
+`shoka-cli --version`), and the MCP server advertises it in `get_server_info`.
+
+## License
+
+Shoka is licensed under the **MIT License** — see [`LICENSE`](LICENSE) for the
+full text. Its dependencies are MIT/Apache-2.0 (permissive, MIT-compatible).
