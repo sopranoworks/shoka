@@ -98,6 +98,23 @@ long-running server. **No formula is published yet.** On macOS today, install wi
 `go install` (above) or build from source, and manage the process with the launchd
 template in [*Running as a service*](#running-as-a-service-systemd--launchd).
 
+### Agent skills (`shoka-cli skill`)
+
+Shoka's agent skills (`shoka-directive-onboarding`, `shoka-workspace-setup`) are
+**not** shipped in the `.deb` — they are fetched at runtime from the project's own
+public repo with the maintenance CLI:
+
+```sh
+shoka-cli skill update                              # sync the skills cache (default source: the project repo)
+shoka-cli skill install shoka-directive-onboarding  # -> .claude/skills/<name>/ (or --runtime gemini, --global)
+shoka-cli skill install shoka-workspace-setup
+```
+
+`skill update` defaults to `github.com/sopranoworks/shoka` (its `skills/` subtree)
+— pass `--repo <url-or-path>` to override; it fetches only the `skills/` subtree,
+not the whole repository. See [`docs/agents/README.md`](agents/README.md) for the
+agent-facing detail.
+
 ## Running
 
 ```sh

@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/sopranoworks/shoka/internal/skillcache"
 )
 
 // TestSkillAptCycle proves the apt-model skill distribution end to end against a
@@ -25,16 +27,35 @@ func TestSkillAptCycle(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 
-	// A local throwaway "remote" skills repo with one skill + a non-skill README.
+	// A local throwaway "remote" laid out like the FIXED repo: skills under a
+	// skills/ SUBDIR, plus decoy top-level dirs and a root README that are NOT
+	// skills — the narrow fetch must take only skills/.
 	remote := t.TempDir()
-	writeFile(t, filepath.Join(remote, "demo-skill", "SKILL.md"), "# Demo Skill\nv1\n")
-	writeFile(t, filepath.Join(remote, "demo-skill", "helper.txt"), "helper one\n")
+	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "SKILL.md"), "# Demo Skill\nv1\n")
+	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "helper.txt"), "helper one\n")
 	writeFile(t, filepath.Join(remote, "README.md"), "# repo readme, not a skill\n")
+	writeFile(t, filepath.Join(remote, "cmd", "shoka", "main.go"), "package main\n")
+	writeFile(t, filepath.Join(remote, "docs", "x.md"), "# docs, not a skill\n")
 	gitInitCommit(t, remote, "v1")
 
-	// (1) skill update — the one network op: clone the remote into the cache.
+	// (1) skill update — the one network op: narrowly fetch skills/ into the cache.
 	if err := cmdSkill([]string{"update", "--repo", remote}); err != nil {
 		t.Fatalf("skill update: %v", err)
+	}
+
+	// Narrow fetch: only skills/ CONTENTS land at the cache root — the decoy
+	// top-level dirs and the .git history must NOT be in the cache.
+	cacheDir, err := skillcache.DefaultCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "demo-skill", "SKILL.md")); err != nil {
+		t.Fatalf("cache missing demo-skill at root: %v", err)
+	}
+	for _, decoy := range []string{".git", "cmd", "docs", "README.md", "skills"} {
+		if _, err := os.Stat(filepath.Join(cacheDir, decoy)); !os.IsNotExist(err) {
+			t.Fatalf("cache must not contain %q (narrow skills/-only fetch); stat err=%v", decoy, err)
+		}
 	}
 
 	// Install/upgrade resolve the convention dir relative to the working dir.
@@ -64,8 +85,8 @@ func TestSkillAptCycle(t *testing.T) {
 
 	// (4) Change the remote: edit a file AND add a new supporting file (drift must
 	// catch added files, not just SKILL.md edits), then re-update.
-	writeFile(t, filepath.Join(remote, "demo-skill", "SKILL.md"), "# Demo Skill\nv2 CHANGED\n")
-	writeFile(t, filepath.Join(remote, "demo-skill", "extra.txt"), "added in v2\n")
+	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "SKILL.md"), "# Demo Skill\nv2 CHANGED\n")
+	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "extra.txt"), "added in v2\n")
 	gitInitCommit(t, remote, "v2")
 	if err := cmdSkill([]string{"update", "--repo", remote}); err != nil {
 		t.Fatalf("skill re-update: %v", err)
@@ -120,10 +141,15 @@ func TestSkillInstallUncachedErrors(t *testing.T) {
 	}
 }
 
-// TestSkillUpdateRequiresRepo proves --repo is required (no baked-in default).
-func TestSkillUpdateRequiresRepo(t *testing.T) {
-	if err := cmdSkill([]string{"update"}); err == nil {
-		t.Fatal("skill update without --repo must error")
+// TestSkillUpdateDefaultsToProjectRepo proves --repo is now OPTIONAL: with no
+// flag the source resolves to the baked fixed project repo. It asserts the
+// RESOLVED source only — it does NOT fetch, so there is no network egress.
+func TestSkillUpdateDefaultsToProjectRepo(t *testing.T) {
+	if got := skillcache.ResolveRepo(""); got != skillcache.DefaultSkillsRepo {
+		t.Fatalf("no --repo must resolve to the default source %q; got %q", skillcache.DefaultSkillsRepo, got)
+	}
+	if got := skillcache.ResolveRepo("/tmp/throwaway"); got != "/tmp/throwaway" {
+		t.Fatalf("--repo override must win over the default; got %q", got)
 	}
 }
 

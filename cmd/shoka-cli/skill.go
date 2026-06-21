@@ -39,24 +39,25 @@ func cmdSkill(args []string) error {
 	}
 }
 
-// cmdSkillUpdate is `apt update`: the one network op. It git-fetches the remote
-// skills repo (--repo, required — no baked-in default) into the local cache.
+// cmdSkillUpdate is `apt update`: the one network op. It narrowly git-fetches the
+// skills/ subtree of the skills repo into the local cache. The source defaults to
+// the project's own public repo (skillcache.DefaultSkillsRepo); --repo overrides
+// it (e.g. a local throwaway repo for testing, or an alternate skills source).
 func cmdSkillUpdate(args []string) error {
 	fs := flag.NewFlagSet("skill update", flag.ContinueOnError)
-	repo := fs.String("repo", "", "remote skills repository (URL or local path) to sync from (required)")
+	repo := fs.String("repo", "", "skills repository (URL or local path) to sync from (default: the project repo "+skillcache.DefaultSkillsRepo+")")
 	ref := fs.String("ref", "", "branch or tag to sync (default: the remote's default branch)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *repo == "" {
-		return fmt.Errorf("skill update requires --repo <url-or-path> (there is no default remote)")
-	}
+	source := skillcache.ResolveRepo(*repo)
 
 	cacheDir, err := skillcache.DefaultCacheDir()
 	if err != nil {
 		return err
 	}
-	res, err := skillcache.Sync(cacheDir, *repo, *ref)
+	fmt.Printf("syncing skills from %s\n", source)
+	res, err := skillcache.Sync(cacheDir, source, *ref)
 	if err != nil {
 		return err
 	}

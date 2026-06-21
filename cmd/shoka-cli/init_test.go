@@ -24,10 +24,11 @@ func initTestEnv(t *testing.T) (work, tokenFile, repo string) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 
-	// A throwaway remote skills repo with the default wired pair.
+	// A throwaway remote skills repo laid out like the fixed source: the default
+	// wired pair under a skills/ SUBDIR (the narrow fetch takes only skills/).
 	repo = t.TempDir()
-	writeFile(t, filepath.Join(repo, "shoka-directive-onboarding", "SKILL.md"), "# Onboarding\n")
-	writeFile(t, filepath.Join(repo, "shoka-workspace-setup", "SKILL.md"), "# Setup\n")
+	writeFile(t, filepath.Join(repo, "skills", "shoka-directive-onboarding", "SKILL.md"), "# Onboarding\n")
+	writeFile(t, filepath.Join(repo, "skills", "shoka-workspace-setup", "SKILL.md"), "# Setup\n")
 	gitInitCommit(t, repo, "skills v1")
 
 	tokenFile = filepath.Join(t.TempDir(), "token")

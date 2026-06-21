@@ -129,9 +129,28 @@ func TestCopySkillCleanReplace(t *testing.T) {
 	}
 }
 
-// TestSyncRequiresRepo: Sync with no repo errors before touching anything.
+// TestSyncRequiresRepo: Sync with an empty repo errors before touching anything.
+// (The CLI resolves the fixed default via ResolveRepo, so an empty repo reaching
+// Sync is a programming error — this guards against it.)
 func TestSyncRequiresRepo(t *testing.T) {
 	if _, err := Sync(t.TempDir(), "", ""); err == nil {
 		t.Fatal("Sync with empty repo must error")
+	}
+}
+
+// TestResolveRepo: no override resolves to the baked fixed source; an override
+// wins. No network egress — this is pure resolution.
+func TestResolveRepo(t *testing.T) {
+	if got := ResolveRepo(""); got != DefaultSkillsRepo {
+		t.Fatalf("empty override must resolve to DefaultSkillsRepo %q; got %q", DefaultSkillsRepo, got)
+	}
+	if got := ResolveRepo("  "); got != DefaultSkillsRepo {
+		t.Fatalf("blank override must resolve to the default; got %q", got)
+	}
+	if got := ResolveRepo("/tmp/throwaway"); got != "/tmp/throwaway" {
+		t.Fatalf("override must win; got %q", got)
+	}
+	if DefaultSkillsRepo != "https://github.com/sopranoworks/shoka.git" {
+		t.Fatalf("DefaultSkillsRepo drifted: %q", DefaultSkillsRepo)
 	}
 }

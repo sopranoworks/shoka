@@ -34,6 +34,32 @@ import (
 // skillMarker is the file whose presence makes a directory a skill.
 const skillMarker = "SKILL.md"
 
+// DefaultSkillsRepo is the FIXED source of the bundled skills: the project's own
+// public repository, whose tracked skills/ subtree holds them. `skill update`
+// syncs from here when no --repo override is given, so a fresh environment
+// installs shoka-directive-onboarding / shoka-workspace-setup with no repo URL
+// to supply. The public project-repo URL is not a deployment detail, so baking
+// it as the default is safe (the confidentiality rule concerns deployment
+// topology, not the public source repo).
+const DefaultSkillsRepo = "https://github.com/sopranoworks/shoka.git"
+
+// skillsSubdir is the directory under the source repo root that holds the skills
+// (one <name>/SKILL.md per skill). The narrow fetch retrieves ONLY this subtree
+// and lays its CONTENTS at the cache root, so a skill is found at
+// cacheDir/<name>/SKILL.md and discovery (List/Has/CopySkill) stays root-based.
+const skillsSubdir = "skills"
+
+// ResolveRepo returns the override when non-empty, else the baked default source
+// (DefaultSkillsRepo). The CLI's --repo flag passes through here so `skill
+// update` works with no flag (the fixed project repo) yet still accepts a
+// throwaway repo or an alternate skills source for testing/overrides.
+func ResolveRepo(override string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	return DefaultSkillsRepo
+}
+
 // DefaultCacheDir returns the on-disk skills cache path,
 // os.UserCacheDir()/shoka/skills. It honours $XDG_CACHE_HOME on Linux and
 // resolves under ~/Library/Caches on macOS (whatever os.UserCacheDir reports).
@@ -53,16 +79,24 @@ type SyncResult struct {
 	Removed   []string // absent after, present before
 }
 
-// Sync clones (first run) or fetches+hard-resets (subsequent runs) the skills
-// repository at repo into cacheDir, using the git binary. ref is an optional
-// branch or tag to sync; when empty, the remote's default branch (HEAD) is used.
-// It returns a per-skill diff of the cache before vs after.
+// Sync narrowly fetches the skillsSubdir (skills/) subtree of the repository at
+// repo and lays its CONTENTS at cacheDir, so a skill is found at
+// cacheDir/<name>/SKILL.md (root-based discovery). It returns a per-skill diff
+// of the cache before vs after.
 //
-// This is the ONE network operation in the skill line. repo is required (there
-// is no baked-in default — the caller passes --repo).
+// The fetch is NARROW: a shallow (--depth 1), no-checkout clone into a scratch
+// dir with a sparse-checkout of only skills/, of which just that subtree is kept
+// — the cache carries NO .git history and none of the repo's other directories
+// (so syncing the whole project repo does not pull cmd/, web/, docs/, … or the
+// history just to obtain a handful of skill files). ref is an optional branch or
+// tag; empty means the remote's default branch.
+//
+// This is the ONE network operation in the skill line. repo should be non-empty
+// — the CLI resolves the fixed default source (DefaultSkillsRepo) via ResolveRepo
+// before calling, so an empty repo here is a programming error, not a user one.
 func Sync(cacheDir, repo, ref string) (SyncResult, error) {
 	if strings.TrimSpace(repo) == "" {
-		return SyncResult{}, fmt.Errorf("a remote skills repository is required (pass --repo)")
+		return SyncResult{}, fmt.Errorf("a skills repository is required (the CLI resolves the default source via ResolveRepo)")
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return SyncResult{}, fmt.Errorf("the git executable was not found in PATH (skill update shells out to git): %w", err)
@@ -73,36 +107,51 @@ func Sync(cacheDir, repo, ref string) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	gitDir := filepath.Join(cacheDir, ".git")
-	if _, statErr := os.Stat(gitDir); statErr != nil {
-		// First sync: clone into the cache. git clone needs the target to be
-		// absent or empty; create only the parent at 0700.
-		if err := os.MkdirAll(filepath.Dir(cacheDir), 0o700); err != nil {
-			return SyncResult{}, fmt.Errorf("create cache parent: %w", err)
-		}
-		if err := runGit("", "clone", repo, cacheDir); err != nil {
-			return SyncResult{}, err
-		}
-	} else {
-		// Subsequent sync: re-point origin (the repo may differ run to run, since
-		// it is not persisted) and update in place.
-		if err := runGit(cacheDir, "remote", "set-url", "origin", repo); err != nil {
-			return SyncResult{}, err
-		}
+	parent := filepath.Dir(cacheDir)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return SyncResult{}, fmt.Errorf("create cache parent: %w", err)
 	}
 
-	target := strings.TrimSpace(ref)
-	if target == "" {
-		target = "HEAD" // the remote's default branch
+	// Scratch clone next to the cache (same filesystem, so the final move is a
+	// rename), removed regardless of outcome.
+	scratch, err := os.MkdirTemp(parent, "skills-sync-")
+	if err != nil {
+		return SyncResult{}, fmt.Errorf("create sync scratch dir: %w", err)
 	}
-	if err := runGit(cacheDir, "fetch", "origin", target); err != nil {
+	defer func() { _ = os.RemoveAll(scratch) }()
+
+	clone := filepath.Join(scratch, "clone")
+	cloneArgs := []string{"clone", "--depth", "1", "--no-checkout"}
+	if target := strings.TrimSpace(ref); target != "" {
+		cloneArgs = append(cloneArgs, "--branch", target)
+	}
+	cloneArgs = append(cloneArgs, repo, clone)
+	if err := runGit("", cloneArgs...); err != nil {
 		return SyncResult{}, err
 	}
-	if err := runGit(cacheDir, "reset", "--hard", "FETCH_HEAD"); err != nil {
+	// Materialise ONLY skills/ in the scratch working tree.
+	if err := runGit(clone, "sparse-checkout", "init", "--cone"); err != nil {
 		return SyncResult{}, err
 	}
-	if err := runGit(cacheDir, "clean", "-fd"); err != nil {
+	if err := runGit(clone, "sparse-checkout", "set", skillsSubdir); err != nil {
 		return SyncResult{}, err
+	}
+	if err := runGit(clone, "checkout"); err != nil {
+		return SyncResult{}, err
+	}
+
+	skillsTree := filepath.Join(clone, skillsSubdir)
+	if fi, statErr := os.Stat(skillsTree); statErr != nil || !fi.IsDir() {
+		return SyncResult{}, fmt.Errorf("the source repository has no %q directory (skills are expected under %s/)", skillsSubdir, skillsSubdir)
+	}
+
+	// Clean-replace the cache with the freshly-fetched skills subtree (so a skill
+	// removed upstream does not survive). The move keeps the cache .git-free.
+	if err := os.RemoveAll(cacheDir); err != nil {
+		return SyncResult{}, fmt.Errorf("clear cache: %w", err)
+	}
+	if err := os.Rename(skillsTree, cacheDir); err != nil {
+		return SyncResult{}, fmt.Errorf("install fetched skills into cache: %w", err)
 	}
 
 	after, err := snapshotHashes(cacheDir)

@@ -35,6 +35,35 @@ and write documents; Shoka tracks history. You do not manage Git directly.
 3. Webhook deliveries are asynchronous — a successful write returns immediately and
    does not wait for (or fail on) webhook delivery.
 
+## Getting the Shoka skills (`shoka-cli skill`)
+
+Shoka ships agent skills — guidance an agent loads to use Shoka well — in its own
+`skills/` directory: **`shoka-directive-onboarding`** (fetch and execute the latest
+directive) and **`shoka-workspace-setup`** (the interactive first-run that records
+which namespace/project a working directory owns). Install them with the
+maintenance CLI:
+
+```sh
+shoka-cli skill update                              # sync the skills cache
+shoka-cli skill install shoka-directive-onboarding  # place into .claude/skills/<name>/
+shoka-cli skill install shoka-workspace-setup
+```
+
+- `skill update` syncs from the **project's own public repo by default**
+  (`github.com/sopranoworks/shoka`, its `skills/` subtree) — no repo URL to supply.
+  Pass `--repo <url-or-path>` only to override the source (e.g. a fork or a local
+  checkout). It fetches just the `skills/` subtree, not the whole repository.
+- `skill install <name>` copies a cached skill into the runtime convention dir —
+  `.claude/skills/<name>/` (Claude Code) or, with `--runtime gemini`,
+  `.gemini/skills/<name>/`; `--global` installs at the user level. It places skill
+  files only; it does **not** write the workspace JSON (the assignment) — that is
+  `shoka-workspace-setup`'s job.
+- `skill outdated` / `skill upgrade` show and re-apply skills whose cached content
+  has changed.
+
+The skills are distributed by a runtime clone of the public repo, **not** bundled
+in the `.deb` — installing Shoka does not place them; run `skill install` to get them.
+
 ## Sources
 
 - `docs/contracts/mcp-v1.md` § 4.0 (common conventions), § 5 (locking), § 6
