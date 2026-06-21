@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // B-28 stage 3: the unauthenticated invite-redeem HTTP flow. /auth/invite/info shows

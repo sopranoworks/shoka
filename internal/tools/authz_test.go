@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sopranoworks/shoka/internal/auth"
-	"github.com/sopranoworks/shoka/internal/authz"
+	"github.com/sopranoworks/shoka/pkg/auth"
+	"github.com/sopranoworks/shoka/pkg/authz"
 )
 
 // B-28 stage-2 flip: the MCP middleware looks up each tool's required level from the

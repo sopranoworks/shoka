@@ -13,7 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/sopranoworks/shoka/internal/config"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // runUserReset performs the operator-local account recovery (B-28 password recovery

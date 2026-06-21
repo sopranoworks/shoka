@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // Invite redemption (B-28 stage 3): the unauthenticated flow off the login screen.

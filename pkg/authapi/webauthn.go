@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // ceremonyTTL bounds how long a begun WebAuthn ceremony may stay pending before its

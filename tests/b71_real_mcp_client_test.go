@@ -15,13 +15,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/sopranoworks/shoka/internal/auth"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/mcpclient"
-	"github.com/sopranoworks/shoka/internal/oauth"
 	"github.com/sopranoworks/shoka/internal/storage"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
 	"github.com/sopranoworks/shoka/internal/tools"
+	"github.com/sopranoworks/shoka/pkg/auth"
+	"github.com/sopranoworks/shoka/pkg/oauth"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 // B-71 end-to-end via the REAL test MCP client (the original test-MCP-client lineage). STEP 1

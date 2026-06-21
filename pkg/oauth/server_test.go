@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/auth"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/auth"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 const (

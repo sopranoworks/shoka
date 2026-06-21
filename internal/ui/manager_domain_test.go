@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 // B-71 Stage 2d: the DOMAIN_* ws ops + domain-grouped OAUTH_LIST, against a REAL oauthstore

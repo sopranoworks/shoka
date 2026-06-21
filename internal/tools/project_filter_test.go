@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/pkg/auth"
 )
 
 // B-28 stage 3: list_projects results are filtered to the namespaces the principal

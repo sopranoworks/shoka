@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 // B-71 Stage 3: the CLIENT_* ws ops (confidential-client management) against a REAL oauthstore.

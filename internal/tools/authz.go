@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sopranoworks/shoka/internal/auth"
-	"github.com/sopranoworks/shoka/internal/authz"
+	"github.com/sopranoworks/shoka/pkg/auth"
+	"github.com/sopranoworks/shoka/pkg/authz"
 )
 
 // AuthzMiddleware is the single authorization choke point for MCP tool calls (the

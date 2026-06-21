@@ -14,15 +14,15 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sopranoworks/shoka/internal/auth"
-	"github.com/sopranoworks/shoka/internal/authz"
 	"github.com/sopranoworks/shoka/internal/drafts"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/ingest"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/auth"
+	"github.com/sopranoworks/shoka/pkg/authz"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 type MessageType string

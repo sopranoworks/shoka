@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sopranoworks/shoka/internal/auth"
 	"github.com/sopranoworks/shoka/internal/httplog"
 	"github.com/sopranoworks/shoka/internal/storage"
 	"github.com/sopranoworks/shoka/internal/tools"
+	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

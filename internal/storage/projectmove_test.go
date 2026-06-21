@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/sopranoworks/shoka/internal/storage/nsregistry"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // seedProject creates ns/proj with one committed file and waits for the commit.

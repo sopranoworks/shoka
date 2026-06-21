@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // B-28 password recovery case 1: ADMIN_SET_USER_PASSWORD — an admin resets another

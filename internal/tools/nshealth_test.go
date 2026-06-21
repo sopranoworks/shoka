@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/auth"
 	"github.com/sopranoworks/shoka/internal/storage"
+	"github.com/sopranoworks/shoka/pkg/auth"
 )
 
 // #6 (MCP gate) — namespace_health is admin-somewhere (any admin may read, filtered);

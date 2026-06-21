@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/authz"
 	"github.com/sopranoworks/shoka/internal/scopeclean"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/authz"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 func contains(ss []string, want string) bool {

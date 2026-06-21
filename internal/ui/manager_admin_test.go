@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 func testUserStore(t *testing.T) *userstore.Store {

@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sopranoworks/shoka/internal/identity"
 	"github.com/sopranoworks/shoka/internal/storage"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 // The OAUTH_LIST/OAUTH_REVOKE requests (the 2026-06-03 MCP OAuth (c) directive)

@@ -3,7 +3,7 @@ package ui
 import (
 	"encoding/json"
 
-	"github.com/sopranoworks/shoka/internal/authz"
+	"github.com/sopranoworks/shoka/pkg/authz"
 )
 
 // CoreHandlers is the reusable auth/user/OAuth slice of the /ws/ui surface (the

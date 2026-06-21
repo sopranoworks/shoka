@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sopranoworks/shoka/internal/auth"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/auth"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // serveCoreOnly is a minimal /ws/ui manager built on *CoreHandlers ALONE — the proof

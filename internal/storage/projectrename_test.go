@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/sopranoworks/shoka/internal/storage/nsregistry"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // #1 (core) — RenameProject relocates the 3 artefacts as-is within the namespace, preserves

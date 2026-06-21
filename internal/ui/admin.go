@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // User-management /ws/ui handlers (B-28 stage 3). Authorization (super-user only) is

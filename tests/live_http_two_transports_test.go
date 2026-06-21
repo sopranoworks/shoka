@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/serverurl"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/serverurl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

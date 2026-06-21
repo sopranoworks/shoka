@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // accountTestManager wires a real user store into a fresh manager; tests apply

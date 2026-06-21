@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // These cover the B-28 case-2 main()-level properties that the in-process unit tests

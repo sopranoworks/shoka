@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sopranoworks/shoka/internal/config"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // These cover the B-28 password-recovery case-2 startup-mode core (runUserReset): it

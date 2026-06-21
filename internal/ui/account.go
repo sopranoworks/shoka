@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // Self-service "My Account" /ws/ui handlers (B-28). Unlike the ADMIN_* ops these are

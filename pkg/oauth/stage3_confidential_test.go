@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/authz"
+	"github.com/sopranoworks/shoka/pkg/authz"
 )
 
 // B-71 Stage 3 — confidential-client (Client ID + Secret) auth at /token, REQUIRED IN ADDITION to

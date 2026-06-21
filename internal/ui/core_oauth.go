@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 // OAuth/domain/confidential management handlers — the OAuth slice of CoreHandlers

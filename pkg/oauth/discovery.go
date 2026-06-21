@@ -22,7 +22,7 @@ import (
 	"net/http"
 
 	"github.com/sopranoworks/shoka/internal/reqtrace"
-	"github.com/sopranoworks/shoka/internal/serverurl"
+	"github.com/sopranoworks/shoka/pkg/serverurl"
 )
 
 // RegistrationMode selects which client-registration posture the AS metadata

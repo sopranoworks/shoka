@@ -11,9 +11,9 @@
 package scopeclean
 
 import (
-	"github.com/sopranoworks/shoka/internal/authz"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/storage/userstore"
+	"github.com/sopranoworks/shoka/pkg/authz"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/userstore"
 )
 
 // scopeRewriter is the narrow capability a store exposes for cascade cleanup: apply a

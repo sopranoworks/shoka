@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/auth"
 	"github.com/sopranoworks/shoka/internal/config"
-	"github.com/sopranoworks/shoka/internal/oauth"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/auth"
+	"github.com/sopranoworks/shoka/pkg/oauth"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 func mcpProbe(t *testing.T, h http.Handler, path string) int {

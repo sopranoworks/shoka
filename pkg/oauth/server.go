@@ -15,9 +15,9 @@ import (
 	"encoding/json"
 
 	"github.com/sopranoworks/shoka/internal/reqtrace"
-	"github.com/sopranoworks/shoka/internal/serverurl"
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
-	"github.com/sopranoworks/shoka/internal/tokenfp"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/serverurl"
+	"github.com/sopranoworks/shoka/pkg/tokenfp"
 )
 
 // This file builds Shoka's built-in OAuth 2.1 authorization-server core (the

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 // B-51: every OAuth/CIMD client-verification rejection must log (server-side,

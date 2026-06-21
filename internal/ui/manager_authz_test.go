@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/pkg/auth"
 )
 
 // withScope wraps the manager so the upgrade request carries a session principal of

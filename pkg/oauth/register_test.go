@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/storage/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/oauthstore"
 )
 
 // register POSTs a raw client-metadata body to /register and returns the recorder.

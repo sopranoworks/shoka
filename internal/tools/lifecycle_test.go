@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/auth"
+	"github.com/sopranoworks/shoka/pkg/auth"
 )
 
 // #4 (MCP, project ops = admin on the target namespace). create_project is RAISED to
