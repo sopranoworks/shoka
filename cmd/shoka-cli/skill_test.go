@@ -153,6 +153,59 @@ func TestSkillUpdateDefaultsToProjectRepo(t *testing.T) {
 	}
 }
 
+// TestSkillInstallWholeSet: `skill install` with NO name installs EVERY skill in
+// the synced cache (the Shoka skill set is required tooling, not a pick-by-name
+// catalogue), and the set is DATA-DRIVEN — a skill added to the source is picked
+// up with no CLI/name knowledge.
+func TestSkillInstallWholeSet(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+
+	// A fixed-repo-like throwaway with TWO skills under skills/.
+	remote := t.TempDir()
+	writeFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "# alpha\n")
+	writeFile(t, filepath.Join(remote, "skills", "beta", "SKILL.md"), "# beta\n")
+	gitInitCommit(t, remote, "two skills")
+	if err := cmdSkill([]string{"update", "--repo", remote}); err != nil {
+		t.Fatalf("skill update: %v", err)
+	}
+
+	work := t.TempDir()
+	t.Chdir(work)
+
+	// Install with NO name => the whole set (no per-name knowledge).
+	if err := cmdSkill([]string{"install"}); err != nil {
+		t.Fatalf("skill install (whole set): %v", err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		if _, err := os.Stat(filepath.Join(work, ".claude", "skills", name, "SKILL.md")); err != nil {
+			t.Fatalf("whole-set install missing %s: %v", name, err)
+		}
+	}
+	// `skill list` runs (visibility front).
+	if err := cmdSkill([]string{"list"}); err != nil {
+		t.Fatalf("skill list: %v", err)
+	}
+
+	// Data-driven: add a THIRD skill upstream; update + install (no name) picks it
+	// up with no CLI change — proving the set is not a hard-coded pair.
+	writeFile(t, filepath.Join(remote, "skills", "gamma", "SKILL.md"), "# gamma\n")
+	gitInitCommit(t, remote, "add gamma")
+	if err := cmdSkill([]string{"update", "--repo", remote}); err != nil {
+		t.Fatalf("skill re-update: %v", err)
+	}
+	if err := cmdSkill([]string{"install"}); err != nil {
+		t.Fatalf("skill install after add: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(work, ".claude", "skills", "gamma", "SKILL.md")); err != nil {
+		t.Fatalf("data-driven set did not pick up the added skill gamma: %v", err)
+	}
+}
+
 // TestSkillUnknownRuntime rejects an unknown --runtime.
 func TestSkillUnknownRuntime(t *testing.T) {
 	if _, err := skillsConventionDir("emacs", false); err == nil {

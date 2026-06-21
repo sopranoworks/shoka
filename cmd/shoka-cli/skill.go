@@ -23,19 +23,21 @@ import (
 // namespace/project assignment is a separate concern (B-15 steps c/d).
 func cmdSkill(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("skill: a subcommand is required (update, install, upgrade, outdated)")
+		return fmt.Errorf("skill: a subcommand is required (update, install, list, upgrade, outdated)")
 	}
 	switch args[0] {
 	case "update":
 		return cmdSkillUpdate(args[1:])
 	case "install":
 		return cmdSkillInstall(args[1:])
+	case "list":
+		return cmdSkillList(args[1:])
 	case "upgrade":
 		return cmdSkillUpgrade(args[1:])
 	case "outdated":
 		return cmdSkillOutdated(args[1:])
 	default:
-		return fmt.Errorf("unknown skill subcommand %q (expected: update, install, upgrade, outdated)", args[0])
+		return fmt.Errorf("unknown skill subcommand %q (expected: update, install, list, upgrade, outdated)", args[0])
 	}
 }
 
@@ -78,10 +80,14 @@ func reportSync(label string, names []string) {
 	}
 }
 
-// cmdSkillInstall is `apt install`: copy a cached skill into the target runtime's
-// convention dir. It works OFFLINE (reads the already-synced cache); an un-cached
-// name is an error pointing at `skill update`. It places FILES only — never the
-// workspace JSON.
+// cmdSkillInstall installs the Shoka skill SET. The Shoka skills are required
+// tooling for an agent using Shoka, not an a-la-carte catalogue — so with NO name
+// it installs EVERY skill currently in the synced cache (a fresh user need not
+// know skill names). One or more explicit names install just those (the targeted
+// case). It works OFFLINE (reads the already-synced cache); an empty cache or an
+// un-cached name points at `skill update`. It places FILES only — never the
+// workspace JSON. The set is data-driven: a skill added to the source repo's
+// skills/ is installed automatically, with no CLI change.
 func cmdSkillInstall(args []string) error {
 	fs := flag.NewFlagSet("skill install", flag.ContinueOnError)
 	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
@@ -89,29 +95,78 @@ func cmdSkillInstall(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	rest := fs.Args()
-	if len(rest) != 1 {
-		return fmt.Errorf("usage: shoka-cli skill install [--runtime claude|gemini] [--global] <name>")
-	}
-	name := rest[0]
 
 	cacheDir, err := skillcache.DefaultCacheDir()
 	if err != nil {
 		return err
 	}
-	if !skillcache.Has(cacheDir, name) {
-		return fmt.Errorf("skill %q is not in the cache (%s); run `shoka-cli skill update --repo <url-or-path>` first", name, cacheDir)
-	}
-
 	destParent, err := skillsConventionDir(*runtime, *global)
 	if err != nil {
 		return err
 	}
-	dst, err := skillcache.CopySkill(filepath.Join(cacheDir, name), destParent)
+
+	names := fs.Args()
+	if len(names) == 0 {
+		// Whole-set install: every skill currently in the cache.
+		all, lerr := skillcache.List(cacheDir)
+		if lerr != nil {
+			return lerr
+		}
+		if len(all) == 0 {
+			return fmt.Errorf("no skills in the cache (%s); run `shoka-cli skill update` first", cacheDir)
+		}
+		names = all
+	}
+
+	for _, name := range names {
+		if !skillcache.Has(cacheDir, name) {
+			return fmt.Errorf("skill %q is not in the cache (%s); run `shoka-cli skill update` first", name, cacheDir)
+		}
+		dst, cerr := skillcache.CopySkill(filepath.Join(cacheDir, name), destParent)
+		if cerr != nil {
+			return cerr
+		}
+		fmt.Printf("installed %s -> %s\n", name, dst)
+	}
+	return nil
+}
+
+// cmdSkillList shows the skills available in the synced cache and whether each is
+// installed in the target runtime's convention dir. It changes nothing — it makes
+// the (data-driven) set visible; the primary path is still `skill install` with
+// no name, which installs the whole set.
+func cmdSkillList(args []string) error {
+	fs := flag.NewFlagSet("skill list", flag.ContinueOnError)
+	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
+	global := fs.Bool("global", false, "inspect the user-level install location instead of the current working directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cacheDir, err := skillcache.DefaultCacheDir()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("installed %s -> %s\n", name, dst)
+	cached, err := skillcache.List(cacheDir)
+	if err != nil {
+		return err
+	}
+	if len(cached) == 0 {
+		fmt.Printf("no skills in the cache (%s); run `shoka-cli skill update` first\n", cacheDir)
+		return nil
+	}
+	destParent, err := skillsConventionDir(*runtime, *global)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("skills in the cache (%s):\n", cacheDir)
+	for _, name := range cached {
+		status := "not installed"
+		if skillcache.Has(destParent, name) {
+			status = "installed"
+		}
+		fmt.Printf("  %-32s %s\n", name, status)
+	}
+	fmt.Println("install the whole set with `shoka-cli skill install` (no name)")
 	return nil
 }
 

@@ -2,11 +2,14 @@
 
 This directory is the **tracked source-of-truth** for Shoka's "how to use Shoka"
 skill set. Each subdirectory is one skill (a `SKILL.md` plus any supporting
-files). `shoka-cli skill update && shoka-cli skill install <name>` (the
-`apt`/`npx skills` model, B-15 step b) syncs this `skills/` subtree from the
-project's own public repo and installs a skill into a target agent's runtime
-convention directory (`.claude/skills/<name>/`). `skill update` defaults to the
-project repo as its source; `--repo` overrides it.
+files). These skills are required tooling installed as a **set** (not by name):
+`shoka-cli skill update && shoka-cli skill install` (no name) syncs this `skills/`
+subtree from the project's own public repo and installs **every** skill into a
+target agent's runtime convention directory (`.claude/skills/<name>/`) — or run
+`shoka-cli init`, which does the same as part of setup. `skill update` defaults to
+the project repo; `--repo` overrides it. (`skill install <name>` / `skill list`
+exist for targeted/visibility use.) Adding a skill here makes it install
+automatically — no CLI change.
 
 Skills are **not** Shoka data: they live in the repo tree and are version
 controlled with ordinary `git`. They are never stored or fetched through the MCP

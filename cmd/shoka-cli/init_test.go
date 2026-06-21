@@ -62,8 +62,9 @@ func TestInitRunsAllPhasesInOrder(t *testing.T) {
 	if cfg.Endpoint != "https://example.invalid/mcp" || cfg.Token != "placeholder-access-token" {
 		t.Fatalf("config = %+v, want endpoint+token set", cfg)
 	}
-	// Phase 2 — both wired skills installed.
-	for _, name := range defaultInitSkills {
+	// Phase 2 — the WHOLE skill set in the fixture is installed (data-driven, no
+	// per-name knowledge — init installs every skill in the synced cache).
+	for _, name := range []string{"shoka-directive-onboarding", "shoka-workspace-setup"} {
 		if _, err := os.Stat(filepath.Join(work, ".claude", "skills", name, "SKILL.md")); err != nil {
 			t.Fatalf("skill %s not installed: %v", name, err)
 		}

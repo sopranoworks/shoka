@@ -10,15 +10,6 @@ import (
 	"github.com/sopranoworks/shoka/internal/clientconfig"
 )
 
-// defaultInitSkills is the skill set `init` installs by default: the WIRED PAIR.
-// The onboarding skill forward-references the setup skill as its fallback when a
-// working directory has no workspace JSON (a JSON can be absent on a later launch —
-// deleted, a different working dir, or a re-clone of a git-ignored convention dir),
-// so installing onboarding REQUIRES installing workspace-setup or the fallback
-// dangles. This is the minimal set that satisfies the fallback wiring; --skill adds
-// to it.
-var defaultInitSkills = []string{"shoka-directive-onboarding", "shoka-workspace-setup"}
-
 // stringSliceFlag collects a repeatable string flag (e.g. --skill A --skill B).
 type stringSliceFlag []string
 
@@ -56,7 +47,7 @@ func cmdInit(args []string) error {
 	repo := fs.String("repo", "", "remote skills repository (URL or path) for the skill phase")
 	ref := fs.String("ref", "", "branch or tag to sync for the skill phase")
 	var skills stringSliceFlag
-	fs.Var(&skills, "skill", "skill to install (repeatable; default: the onboarding+setup pair)")
+	fs.Var(&skills, "skill", "skill to install (repeatable; default: the whole synced Shoka skill set)")
 
 	// workspace + shared pass-throughs.
 	namespace := fs.String("namespace", "", "the namespace this working directory is responsible for")
@@ -66,9 +57,6 @@ func cmdInit(args []string) error {
 	global := fs.Bool("global", false, "operate at the user level instead of the current working directory")
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-	if len(skills) == 0 {
-		skills = defaultInitSkills
 	}
 
 	// Phase 1 — config-setup (the connection). Skip if already configured.
@@ -98,8 +86,11 @@ func cmdInit(args []string) error {
 		}
 	}
 
-	// Phase 2 — skill update + install (the skill layer). init invokes `install`
-	// once per skill; it does NOT absorb the apt lifecycle.
+	// Phase 2 — skill update + install (the skill layer). init syncs the cache and
+	// installs the WHOLE Shoka skill set (the skills are required tooling, not an
+	// a-la-carte catalogue); --skill narrows to specific skills for the rare
+	// targeted case. It does NOT absorb the apt lifecycle (update/upgrade stay in
+	// the `skill` family).
 	if *noSkill {
 		fmt.Println("[skill] skipped (--no-install-skill)")
 	} else {
@@ -111,15 +102,15 @@ func cmdInit(args []string) error {
 		if err := cmdSkillUpdate(updateArgs); err != nil {
 			return fmt.Errorf("[skill] %w", err)
 		}
-		for _, name := range skills {
-			installArgs := []string{"--runtime", *runtime}
-			if *global {
-				installArgs = append(installArgs, "--global")
-			}
-			installArgs = append(installArgs, name)
-			if err := cmdSkillInstall(installArgs); err != nil {
-				return fmt.Errorf("[skill] install %s: %w", name, err)
-			}
+		// No --skill => install the whole synced set (cmdSkillInstall with no name);
+		// --skill <names> => install just those.
+		installArgs := []string{"--runtime", *runtime}
+		if *global {
+			installArgs = append(installArgs, "--global")
+		}
+		installArgs = append(installArgs, skills...)
+		if err := cmdSkillInstall(installArgs); err != nil {
+			return fmt.Errorf("[skill] install: %w", err)
 		}
 	}
 

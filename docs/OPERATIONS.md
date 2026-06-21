@@ -100,16 +100,19 @@ template in [*Running as a service*](#running-as-a-service-systemd--launchd).
 
 ### Agent skills (`shoka-cli skill`)
 
-Shoka's agent skills (`shoka-directive-onboarding`, `shoka-workspace-setup`) are
-**not** shipped in the `.deb` — they are fetched at runtime from the project's own
-public repo with the maintenance CLI:
+Shoka's agent skills are required tooling for an agent using Shoka and are
+installed as a **set** (not by name); they are **not** shipped in the `.deb` —
+they are fetched at runtime from the project's own public repo with the
+maintenance CLI, in **one step**:
 
 ```sh
-shoka-cli skill update                              # sync the skills cache (default source: the project repo)
-shoka-cli skill install shoka-directive-onboarding  # -> .claude/skills/<name>/ (or --runtime gemini, --global)
-shoka-cli skill install shoka-workspace-setup
+shoka-cli skill update     # sync the skill set (default source: the project repo)
+shoka-cli skill install     # install the WHOLE set -> .claude/skills/<name>/ (or --runtime gemini, --global)
 ```
 
+(`shoka-cli init` does the same skill step as part of first-time setup.) No skill
+names are needed — `skill install` with no name installs every skill in the synced
+set; `skill install <name>` and `skill list` exist for targeted/visibility use.
 `skill update` defaults to `github.com/sopranoworks/shoka` (its `skills/` subtree)
 — pass `--repo <url-or-path>` to override; it fetches only the `skills/` subtree,
 not the whole repository. See [`docs/agents/README.md`](agents/README.md) for the

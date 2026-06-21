@@ -37,32 +37,43 @@ and write documents; Shoka tracks history. You do not manage Git directly.
 
 ## Getting the Shoka skills (`shoka-cli skill`)
 
-Shoka ships agent skills — guidance an agent loads to use Shoka well — in its own
-`skills/` directory: **`shoka-directive-onboarding`** (fetch and execute the latest
-directive) and **`shoka-workspace-setup`** (the interactive first-run that records
-which namespace/project a working directory owns). Install them with the
-maintenance CLI:
+The Shoka skills are the **tooling an agent needs to use Shoka** — they are
+installed as a **set**, not picked by name. Get them in **one step**, either as
+part of first-time setup:
 
 ```sh
-shoka-cli skill update                              # sync the skills cache
-shoka-cli skill install shoka-directive-onboarding  # place into .claude/skills/<name>/
-shoka-cli skill install shoka-workspace-setup
+shoka-cli init …    # configures the connection, installs the WHOLE skill set, sets the workspace assignment
 ```
 
+or, if the connection is already configured, with the two skill commands:
+
+```sh
+shoka-cli skill update     # sync the skill set from the project repo (one network op)
+shoka-cli skill install     # install the WHOLE set — no skill names to know
+```
+
+You do **not** need to know individual skill names. The set is data-driven over
+what the source ships (today: `shoka-directive-onboarding` — fetch/execute the
+latest directive; `shoka-workspace-setup` — the interactive first-run that records
+which namespace/project a working directory owns); a new skill is picked up
+automatically.
+
 - `skill update` syncs from the **project's own public repo by default**
-  (`github.com/sopranoworks/shoka`, its `skills/` subtree) — no repo URL to supply.
-  Pass `--repo <url-or-path>` only to override the source (e.g. a fork or a local
-  checkout). It fetches just the `skills/` subtree, not the whole repository.
-- `skill install <name>` copies a cached skill into the runtime convention dir —
-  `.claude/skills/<name>/` (Claude Code) or, with `--runtime gemini`,
-  `.gemini/skills/<name>/`; `--global` installs at the user level. It places skill
-  files only; it does **not** write the workspace JSON (the assignment) — that is
-  `shoka-workspace-setup`'s job.
+  (`github.com/sopranoworks/shoka`, its `skills/` subtree) — no repo URL to supply;
+  pass `--repo <url-or-path>` only to override (a fork or a local checkout). It
+  fetches just the `skills/` subtree, not the whole repository.
+- `skill install` (no name) installs **every** skill in the synced cache into the
+  runtime convention dir — `.claude/skills/<name>/` (Claude Code) or, with
+  `--runtime gemini`, `.gemini/skills/<name>/`; `--global` installs at the user
+  level. It places skill files only; it does **not** write the workspace JSON.
+  (`skill install <name> …` installs only the named skills, for the rare targeted
+  case; `skill list` shows the set.)
 - `skill outdated` / `skill upgrade` show and re-apply skills whose cached content
   has changed.
 
 The skills are distributed by a runtime clone of the public repo, **not** bundled
-in the `.deb` — installing Shoka does not place them; run `skill install` to get them.
+in the `.deb` — installing Shoka does not place them; run `skill install` (or
+`init`) to get them.
 
 ## Sources
 
