@@ -46,8 +46,8 @@ type AccountInfoPayload struct {
 // returns false. It enforces that a user store is wired AND the connection carries a
 // session principal (a logged-in user). The no-lockout single-operator path has no
 // account record, so "My Account" is only meaningful once signed in.
-func (m *Manager) selfRecord(client *wsClient) (*userstore.UserRecord, bool) {
-	if !m.usersAvailable(client) {
+func (h *CoreHandlers) selfRecord(client *wsClient) (*userstore.UserRecord, bool) {
+	if !h.usersAvailable(client) {
 		return nil, false
 	}
 	email := client.selfEmail()
@@ -55,7 +55,7 @@ func (m *Manager) selfRecord(client *wsClient) (*userstore.UserRecord, bool) {
 		client.sendError("you are not signed in")
 		return nil, false
 	}
-	rec, err := m.users.GetUser(email)
+	rec, err := h.users.GetUser(email)
 	if err != nil {
 		client.sendError("your account could not be loaded")
 		return nil, false
@@ -75,8 +75,8 @@ func accountInfo(rec *userstore.UserRecord) AccountInfoPayload {
 }
 
 // handleAccountGet returns the acting user's OWN account info (never a secret).
-func (m *Manager) handleAccountGet(client *wsClient) {
-	rec, ok := m.selfRecord(client)
+func (h *CoreHandlers) handleAccountGet(client *wsClient) {
+	rec, ok := h.selfRecord(client)
 	if !ok {
 		return
 	}
@@ -85,8 +85,8 @@ func (m *Manager) handleAccountGet(client *wsClient) {
 
 // handleAccountSetName changes the acting user's display name (non-empty). It acts on
 // the session identity only — the payload has no target email.
-func (m *Manager) handleAccountSetName(client *wsClient, payload json.RawMessage) {
-	rec, ok := m.selfRecord(client)
+func (h *CoreHandlers) handleAccountSetName(client *wsClient, payload json.RawMessage) {
+	rec, ok := h.selfRecord(client)
 	if !ok {
 		return
 	}
@@ -101,7 +101,7 @@ func (m *Manager) handleAccountSetName(client *wsClient, payload json.RawMessage
 		return
 	}
 	rec.DisplayName = name
-	if err := m.users.PutUser(rec); err != nil {
+	if err := h.users.PutUser(rec); err != nil {
 		client.sendError("could not save your name")
 		return
 	}
@@ -113,8 +113,8 @@ func (m *Manager) handleAccountSetName(client *wsClient, payload json.RawMessage
 // persists. It acts on the session identity only (no target email). The current
 // session stays valid; other sessions are deliberately NOT invalidated (operator
 // floor). No password value is ever logged.
-func (m *Manager) handleAccountSetPassword(client *wsClient, payload json.RawMessage) {
-	rec, ok := m.selfRecord(client)
+func (h *CoreHandlers) handleAccountSetPassword(client *wsClient, payload json.RawMessage) {
+	rec, ok := h.selfRecord(client)
 	if !ok {
 		return
 	}
@@ -138,7 +138,7 @@ func (m *Manager) handleAccountSetPassword(client *wsClient, payload json.RawMes
 		return
 	}
 	rec.PasswordHash = hash
-	if err := m.users.PutUser(rec); err != nil {
+	if err := h.users.PutUser(rec); err != nil {
 		client.sendError("could not save your new password")
 		return
 	}
