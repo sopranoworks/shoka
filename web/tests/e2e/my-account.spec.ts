@@ -13,8 +13,8 @@ import { join } from 'node:path'
 // succeeds; the OLD one fails) — plus visibility (a non-admin sees My Account but NOT
 // the admin-only pages; an admin sees all).
 
-const PORT = 8088
-const MCP_PORT = 8087
+const PORT = 8100
+const MCP_PORT = 8101
 const BASE = `http://localhost:${PORT}`
 
 const ADMIN_EMAIL = 'admin@example.com'

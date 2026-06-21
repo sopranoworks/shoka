@@ -170,10 +170,17 @@ const (
 	MsgAdminListUsers      MessageType = "ADMIN_LIST_USERS"
 	MsgAdminSetUserScope   MessageType = "ADMIN_SET_USER_SCOPE"
 	MsgAdminSetUserEnabled MessageType = "ADMIN_SET_USER_ENABLED"
-	MsgAdminRemoveUser     MessageType = "ADMIN_REMOVE_USER"
-	MsgAdminCreateInvite   MessageType = "ADMIN_CREATE_INVITE"
-	MsgAdminListInvites    MessageType = "ADMIN_LIST_INVITES"
-	MsgAdminRevokeInvite   MessageType = "ADMIN_REVOKE_INVITE"
+	// MsgAdminSetUserPassword resets a target user's password (the admin recovery for a
+	// forgotten password — B-28 password recovery case 1). Admin-gated like the other
+	// ADMIN_* ops; argon2id re-hash; on success the target's sessions are dropped and
+	// their OAuth revoked, forcing a re-login. Unlike the destructive ops it has NO
+	// isSelf refusal — an admin may reset their own password — but its value is for
+	// OTHER users (a locked-out SOLE admin uses the server startup-flag reset instead).
+	MsgAdminSetUserPassword MessageType = "ADMIN_SET_USER_PASSWORD"
+	MsgAdminRemoveUser      MessageType = "ADMIN_REMOVE_USER"
+	MsgAdminCreateInvite    MessageType = "ADMIN_CREATE_INVITE"
+	MsgAdminListInvites     MessageType = "ADMIN_LIST_INVITES"
+	MsgAdminRevokeInvite    MessageType = "ADMIN_REVOKE_INVITE"
 	// Self-service "My Account" ops (B-28) — the per-user account page, reachable by
 	// ANY authenticated user for THEIR OWN account (read-level, global in wsLevels —
 	// NOT admin-gated, unlike the ADMIN_*/OAUTH_* pages). Self-access is STRUCTURAL:
@@ -569,6 +576,9 @@ type UserAdminStore interface {
 	// persist a name or re-hashed password). *userstore.Store already satisfies them.
 	GetUser(email string) (*userstore.UserRecord, error)
 	PutUser(rec *userstore.UserRecord) error
+	// SetUserPassword resets a target's password hash and drops their sessions in one
+	// tx (the admin reset, case 1). *userstore.Store already satisfies it.
+	SetUserPassword(email, passwordHash string) error
 }
 
 // Administrator authorization for the OAUTH_* management requests is enforced by the
@@ -729,13 +739,14 @@ var wsLevels = map[MessageType]wsOp{
 	MsgAccountSetName:     {authz.LevelRead, true},
 	MsgAccountSetPassword: {authz.LevelRead, true},
 
-	MsgAdminListUsers:      {authz.LevelAdmin, true},
-	MsgAdminSetUserScope:   {authz.LevelAdmin, true},
-	MsgAdminSetUserEnabled: {authz.LevelAdmin, true},
-	MsgAdminRemoveUser:     {authz.LevelAdmin, true},
-	MsgAdminCreateInvite:   {authz.LevelAdmin, true},
-	MsgAdminListInvites:    {authz.LevelAdmin, true},
-	MsgAdminRevokeInvite:   {authz.LevelAdmin, true},
+	MsgAdminListUsers:       {authz.LevelAdmin, true},
+	MsgAdminSetUserScope:    {authz.LevelAdmin, true},
+	MsgAdminSetUserEnabled:  {authz.LevelAdmin, true},
+	MsgAdminSetUserPassword: {authz.LevelAdmin, true},
+	MsgAdminRemoveUser:      {authz.LevelAdmin, true},
+	MsgAdminCreateInvite:    {authz.LevelAdmin, true},
+	MsgAdminListInvites:     {authz.LevelAdmin, true},
+	MsgAdminRevokeInvite:    {authz.LevelAdmin, true},
 
 	// Health read = admin-somewhere (global admin target; the handler filters to the
 	// principal's admin namespaces). Recovery = admin on the target namespace (the handler
@@ -964,6 +975,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleAdminSetUserScope(client, wsMsg.Payload)
 		case MsgAdminSetUserEnabled:
 			m.handleAdminSetUserEnabled(client, wsMsg.Payload)
+		case MsgAdminSetUserPassword:
+			m.handleAdminSetUserPassword(client, wsMsg.Payload)
 		case MsgAdminRemoveUser:
 			m.handleAdminRemoveUser(client, wsMsg.Payload)
 		case MsgAdminCreateInvite:

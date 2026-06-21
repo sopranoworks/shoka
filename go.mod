@@ -15,6 +15,7 @@ require (
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.20.0
+	golang.org/x/term v0.43.0
 	google.golang.org/api v0.277.0
 	google.golang.org/genproto v0.0.0-20260504160031-60b97b32f348
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1

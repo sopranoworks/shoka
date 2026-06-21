@@ -5,6 +5,7 @@ import {
   listInvites,
   setUserScope,
   setUserEnabled,
+  setUserPassword,
   removeUser,
   createInvite,
   revokeInvite,
@@ -39,6 +40,7 @@ export function UserManagementPage() {
   )
 
   const [editing, setEditing] = useState<string | null>(null)
+  const [resetting, setResetting] = useState<string | null>(null)
 
   function refreshUsers() {
     void qc.invalidateQueries({ queryKey: ['admin-users'] })
@@ -53,6 +55,16 @@ export function UserManagementPage() {
       toast({ level: 'warn', text: `Updated permissions for ${email}.` })
       setEditing(null)
       refreshUsers()
+    } catch (e) {
+      toast({ level: 'warn', text: msg(e) })
+    }
+  }
+
+  async function onResetPassword(email: string, password: string) {
+    try {
+      await setUserPassword(email, password)
+      toast({ level: 'warn', text: `Reset the password for ${email} — their sessions and MCP tokens are revoked.` })
+      setResetting(null)
     } catch (e) {
       toast({ level: 'warn', text: msg(e) })
     }
@@ -114,9 +126,21 @@ export function UserManagementPage() {
                   user={u}
                   namespaces={namespaces}
                   editing={editing === u.email}
-                  onEdit={() => setEditing(u.email)}
-                  onCancel={() => setEditing(null)}
+                  resetting={resetting === u.email}
+                  onEdit={() => {
+                    setResetting(null)
+                    setEditing(u.email)
+                  }}
+                  onResetOpen={() => {
+                    setEditing(null)
+                    setResetting(u.email)
+                  }}
+                  onCancel={() => {
+                    setEditing(null)
+                    setResetting(null)
+                  }}
                   onSave={(scope) => onSaveScope(u.email, scope)}
+                  onSavePassword={(pw) => onResetPassword(u.email, pw)}
                   onRemove={() => onRemove(u.email)}
                   onToggleEnabled={() => onToggleEnabled(u.email, u.disabled)}
                 />
@@ -140,21 +164,28 @@ function UserRow({
   user,
   namespaces,
   editing,
+  resetting,
   onEdit,
+  onResetOpen,
   onCancel,
   onSave,
+  onSavePassword,
   onRemove,
   onToggleEnabled,
 }: {
   user: UserInfo
   namespaces: string[]
   editing: boolean
+  resetting: boolean
   onEdit: () => void
+  onResetOpen: () => void
   onCancel: () => void
   onSave: (scope: string) => void
+  onSavePassword: (password: string) => void
   onRemove: () => void
   onToggleEnabled: () => void
 }) {
+  const open = editing || resetting
   return (
     <>
       <tr>
@@ -165,10 +196,13 @@ function UserRow({
           {user.disabled ? <span className={styles.disabled}>Disabled</span> : 'Active'}
         </td>
         <td className={styles.actions}>
-          {!editing && (
+          {!open && (
             <>
               <button className={styles.btn} onClick={onEdit}>
                 Edit permissions
+              </button>
+              <button className={styles.btn} onClick={onResetOpen}>
+                Reset password
               </button>
               <button
                 className={styles.btn}
@@ -196,7 +230,84 @@ function UserRow({
           </td>
         </tr>
       )}
+      {resetting && (
+        <tr>
+          <td colSpan={5}>
+            <PasswordResetEditor email={user.email} onCancel={onCancel} onSave={onSavePassword} />
+          </td>
+        </tr>
+      )}
     </>
+  )
+}
+
+// PasswordResetEditor is the admin's per-user "Reset password" form (B-28 case 1). It
+// mirrors the My Account reset discipline: labelled new-password + confirm fields,
+// disabled-until-valid, no existing password ever shown. The server re-hashes argon2id,
+// drops the target's sessions, and revokes their OAuth.
+const MIN_PASSWORD_LEN = 8
+
+function PasswordResetEditor({
+  email,
+  onCancel,
+  onSave,
+}: {
+  email: string
+  onCancel: () => void
+  onSave: (password: string) => void
+}) {
+  const [pw, setPw] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const tooShort = pw.length > 0 && pw.length < MIN_PASSWORD_LEN
+  const mismatch = confirm.length > 0 && pw !== confirm
+  const canSave = pw.length >= MIN_PASSWORD_LEN && pw === confirm
+
+  return (
+    <div className={styles.editor} aria-label="Reset password">
+      <div className={styles.editorRow}>
+        <label className={styles.muted} htmlFor={`reset-pw-${email}`}>
+          New password for {email}
+        </label>
+      </div>
+      <div className={styles.editorRow}>
+        <input
+          id={`reset-pw-${email}`}
+          className={`${styles.nsInput} ${tooShort ? styles.invalid : ''}`}
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          aria-label="new password"
+          aria-invalid={tooShort || undefined}
+          autoComplete="new-password"
+        />
+        <input
+          className={`${styles.nsInput} ${mismatch ? styles.invalid : ''}`}
+          type="password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          aria-label="confirm new password"
+          aria-invalid={mismatch || undefined}
+          autoComplete="new-password"
+          placeholder="confirm"
+        />
+      </div>
+      {tooShort && <p className={styles.warn}>Password must be at least {MIN_PASSWORD_LEN} characters.</p>}
+      {mismatch && <p className={styles.warn}>The passwords do not match.</p>}
+      <div className={styles.editorActions}>
+        <span className={styles.spacer} />
+        <button className={styles.btn} onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          className={`${styles.btn} ${styles.primary}`}
+          disabled={!canSave}
+          onClick={() => onSave(pw)}
+          title={!canSave ? 'enter a matching new password (min 8 chars)' : undefined}
+        >
+          Reset password
+        </button>
+      </div>
+    </div>
   )
 }
 

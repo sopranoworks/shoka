@@ -34,6 +34,11 @@ type adminSetEnabledRequest struct {
 	Enabled bool   `json:"enabled"`
 }
 
+type adminSetPasswordRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 type adminCreateInviteRequest struct {
 	Email    string `json:"email"`
 	Scope    string `json:"scope"`
@@ -172,6 +177,45 @@ func (m *Manager) revokeOAuthForUser(email string) {
 	if _, err := m.oauth.RevokeByPrincipalEmail(email); err != nil {
 		log.Printf("oauth revoke for disabled/removed user failed: %v", err)
 	}
+}
+
+// handleAdminSetUserPassword resets a target user's password (B-28 password recovery
+// case 1: an admin recovers any user who forgot, EXCEPT a locked-out sole admin — that
+// is the server startup-flag's job). Admin-gated by the dispatch gate. It re-hashes the
+// new password (argon2id, shared ValidatePassword policy) and, via SetUserPassword,
+// drops the target's sessions in the same tx; it then revokes their OAuth (cross-store),
+// so the user must re-login with the new password. NO isSelf refusal — an admin may
+// reset their own password — but the existing password hash is never returned.
+func (m *Manager) handleAdminSetUserPassword(client *wsClient, payload json.RawMessage) {
+	if !m.usersAvailable(client) {
+		return
+	}
+	var p adminSetPasswordRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.sendError("Invalid payload for ADMIN_SET_USER_PASSWORD")
+		return
+	}
+	if p.Email == "" {
+		client.sendError("ADMIN_SET_USER_PASSWORD requires an email")
+		return
+	}
+	if err := userstore.ValidatePassword(p.Password); err != nil {
+		client.sendError(err.Error())
+		return
+	}
+	hash, err := userstore.HashPassword(p.Password)
+	if err != nil {
+		client.sendError("could not hash the new password")
+		return
+	}
+	if err := m.users.SetUserPassword(p.Email, hash); err != nil {
+		client.sendError(fmt.Sprintf("Failed to reset password: %v", err))
+		return
+	}
+	// Cross-store: revoke the user's OAuth/MCP token series so a reset also cuts any
+	// live token (mirrors the disable/remove cascade).
+	m.revokeOAuthForUser(p.Email)
+	client.sendResponse(MsgAdminSetUserPassword, AdminAckPayload{Status: "ok"})
 }
 
 func (m *Manager) handleAdminRemoveUser(client *wsClient, payload json.RawMessage) {

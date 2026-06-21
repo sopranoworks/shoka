@@ -41,6 +41,13 @@ export function setUserEnabled(email: string, enabled: boolean): Promise<{ statu
   return wsClient().request('ADMIN_SET_USER_ENABLED', { email, enabled })
 }
 
+// setUserPassword resets a user's password (B-28 password recovery case 1). Admin-gated
+// server-side; the server re-hashes (argon2id), drops the target's sessions, and revokes
+// their OAuth — they must re-login with the new password. Never sends/returns a hash.
+export function setUserPassword(email: string, password: string): Promise<{ status: string }> {
+  return wsClient().request('ADMIN_SET_USER_PASSWORD', { email, password })
+}
+
 export function removeUser(email: string): Promise<{ status: string }> {
   return wsClient().request('ADMIN_REMOVE_USER', { email })
 }

@@ -134,6 +134,68 @@ func (s *Store) SetUserDisabled(email string, disabled bool) error {
 	})
 }
 
+// SetUserPassword overwrites a user's password hash and, in the SAME transaction,
+// drops every live session bound to that user — forcing a re-login with the new
+// password. The caller supplies the already-hashed PHC string (argon2id), keeping the
+// store policy-agnostic (HashPassword/ValidatePassword live at the call site). Returns
+// ErrNotFound if the user does not exist. This is the shared primitive behind BOTH the
+// admin reset ws op (case 1) and the operator-local startup-flag reset (case 2). The
+// caller is responsible for any cross-store cleanup (OAuth token revocation) since
+// oauthstore is separate.
+func (s *Store) SetUserPassword(email, passwordHash string) error {
+	key := normalizeEmail(email)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(usersBucket))
+		v := b.Get([]byte(key))
+		if v == nil {
+			return ErrNotFound
+		}
+		var rec UserRecord
+		if err := json.Unmarshal(v, &rec); err != nil {
+			return fmt.Errorf("userstore: decode user: %w", err)
+		}
+		rec.PasswordHash = passwordHash
+		rec.UpdatedAt = time.Now()
+		val, err := json.Marshal(&rec)
+		if err != nil {
+			return fmt.Errorf("userstore: encode user: %w", err)
+		}
+		if err := b.Put([]byte(key), val); err != nil {
+			return err
+		}
+		return dropSessionsTx(tx, key)
+	})
+}
+
+// ClearTOTP removes a user's enrolled TOTP secret (the operator-local "lost my
+// authenticator" recovery) and drops their live sessions in the SAME transaction, so
+// the next login proceeds on the password floor alone. Returns ErrNotFound if unknown.
+// Idempotent: clearing an already-unenrolled user is a no-op write.
+func (s *Store) ClearTOTP(email string) error {
+	key := normalizeEmail(email)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(usersBucket))
+		v := b.Get([]byte(key))
+		if v == nil {
+			return ErrNotFound
+		}
+		var rec UserRecord
+		if err := json.Unmarshal(v, &rec); err != nil {
+			return fmt.Errorf("userstore: decode user: %w", err)
+		}
+		rec.TOTPSecretEnc = nil
+		rec.UpdatedAt = time.Now()
+		val, err := json.Marshal(&rec)
+		if err != nil {
+			return fmt.Errorf("userstore: encode user: %w", err)
+		}
+		if err := b.Put([]byte(key), val); err != nil {
+			return err
+		}
+		return dropSessionsTx(tx, key)
+	})
+}
+
 // dropSessionsTx deletes every session bound to the (already-normalized) email key,
 // in the given transaction. Keys are collected during the scan and deleted after it,
 // never mutating the bucket mid-iteration (the DeleteDeadSeries discipline).

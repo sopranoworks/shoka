@@ -379,3 +379,48 @@ test('Improvement 4: the copy button copies the invite code', async ({ page }) =
   const copied = await page.evaluate(() => (window as unknown as { __copied: string[] }).__copied)
   expect(copied).toContain(code)
 })
+
+// B-28 password recovery case 1: an admin resets another user's password through the
+// User-management UI; the user then signs in with the NEW password (the old one fails).
+test('admin resets another user\'s password → user signs in with the new one', async ({ page }) => {
+  const RESET_USER = 'resetme@example.com'
+  const ORIG_PW = 'secondpw1234' // createSecondUser redeems with this password
+  const NEW_PW = 'adminresetpw12'
+
+  await loginOrRegister(page, { accept: false })
+  await createSecondUser(page, RESET_USER) // leaves us in the admin session
+  await openUserManagement(page)
+
+  // Open the user's row and reset their password through the inline editor.
+  const row = page.getByRole('row', { name: new RegExp(RESET_USER) })
+  await row.getByRole('button', { name: 'Reset password' }).click()
+  const editor = page.getByLabel('Reset password') // the editor container (aria-label)
+  await editor.getByLabel('new password', { exact: true }).fill(NEW_PW)
+  await editor.getByLabel('confirm new password').fill(NEW_PW)
+  await editor.getByRole('button', { name: 'Reset password' }).click()
+  // The editor closes on success (the row's action buttons return).
+  await expect(row.getByRole('button', { name: 'Reset password' })).toBeVisible({ timeout: 15000 })
+
+  // The user signs in with the NEW password.
+  await page.context().clearCookies()
+  await page.goto(BASE)
+  await expect(page.getByRole('heading', { name: 'Sign in to Shoka' })).toBeVisible({ timeout: 15000 })
+  await page.locator('#lg-email').fill(RESET_USER)
+  await page.locator('#lg-pw').fill(NEW_PW)
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Sign in to Shoka' })).toBeHidden({ timeout: 15000 })
+  const ok = await page.evaluate(async () => (await fetch('/auth/status')).json())
+  expect(ok.authenticated).toBe(true)
+  expect(ok.principal.email).toBe(RESET_USER)
+
+  // The OLD password no longer works.
+  await page.context().clearCookies()
+  await page.goto(BASE)
+  await expect(page.getByRole('heading', { name: 'Sign in to Shoka' })).toBeVisible({ timeout: 15000 })
+  await page.locator('#lg-email').fill(RESET_USER)
+  await page.locator('#lg-pw').fill(ORIG_PW)
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Sign in to Shoka' })).toBeVisible()
+  const fail = await page.evaluate(async () => (await fetch('/auth/status')).json())
+  expect(fail.authenticated).toBe(false)
+})

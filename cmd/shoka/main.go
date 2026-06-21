@@ -68,6 +68,13 @@ func main() {
 	configPath := flag.String("config", "shoka.yaml", "Path to configuration file")
 	configCheck := flag.Bool("config-check", false, "Load and validate the config (strict — unknown/misplaced keys are errors), print 'config OK' or the exact error, and EXIT without starting the server or binding any port (Apache configtest-style).")
 	profileAddr := flag.String("profile-addr", "", "If set, serve net/http/pprof on this loopback address (e.g. localhost:9060). Empty disables profiling.")
+	// B-28 password recovery (case 2): operator-local account recovery as a SERVER
+	// STARTUP MODE (the MySQL --init-file model — act, then EXIT without serving; NOT
+	// --skip-grant-tables, no auth-disabled window). The new password is prompted on the
+	// TTY/stdin, NEVER passed as a flag value. Runs only with the server stopped (the
+	// userstore is single-writer). Authorization = whoever can start the server binary.
+	resetPassword := flag.String("reset-password", "", "Operator-local recovery: reset this account's password (prompted on the TTY — never an argument), then EXIT without serving. Run with the server stopped.")
+	clearTOTP := flag.String("clear-2fa", "", "Operator-local recovery: clear this account's two-factor (TOTP), then EXIT without serving. Run with the server stopped.")
 	flag.Parse()
 
 	// B-58 config dry-run: validate the config and exit, binding no port and starting
@@ -102,6 +109,19 @@ func main() {
 	// Closed last (registered before s.Close/stop) so every shutdown log line —
 	// including "servers shut down gracefully" — still reaches the destination.
 	defer logDest.Close()
+
+	// B-28 password recovery (case 2): the operator-local reset startup mode. It opens
+	// the userstore directly, resets/clears the named account (password prompted on the
+	// TTY/stdin — never argv), and EXITS WITHOUT SERVING — no listener is bound, and no
+	// auth-disabled window is opened (the --init-file model). It must run with the server
+	// stopped (bbolt single-writer); a held lock yields a "stop the server first" error.
+	if *resetPassword != "" || *clearTOTP != "" {
+		if err := runUserReset(cfg, *resetPassword, *clearTOTP, os.Stdin, logger); err != nil {
+			fmt.Fprintln(os.Stderr, "reset failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Setup context with signal handling
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
