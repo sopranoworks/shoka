@@ -60,7 +60,7 @@ func TestMCPTools_Integration(t *testing.T) {
 		input := tools.WriteFileInput{
 			Namespace:   "tool-ns",
 			ProjectName: "tool-project",
-			Path:        "test.txt",
+			Path:        "test.md",
 			Content:     "hello from tool",
 		}
 		res, output, err := handler(ctx, nil, input)
@@ -75,7 +75,7 @@ func TestMCPTools_Integration(t *testing.T) {
 		}
 
 		// Verify file content
-		content, err := s.ReadFile("tool-ns", "tool-project", "test.txt")
+		content, err := s.ReadFile("tool-ns", "tool-project", "test.md")
 		if err != nil {
 			t.Fatalf("failed to read file: %v", err)
 		}
@@ -90,7 +90,7 @@ func TestMCPTools_Integration(t *testing.T) {
 		input := tools.ReadFileInput{
 			Namespace:   "tool-ns",
 			ProjectName: "tool-project",
-			Path:        "test.txt",
+			Path:        "test.md",
 		}
 		res, output, err := handler(ctx, nil, input)
 		if err != nil {

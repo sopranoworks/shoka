@@ -13,14 +13,15 @@ import (
 	"strings"
 )
 
-// allowedExts is the CLOSED set of file extensions accepted on the base64 ingest
-// path (content_encoding="base64"). It admits only the formats a coding agent can
-// actually consume — markdown / json / yaml — and rejects everything else,
-// including extensionless paths, so a binary "foreign object" an agent cannot use
-// is refused at the boundary. Extension-based and case-insensitive; no content
-// sniffing (predictable, no guessing). The restriction is scoped to the base64
-// ingest path only — a plain (utf8) write is unaffected (operator-confirmed
-// 2026-06-05, B-46c).
+// allowedExts is the CLOSED set of file extensions accepted on EVERY write that
+// flows through DecodeContent — both the default utf8 path and the base64 ingest
+// path. It admits only the formats a coding agent can actually consume — markdown
+// / json / yaml — and rejects everything else, including extensionless paths, so a
+// file an agent cannot use is refused at the boundary regardless of encoding.
+// Extension-based and case-insensitive; no content sniffing (predictable, no
+// guessing). The restriction binds every client using write_file (and the web
+// SAVE_FILE), as B-46c's directive instructed: the earlier base64-only scoping was
+// a defect, corrected 2026-06-22 so the utf8 (default) path is gated too.
 var allowedExts = map[string]bool{
 	".md":       true,
 	".markdown": true,
@@ -40,18 +41,22 @@ func IsAllowedFormat(path string) bool {
 }
 
 // DecodeContent resolves a write's content to the raw bytes to store, honouring
-// encoding. For the base64 ingest path it first enforces the format allowlist (so
-// the restriction binds every client server-side), then decodes. It returns the
-// bytes to write, or a user-facing message + structured reason when the input is
-// rejected (caller turns these into an error result). ok is false on rejection.
+// encoding. For BOTH the utf8 (default) and base64 paths it first enforces the
+// format allowlist (so the restriction binds every client server-side, on every
+// write), then — for base64 — decodes. It returns the bytes to write, or a
+// user-facing message + structured reason when the input is rejected (caller turns
+// these into an error result). ok is false on rejection.
 //
-// Reason values on rejection: "format_rejected" (base64 path, extension outside
-// the allowlist) and "invalid_encoding" (an unknown content_encoding, or
+// Reason values on rejection: "format_rejected" (utf8 or base64 path, extension
+// outside the allowlist) and "invalid_encoding" (an unknown content_encoding, or
 // malformed base64 content).
 func DecodeContent(path, content, encoding string) (out, msg, reason string, ok bool) {
 	switch encoding {
 	case "", "utf8":
-		// Literal text — the default behaviour, unchanged.
+		if !IsAllowedFormat(path) {
+			return "", fmt.Sprintf("unsupported file format for ingest: %q; allowed formats are %s", path, AllowedFormats), "format_rejected", false
+		}
+		// Literal text — the default behaviour, now gated by the same allowlist.
 		return content, "", "", true
 	case "base64":
 		if !IsAllowedFormat(path) {

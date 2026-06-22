@@ -173,25 +173,37 @@ func TestWriteFileHandler_UnsupportedEncodingRejected(t *testing.T) {
 	}
 }
 
-// TestWriteFileHandler_PlainWriteUnaffectedByAllowlist: a plain (utf8) write is
-// NOT gated by the allowlist — the restriction is scoped to the base64 ingest
-// path only (operator-confirmed). A .txt plain write still succeeds.
-func TestWriteFileHandler_PlainWriteUnaffectedByAllowlist(t *testing.T) {
+// TestWriteFileHandler_PlainWriteGatedByAllowlist: a plain (utf8) write is gated by
+// the SAME allowlist as base64 — a .txt plain write is rejected with
+// format_rejected and nothing is written (2026-06-22 utf8-ingest-gate fix; the
+// earlier "plain write unaffected" behaviour was the defect). An allowlisted .md
+// plain write still succeeds.
+func TestWriteFileHandler_PlainWriteGatedByAllowlist(t *testing.T) {
 	s := newWriteStorage(t)
 	h := WriteFileHandler(s)
 	for _, enc := range []string{"", "utf8"} {
-		res, _, err := h(context.Background(), nil, WriteFileInput{
+		res, out, err := h(context.Background(), nil, WriteFileInput{
 			Namespace: "ns", ProjectName: "proj", Path: "plain.txt",
 			Content: "hello\n", ContentEncoding: enc,
 		})
 		if err != nil {
 			t.Fatalf("handler err (encoding=%q): %v", enc, err)
 		}
-		if res != nil && res.IsError {
-			t.Fatalf("encoding=%q: plain .txt write must succeed, got error %+v", enc, res)
+		if res == nil || !res.IsError {
+			t.Fatalf("encoding=%q: plain .txt write must be rejected", enc)
+		}
+		if out.Reason != "format_rejected" {
+			t.Fatalf("encoding=%q: want reason format_rejected, got %q", enc, out.Reason)
 		}
 	}
-	got, _, _ := s.ReadFileWithETag("ns", "proj", "plain.txt")
+	// An allowlisted plain (utf8) write still succeeds and is stored verbatim.
+	res, _, err := h(context.Background(), nil, WriteFileInput{
+		Namespace: "ns", ProjectName: "proj", Path: "doc.md", Content: "hello\n",
+	})
+	if err != nil || (res != nil && res.IsError) {
+		t.Fatalf("allowlisted .md plain write must succeed, got err=%v res=%+v", err, res)
+	}
+	got, _, _ := s.ReadFileWithETag("ns", "proj", "doc.md")
 	if got != "hello\n" {
 		t.Fatalf("got %q, want %q", got, "hello\n")
 	}

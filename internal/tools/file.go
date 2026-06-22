@@ -128,9 +128,9 @@ type WriteFileInput struct {
 	// decodes 'content' from standard base64 to raw bytes before writing — use it
 	// for byte-faithful ingest of an existing file (e.g. shoka-cli file add), since
 	// base64 is pure ASCII and survives the JSON wire intact where genuinely
-	// non-UTF-8 bytes would otherwise be silently mangled. When "base64", the
-	// destination path's format is restricted to markdown/json/yaml.
-	ContentEncoding string `json:"content_encoding,omitempty" jsonschema:"optional, the encoding of 'content': 'utf8' (default) is literal text; 'base64' decodes content from base64 to raw bytes before writing (byte-faithful ingest). When 'base64', the path must be a markdown/json/yaml file (.md/.markdown/.json/.yaml/.yml)."`
+	// non-UTF-8 bytes would otherwise be silently mangled. Regardless of encoding,
+	// the destination path's format is restricted to markdown/json/yaml.
+	ContentEncoding string `json:"content_encoding,omitempty" jsonschema:"optional, the encoding of 'content': 'utf8' (default) is literal text; 'base64' decodes content from base64 to raw bytes before writing (byte-faithful ingest). The path must be a markdown/json/yaml file (.md/.markdown/.json/.yaml/.yml) regardless of encoding."`
 }
 
 // The base64 decode + closed markdown/json/yaml allowlist used on the ingest

@@ -117,7 +117,7 @@ func (s *FSGitStorage) fixLinksRewriteReferrer(ctx context.Context, namespace, p
 		return // already correct / no longer references src — nothing to do
 	}
 	expected := sha256Hex(data)
-	_, werr := s.writeTransformed(ctx, "", namespace, projectName, ref, &expected,
+	_, werr := s.writeTransformed(ctx, "", namespace, projectName, ref, &expected, false,
 		func(current []byte) ([]byte, error) {
 			// if_match=expected guarantees current == data, so this re-rewrite under
 			// the lock equals the one checked above; recomputing keeps the rewrite a

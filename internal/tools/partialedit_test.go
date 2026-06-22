@@ -52,6 +52,26 @@ func TestAppendToFileHandler_EndSuccess(t *testing.T) {
 	}
 }
 
+// TestAppendToFileHandler_AbsentPathIsErrorAndCreatesNothing: append_to_file to a
+// path that does not exist is an error result and creates no file — creation is
+// write_file's job (where the allowlist is enforced). (2026-06-22 no-create fix.)
+func TestAppendToFileHandler_AbsentPathIsErrorAndCreatesNothing(t *testing.T) {
+	s := newPartialEditStorage(t)
+	h := AppendToFileHandler(s)
+	res, _, err := h(context.Background(), nil, AppendToFileInput{
+		Namespace: "ns", ProjectName: "proj", Path: "ghost.md", Content: "x\n",
+	})
+	if err != nil {
+		t.Fatalf("handler err: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatal("append to an absent path must be an error result")
+	}
+	if _, _, rerr := s.ReadFileWithETag("ns", "proj", "ghost.md"); rerr == nil {
+		t.Fatal("append must not have created the file")
+	}
+}
+
 func TestAppendToFileHandler_AmbiguousAnchorIsError(t *testing.T) {
 	s := newPartialEditStorage(t)
 	if _, err := s.Write(context.Background(), "", "ns", "proj", "j.md", "x\nx\n", nil); err != nil {

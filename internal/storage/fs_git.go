@@ -624,7 +624,7 @@ func ifMatchPtr(expected string) *string {
 func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectName, path, content string, ifMatch *string) (string, error) {
 	// A plain whole-file write is the identity transform: the new bytes are the
 	// caller's content, regardless of the file's current bytes.
-	return s.writeTransformed(ctx, sessionID, namespace, projectName, path, ifMatch,
+	return s.writeTransformed(ctx, sessionID, namespace, projectName, path, ifMatch, false,
 		func(_ []byte) ([]byte, error) { return []byte(content), nil })
 }
 
@@ -639,7 +639,7 @@ func (s *FSGitStorage) write(ctx context.Context, sessionID, namespace, projectN
 // for a partial edit the only LLM-mediated bytes are whatever it splices in. No
 // new lock, WAL op, commit branch, or NOTIFY kind: append/patch are, to every
 // observer, just file writes.
-func (s *FSGitStorage) writeTransformed(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string, transform func(current []byte) ([]byte, error)) (string, error) {
+func (s *FSGitStorage) writeTransformed(ctx context.Context, sessionID, namespace, projectName, path string, ifMatch *string, requireExisting bool, transform func(current []byte) ([]byte, error)) (string, error) {
 	projectPath, err := s.getProjectPath(namespace, projectName)
 	if err != nil {
 		return "", err
@@ -654,7 +654,14 @@ func (s *FSGitStorage) writeTransformed(ctx context.Context, sessionID, namespac
 
 	var newEtag string
 	lockErr := s.locks.WithLock(ctx, sessionID, fullPath, func() error {
-		current, _ := os.ReadFile(fullPath) // empty if absent
+		current, readErr := os.ReadFile(fullPath) // current is empty if absent
+		// requireExisting (append_to_file): an edit op must not bring a file into
+		// existence — creation is write_file's job (and its allowlist gate). An
+		// append to an absent path is a typed error that writes nothing. The check
+		// is inside the per-file lock, so it cannot race a concurrent create.
+		if requireExisting && os.IsNotExist(readErr) {
+			return ErrFileNotFound
+		}
 		currentEtag := sha256Hex(current)
 		if ifMatch != nil && *ifMatch != currentEtag {
 			return &VersionConflictError{Expected: *ifMatch, Current: currentEtag}

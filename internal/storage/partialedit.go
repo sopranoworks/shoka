@@ -43,6 +43,12 @@ func (e *MatchError) Error() string {
 // are bad arguments, distinct from MatchError (a content mismatch) and from the
 // write-path's VersionConflictError / project-state errors.
 var (
+	// ErrFileNotFound means append_to_file targeted a path that does not exist.
+	// append_to_file edits an EXISTING file; bringing a new file into existence is
+	// write_file's job (which enforces the format allowlist). So an append to an
+	// absent path is a typed error that creates nothing — closing the second
+	// creation path that would otherwise bypass the allowlist (2026-06-22 fix).
+	ErrFileNotFound = errors.New("file not found")
 	// ErrEmptyOldString means patch_file was called with an empty old_string.
 	// An empty needle has no well-defined single match, so it is rejected.
 	ErrEmptyOldString = errors.New("old_string must not be empty")
@@ -121,13 +127,16 @@ func spliceAppend(cur, content []byte, position, anchor string) ([]byte, error) 
 	}
 }
 
-// AppendToFile inserts content into an existing (or new, for position:end) file
-// and returns the new etag, reusing the write_file path verbatim via
-// writeTransformed (per-file lock, if_match, atomic write, one "write" WAL entry,
-// catalog, file.write NOTIFY). The splice runs on the server's faithful bytes
-// under the lock; see spliceAppend for position/anchor semantics. (B-36.)
+// AppendToFile inserts content into an EXISTING file and returns the new etag,
+// reusing the write_file path verbatim via writeTransformed (per-file lock,
+// if_match, atomic write, one "write" WAL entry, catalog, file.write NOTIFY). The
+// splice runs on the server's faithful bytes under the lock; see spliceAppend for
+// position/anchor semantics. It does NOT create a new file: an append to an absent
+// path returns ErrFileNotFound and writes nothing (requireExisting=true) — creating
+// a file is write_file's job, where the format allowlist is enforced. (B-36;
+// 2026-06-22 no-create fix.)
 func (s *FSGitStorage) AppendToFile(ctx context.Context, sessionID, namespace, projectName, path, content, position, anchor string, ifMatch *string) (string, error) {
-	return s.writeTransformed(ctx, sessionID, namespace, projectName, path, ifMatch,
+	return s.writeTransformed(ctx, sessionID, namespace, projectName, path, ifMatch, true,
 		func(current []byte) ([]byte, error) {
 			return spliceAppend(current, []byte(content), position, anchor)
 		})
@@ -138,7 +147,7 @@ func (s *FSGitStorage) AppendToFile(ctx context.Context, sessionID, namespace, p
 // The replace runs on the server's faithful bytes under the lock; see splicePatch
 // for the exactly-once rule and typed errors. (B-36.)
 func (s *FSGitStorage) PatchFile(ctx context.Context, sessionID, namespace, projectName, path, oldString, newString string, ifMatch *string) (string, error) {
-	return s.writeTransformed(ctx, sessionID, namespace, projectName, path, ifMatch,
+	return s.writeTransformed(ctx, sessionID, namespace, projectName, path, ifMatch, false,
 		func(current []byte) ([]byte, error) {
 			return splicePatch(current, oldString, newString)
 		})

@@ -39,6 +39,29 @@ func TestAppendToFile_EndAppendsAndReturnsNewETag(t *testing.T) {
 	}
 }
 
+// TestAppendToFile_AbsentPathErrorsAndCreatesNothing locks the no-create rule:
+// append_to_file edits an EXISTING file only. An append to an absent path returns
+// ErrFileNotFound and writes nothing, for every position — so it cannot be a second
+// creation path bypassing write_file's allowlist (2026-06-22 fix).
+func TestAppendToFile_AbsentPathErrorsAndCreatesNothing(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	if _, err := s.Write(ctx, "sess", "ns", "proj", "seed.md", "x\n", nil); err != nil {
+		t.Fatalf("seed (to create the project): %v", err)
+	}
+	for _, tc := range []struct{ position, anchor string }{
+		{"end", ""}, {"before", "a"}, {"after", "a"},
+	} {
+		_, err := s.AppendToFile(ctx, "sess", "ns", "proj", "ghost.md", "y\n", tc.position, tc.anchor, nil)
+		if !errors.Is(err, ErrFileNotFound) {
+			t.Fatalf("position=%q: want ErrFileNotFound, got %v", tc.position, err)
+		}
+	}
+	if _, _, rerr := s.ReadFileWithETag("ns", "proj", "ghost.md"); rerr == nil {
+		t.Fatalf("append to an absent path must not have created ghost.md")
+	}
+}
+
 func TestAppendToFile_BeforeAnchorInsertsUnderLock(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()

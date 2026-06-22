@@ -82,18 +82,18 @@ func TestPhase5_GetHistorySince_HashExclusive(t *testing.T) {
 	ctx := context.Background()
 	write := tools.WriteFileHandler(s)
 	for _, v := range []string{"v1", "v2", "v3"} {
-		_, _, err := write(ctx, nil, tools.WriteFileInput{Namespace: "ns", ProjectName: "proj", Path: "h.txt", Content: v})
+		_, _, err := write(ctx, nil, tools.WriteFileInput{Namespace: "ns", ProjectName: "proj", Path: "h.md", Content: v})
 		require.NoError(t, err)
 	}
 	drainTool(t, s) // GetHistory is git-backed (async commit)
 
 	history := tools.GetHistoryHandler(s)
-	_, all, err := history(ctx, nil, tools.GetHistoryInput{Namespace: "ns", ProjectName: "proj", Path: "h.txt"})
+	_, all, err := history(ctx, nil, tools.GetHistoryInput{Namespace: "ns", ProjectName: "proj", Path: "h.md"})
 	require.NoError(t, err)
 	require.Len(t, all.History, 3)
 
 	oldest := all.History[2].Hash // history is newest-first
-	_, since, err := history(ctx, nil, tools.GetHistoryInput{Namespace: "ns", ProjectName: "proj", Path: "h.txt", Since: oldest})
+	_, since, err := history(ctx, nil, tools.GetHistoryInput{Namespace: "ns", ProjectName: "proj", Path: "h.md", Since: oldest})
 	require.NoError(t, err)
 	assert.Len(t, since.History, 2, "since the oldest commit (exclusive) should return the 2 newer commits")
 }

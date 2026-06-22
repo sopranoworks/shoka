@@ -31,6 +31,8 @@ func classifyPartialEditErr(err error) (text string, ok bool) {
 		return me.Error(), true
 	}
 	switch {
+	case errors.Is(err, storage.ErrFileNotFound):
+		return "file not found: append_to_file edits an existing file — use write_file to create it", true
 	case errors.Is(err, storage.ErrEmptyOldString):
 		return "old_string must not be empty", true
 	case errors.Is(err, storage.ErrAnchorRequired):
