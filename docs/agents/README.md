@@ -70,6 +70,11 @@ automatically.
   case; `skill list` shows the set.)
 - `skill outdated` / `skill upgrade` show and re-apply skills whose cached content
   has changed.
+- `skill make-current` does it in **one step** — refresh from the source, upgrade
+  drifted skills, and prune skills removed upstream — so you never run
+  `update`+`upgrade` by hand or think about the cache. `skill prune` removes
+  skills deleted upstream on its own; it only removes skills Shoka distributed
+  (verified by the `.skill-meta.yaml` signature), never your own.
 
 The skills are distributed by a runtime clone of the public repo, **not** bundled
 in the `.deb` — installing Shoka does not place them; run `skill install` (or

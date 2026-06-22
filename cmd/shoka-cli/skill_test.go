@@ -6,64 +6,61 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/skillcache"
+	"github.com/sopranoworks/skilldist/skillmeta"
 )
 
-// TestSkillAptCycle proves the apt-model skill distribution end to end against a
-// LOCAL THROWAWAY git repository as the remote (no real remote, no deployment
-// detail): the actual cmdSkill subcommands clone the remote into the cache, copy
-// a skill into a runtime convention dir, detect drift after the remote changes,
-// and upgrade. The fetch is the git binary (os/exec) — there is no go-git here,
-// keeping cmd/shoka-cli archlint-clean (Anchor 2).
+// These tests drive the actual cmdSkill subcommands against a LOCAL THROWAWAY git
+// repository as the source (no real remote, no network egress). The machinery now
+// lives in the reusable github.com/sopranoworks/skilldist library; this file
+// exercises the Shoka CLI layer + its injected Config (skilldist.go). The fetch is
+// the git binary (os/exec) — no go-git, keeping cmd/shoka-cli archlint-clean.
+
+// TestSkillAptCycle: update (narrow, source-namespaced cache) -> install -> no
+// drift -> change source -> re-update -> outdated -> upgrade -> no drift, plus the
+// gemini runtime. Behaviour-preserving for the existing verbs.
 func TestSkillAptCycle(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available; skill distribution shells out to git")
 	}
-
-	// Isolate the cache: os.UserCacheDir resolves under $HOME/Library/Caches on
-	// macOS and $XDG_CACHE_HOME on Linux — set both so DefaultCacheDir lands in a
-	// temp tree on either platform.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 
-	// A local throwaway "remote" laid out like the FIXED repo: skills under a
-	// skills/ SUBDIR, plus decoy top-level dirs and a root README that are NOT
-	// skills — the narrow fetch must take only skills/.
+	// A local throwaway "remote" laid out like the FIXED repo: skills under skills/,
+	// plus decoys that the narrow fetch must NOT bring into the cache.
 	remote := t.TempDir()
 	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "SKILL.md"), "# Demo Skill\nv1\n")
 	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "helper.txt"), "helper one\n")
 	writeFile(t, filepath.Join(remote, "README.md"), "# repo readme, not a skill\n")
 	writeFile(t, filepath.Join(remote, "cmd", "shoka", "main.go"), "package main\n")
-	writeFile(t, filepath.Join(remote, "docs", "x.md"), "# docs, not a skill\n")
 	gitInitCommit(t, remote, "v1")
 
-	// (1) skill update — the one network op: narrowly fetch skills/ into the cache.
+	// (1) update — narrow fetch into the source-namespaced cache.
 	if err := cmdSkill([]string{"update", "--repo", remote}); err != nil {
 		t.Fatalf("skill update: %v", err)
 	}
-
-	// Narrow fetch: only skills/ CONTENTS land at the cache root — the decoy
-	// top-level dirs and the .git history must NOT be in the cache.
-	cacheDir, err := skillcache.DefaultCacheDir()
+	cfg, err := skilldistConfig("claude", false, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir, err := cfg.CacheDir()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(cacheDir, "demo-skill", "SKILL.md")); err != nil {
-		t.Fatalf("cache missing demo-skill at root: %v", err)
+		t.Fatalf("cache missing demo-skill: %v", err)
 	}
-	for _, decoy := range []string{".git", "cmd", "docs", "README.md", "skills"} {
+	for _, decoy := range []string{".git", "cmd", "README.md", "skills"} {
 		if _, err := os.Stat(filepath.Join(cacheDir, decoy)); !os.IsNotExist(err) {
-			t.Fatalf("cache must not contain %q (narrow skills/-only fetch); stat err=%v", decoy, err)
+			t.Fatalf("cache must not contain %q (narrow fetch); stat err=%v", decoy, err)
 		}
 	}
 
-	// Install/upgrade resolve the convention dir relative to the working dir.
 	proj := t.TempDir()
 	t.Chdir(proj)
 
-	// (2) skill install — copy the cached skill into .claude/skills/<name>/.
-	if err := cmdSkill([]string{"install", "demo-skill"}); err != nil {
+	// (2) install the named skill.
+	if err := cmdSkill([]string{"install", "--repo", remote, "demo-skill"}); err != nil {
 		t.Fatalf("skill install: %v", err)
 	}
 	installed := filepath.Join(proj, ".claude", "skills", "demo-skill")
@@ -73,18 +70,21 @@ func TestSkillAptCycle(t *testing.T) {
 	if readFile(t, filepath.Join(installed, "helper.txt")) != "helper one\n" {
 		t.Fatal("installed helper.txt missing/mismatch")
 	}
-	// install must NOT write the workspace JSON (assignment is a separate concern).
+	// install must NOT write the workspace JSON.
 	if _, err := os.Stat(filepath.Join(proj, ".claude", "shoka-workspace.json")); !os.IsNotExist(err) {
 		t.Fatal("skill install must not write the workspace JSON")
 	}
 
 	// (3) freshly installed => no drift.
-	if drift, err := computeDrift("claude", false); err != nil || len(drift) != 0 {
+	projCfg, err := skilldistConfig("claude", false, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drift, err := projCfg.Outdated(); err != nil || len(drift) != 0 {
 		t.Fatalf("expected no drift after install; got %v err=%v", drift, err)
 	}
 
-	// (4) Change the remote: edit a file AND add a new supporting file (drift must
-	// catch added files, not just SKILL.md edits), then re-update.
+	// (4) change the source: edit + add a file, re-update.
 	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "SKILL.md"), "# Demo Skill\nv2 CHANGED\n")
 	writeFile(t, filepath.Join(remote, "skills", "demo-skill", "extra.txt"), "added in v2\n")
 	gitInitCommit(t, remote, "v2")
@@ -92,17 +92,17 @@ func TestSkillAptCycle(t *testing.T) {
 		t.Fatalf("skill re-update: %v", err)
 	}
 
-	// (5) Now demo-skill is outdated.
-	drift, err := computeDrift("claude", false)
+	// (5) now demo-skill is outdated.
+	drift, err := projCfg.Outdated()
 	if err != nil {
-		t.Fatalf("computeDrift: %v", err)
+		t.Fatalf("Outdated: %v", err)
 	}
 	if len(drift) != 1 || drift[0] != "demo-skill" {
 		t.Fatalf("expected demo-skill outdated; got %v", drift)
 	}
 
-	// (6) Upgrade: re-copy and clean-replace (the v2 content, plus the new file).
-	if err := cmdSkill([]string{"upgrade"}); err != nil {
+	// (6) upgrade: re-copy (v2 content + the new file).
+	if err := cmdSkill([]string{"upgrade", "--repo", remote}); err != nil {
 		t.Fatalf("skill upgrade: %v", err)
 	}
 	if got := readFile(t, filepath.Join(installed, "SKILL.md")); got != "# Demo Skill\nv2 CHANGED\n" {
@@ -111,12 +111,12 @@ func TestSkillAptCycle(t *testing.T) {
 	if readFile(t, filepath.Join(installed, "extra.txt")) != "added in v2\n" {
 		t.Fatal("post-upgrade extra.txt not copied")
 	}
-	if drift, err := computeDrift("claude", false); err != nil || len(drift) != 0 {
+	if drift, err := projCfg.Outdated(); err != nil || len(drift) != 0 {
 		t.Fatalf("expected no drift after upgrade; got %v err=%v", drift, err)
 	}
 
 	// (7) gemini runtime install lands under .gemini/skills/<name>/.
-	if err := cmdSkill([]string{"install", "--runtime", "gemini", "demo-skill"}); err != nil {
+	if err := cmdSkill([]string{"install", "--runtime", "gemini", "--repo", remote, "demo-skill"}); err != nil {
 		t.Fatalf("gemini install: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(proj, ".gemini", "skills", "demo-skill", "SKILL.md")); err != nil {
@@ -124,8 +124,8 @@ func TestSkillAptCycle(t *testing.T) {
 	}
 }
 
-// TestSkillInstallUncachedErrors proves the apt separation: install of a skill
-// not in the cache errors and points at `skill update` (no implicit fetch).
+// TestSkillInstallUncachedErrors: install of a skill not in the cache errors and
+// points at `skill update` (no implicit fetch).
 func TestSkillInstallUncachedErrors(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
@@ -135,28 +135,25 @@ func TestSkillInstallUncachedErrors(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 	t.Chdir(t.TempDir())
 
-	// No cache synced at all: install must error (and not panic).
 	if err := cmdSkill([]string{"install", "ghost"}); err == nil {
 		t.Fatal("install of an un-cached skill must error")
 	}
 }
 
-// TestSkillUpdateDefaultsToProjectRepo proves --repo is now OPTIONAL: with no
-// flag the source resolves to the baked fixed project repo. It asserts the
-// RESOLVED source only — it does NOT fetch, so there is no network egress.
-func TestSkillUpdateDefaultsToProjectRepo(t *testing.T) {
-	if got := skillcache.ResolveRepo(""); got != skillcache.DefaultSkillsRepo {
-		t.Fatalf("no --repo must resolve to the default source %q; got %q", skillcache.DefaultSkillsRepo, got)
+// TestResolveRepoDefault: --repo is OPTIONAL; no flag resolves to the baked fixed
+// project repo; an override wins. Asserts the resolver only — no fetch.
+func TestResolveRepoDefault(t *testing.T) {
+	if got := resolveRepo(""); got != DefaultSkillsRepo {
+		t.Fatalf("no --repo must resolve to the default %q; got %q", DefaultSkillsRepo, got)
 	}
-	if got := skillcache.ResolveRepo("/tmp/throwaway"); got != "/tmp/throwaway" {
-		t.Fatalf("--repo override must win over the default; got %q", got)
+	if got := resolveRepo("/tmp/throwaway"); got != "/tmp/throwaway" {
+		t.Fatalf("--repo override must win; got %q", got)
 	}
 }
 
-// TestSkillInstallWholeSet: `skill install` with NO name installs EVERY skill in
-// the synced cache (the Shoka skill set is required tooling, not a pick-by-name
-// catalogue), and the set is DATA-DRIVEN — a skill added to the source is picked
-// up with no CLI/name knowledge.
+// TestSkillInstallWholeSet: `install` with NO name installs EVERY cached skill, and
+// the set is DATA-DRIVEN — a skill added to the source is picked up with no CLI
+// change.
 func TestSkillInstallWholeSet(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
@@ -165,7 +162,6 @@ func TestSkillInstallWholeSet(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 
-	// A fixed-repo-like throwaway with TWO skills under skills/.
 	remote := t.TempDir()
 	writeFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "# alpha\n")
 	writeFile(t, filepath.Join(remote, "skills", "beta", "SKILL.md"), "# beta\n")
@@ -177,8 +173,7 @@ func TestSkillInstallWholeSet(t *testing.T) {
 	work := t.TempDir()
 	t.Chdir(work)
 
-	// Install with NO name => the whole set (no per-name knowledge).
-	if err := cmdSkill([]string{"install"}); err != nil {
+	if err := cmdSkill([]string{"install", "--repo", remote}); err != nil {
 		t.Fatalf("skill install (whole set): %v", err)
 	}
 	for _, name := range []string{"alpha", "beta"} {
@@ -186,23 +181,66 @@ func TestSkillInstallWholeSet(t *testing.T) {
 			t.Fatalf("whole-set install missing %s: %v", name, err)
 		}
 	}
-	// `skill list` runs (visibility front).
-	if err := cmdSkill([]string{"list"}); err != nil {
+	if err := cmdSkill([]string{"list", "--repo", remote}); err != nil {
 		t.Fatalf("skill list: %v", err)
 	}
 
-	// Data-driven: add a THIRD skill upstream; update + install (no name) picks it
-	// up with no CLI change — proving the set is not a hard-coded pair.
+	// Data-driven: add a THIRD skill upstream; update + install (no name) picks it up.
 	writeFile(t, filepath.Join(remote, "skills", "gamma", "SKILL.md"), "# gamma\n")
 	gitInitCommit(t, remote, "add gamma")
 	if err := cmdSkill([]string{"update", "--repo", remote}); err != nil {
 		t.Fatalf("skill re-update: %v", err)
 	}
-	if err := cmdSkill([]string{"install"}); err != nil {
+	if err := cmdSkill([]string{"install", "--repo", remote}); err != nil {
 		t.Fatalf("skill install after add: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(work, ".claude", "skills", "gamma", "SKILL.md")); err != nil {
-		t.Fatalf("data-driven set did not pick up the added skill gamma: %v", err)
+		t.Fatalf("data-driven set did not pick up gamma: %v", err)
+	}
+}
+
+// TestSkillPruneAndMakeCurrent: a skill removed upstream is pruned ONLY when it
+// carries Shoka's signature; make-current refreshes+upgrades+prunes in one step.
+func TestSkillPruneAndMakeCurrent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+
+	remote := t.TempDir()
+	addSignedSkill(t, remote, "alpha", "# alpha\n")
+	addSignedSkill(t, remote, "beta", "# beta\n")
+	gitInitCommit(t, remote, "alpha+beta")
+
+	work := t.TempDir()
+	t.Chdir(work)
+	if err := cmdSkill([]string{"update", "--repo", remote}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdSkill([]string{"install", "--repo", remote}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A foreign skill the prune must NEVER touch (no Shoka signature).
+	writeFile(t, filepath.Join(work, ".claude", "skills", "foreign", "SKILL.md"), "# foreign\n")
+
+	// Remove beta upstream; make-current should refresh, then prune beta only.
+	if err := os.RemoveAll(filepath.Join(remote, "skills", "beta")); err != nil {
+		t.Fatal(err)
+	}
+	gitInitCommit(t, remote, "remove beta")
+	if err := cmdSkill([]string{"make-current", "--repo", remote}); err != nil {
+		t.Fatalf("make-current: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(work, ".claude", "skills", "beta")); !os.IsNotExist(err) {
+		t.Fatal("beta should have been pruned by make-current")
+	}
+	for _, keep := range []string{"alpha", "foreign"} {
+		if _, err := os.Stat(filepath.Join(work, ".claude", "skills", keep, "SKILL.md")); err != nil {
+			t.Fatalf("make-current wrongly removed %s: %v", keep, err)
+		}
 	}
 }
 
@@ -213,7 +251,7 @@ func TestSkillUnknownRuntime(t *testing.T) {
 	}
 }
 
-// --- helpers ---
+// --- helpers (shared with init_test.go) ---
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
@@ -234,9 +272,24 @@ func readFile(t *testing.T, path string) string {
 	return string(b)
 }
 
+// addSignedSkill writes a skill under <repo>/skills/<name>/ and stamps its
+// .skill-meta.yaml with Shoka's signature (so prune recognises it as ours).
+func addSignedSkill(t *testing.T, repo, name, body string) {
+	t.Helper()
+	dir := filepath.Join(repo, "skills", name)
+	writeFile(t, filepath.Join(dir, "SKILL.md"), body)
+	m, err := skillmeta.Build(dir, skillSignature, skillmeta.Source{Repo: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := skillmeta.Write(dir, m); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // gitInitCommit inits the repo if needed and commits all changes with msg, using
-// the git binary (os/exec) — never go-git. Identity is set per-command so no
-// global git config is required in the test environment.
+// the git binary (os/exec) — never go-git. Identity is set per-command so no global
+// git config is required.
 func gitInitCommit(t *testing.T, dir, msg string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(dir, ".git")); os.IsNotExist(err) {

@@ -3,27 +3,28 @@ package main
 import (
 	"flag"
 	"fmt"
-	"path/filepath"
-
-	"github.com/sopranoworks/shoka/internal/skillcache"
 )
 
 // cmdSkill dispatches the `skill` subcommand group — the apt-model skill
-// distribution (B-15c):
+// distribution. The actual machinery lives in the reusable github.com/sopranoworks/
+// skilldist library; this file is the THIN Shoka CLI layer (dispatch, flag parsing,
+// user messages) that wraps it with Shoka's injected Config (see skilldist.go).
 //
-//	skill update    = apt update  : git-fetch the remote skills repo into the cache
-//	skill install   = apt install : copy a cached skill into a runtime convention dir
-//	skill upgrade   = apt upgrade : re-copy installed skills whose cached version differs
-//	skill outdated                : show installed skills that differ from the cache
+//	skill update       = apt update  : git-fetch the skills/ subtree into the cache
+//	skill install      = apt install : copy the cached skill SET into a runtime convention dir
+//	skill list                       : show the cached set + install status
+//	skill outdated                   : show installed skills that differ from the cache
+//	skill upgrade      = apt upgrade : re-copy installed skills whose cached version differs
+//	skill make-current               : one step — refresh + upgrade + prune (hides the cache)
+//	skill prune                      : remove installed skills deleted upstream (only ones we own)
 //
-// It is a thin client: git + filesystem only. It carries NO Shoka data-path
-// access (never write_file/read_file/the allowlist) and NO connection config —
-// skills are not data and are not tied to a Shoka endpoint. It also never writes
-// the workspace JSON: install places skill FILES; establishing an agent's
-// namespace/project assignment is a separate concern (B-15 steps c/d).
+// It is a thin client: git + filesystem only, via the library. It carries NO Shoka
+// data-path access and NO connection config — skills are not data. It never writes
+// the workspace JSON: install places skill FILES; the namespace/project assignment
+// is a separate concern (B-15 steps c/d).
 func cmdSkill(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("skill: a subcommand is required (update, install, list, upgrade, outdated)")
+		return fmt.Errorf("skill: a subcommand is required (update, install, list, outdated, upgrade, make-current, prune)")
 	}
 	switch args[0] {
 	case "update":
@@ -32,38 +33,43 @@ func cmdSkill(args []string) error {
 		return cmdSkillInstall(args[1:])
 	case "list":
 		return cmdSkillList(args[1:])
-	case "upgrade":
-		return cmdSkillUpgrade(args[1:])
 	case "outdated":
 		return cmdSkillOutdated(args[1:])
+	case "upgrade":
+		return cmdSkillUpgrade(args[1:])
+	case "make-current":
+		return cmdSkillMakeCurrent(args[1:])
+	case "prune":
+		return cmdSkillPrune(args[1:])
 	default:
-		return fmt.Errorf("unknown skill subcommand %q (expected: update, install, list, upgrade, outdated)", args[0])
+		return fmt.Errorf("unknown skill subcommand %q (expected: update, install, list, outdated, upgrade, make-current, prune)", args[0])
 	}
 }
 
 // cmdSkillUpdate is `apt update`: the one network op. It narrowly git-fetches the
-// skills/ subtree of the skills repo into the local cache. The source defaults to
-// the project's own public repo (skillcache.DefaultSkillsRepo); --repo overrides
-// it (e.g. a local throwaway repo for testing, or an alternate skills source).
+// skills/ subtree of the source repo into the local cache. The source defaults to
+// the project's own public repo (DefaultSkillsRepo); --repo overrides it.
 func cmdSkillUpdate(args []string) error {
 	fs := flag.NewFlagSet("skill update", flag.ContinueOnError)
-	repo := fs.String("repo", "", "skills repository (URL or local path) to sync from (default: the project repo "+skillcache.DefaultSkillsRepo+")")
+	repo := fs.String("repo", "", "skills repository (URL or local path) to sync from (default: the project repo "+DefaultSkillsRepo+")")
 	ref := fs.String("ref", "", "branch or tag to sync (default: the remote's default branch)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	source := skillcache.ResolveRepo(*repo)
-
-	cacheDir, err := skillcache.DefaultCacheDir()
+	// update needs no convention dir; build a source-only config.
+	cfg, err := skilldistConfig("claude", false, *repo)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("syncing skills from %s\n", source)
-	res, err := skillcache.Sync(cacheDir, source, *ref)
+	cacheDir, err := cfg.CacheDir()
 	if err != nil {
 		return err
 	}
-
+	fmt.Printf("syncing skills from %s\n", cfg.Source)
+	res, err := cfg.Sync(*ref)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("synced skills cache at %s\n", cacheDir)
 	reportSync("added", res.Added)
 	reportSync("updated", res.Updated)
@@ -80,73 +86,58 @@ func reportSync(label string, names []string) {
 	}
 }
 
-// cmdSkillInstall installs the Shoka skill SET. The Shoka skills are required
-// tooling for an agent using Shoka, not an a-la-carte catalogue — so with NO name
-// it installs EVERY skill currently in the synced cache (a fresh user need not
-// know skill names). One or more explicit names install just those (the targeted
-// case). It works OFFLINE (reads the already-synced cache); an empty cache or an
-// un-cached name points at `skill update`. It places FILES only — never the
-// workspace JSON. The set is data-driven: a skill added to the source repo's
-// skills/ is installed automatically, with no CLI change.
+// cmdSkillInstall installs the Shoka skill SET. With NO name it installs EVERY
+// skill currently in the synced cache (required tooling, not an a-la-carte
+// catalogue); one or more explicit names install just those. Offline; an empty
+// cache or an un-cached name points at `skill update`. Files only — never the
+// workspace JSON. Data-driven: a skill added to the source is installed
+// automatically.
 func cmdSkillInstall(args []string) error {
 	fs := flag.NewFlagSet("skill install", flag.ContinueOnError)
 	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
 	global := fs.Bool("global", false, "install at the user level instead of the current working directory")
+	repo := fs.String("repo", "", "which source's cached set to install (default: the project repo)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	cacheDir, err := skillcache.DefaultCacheDir()
+	cfg, err := skilldistConfig(*runtime, *global, *repo)
 	if err != nil {
 		return err
 	}
-	destParent, err := skillsConventionDir(*runtime, *global)
-	if err != nil {
-		return err
-	}
-
 	names := fs.Args()
+	var installed []string
 	if len(names) == 0 {
-		// Whole-set install: every skill currently in the cache.
-		all, lerr := skillcache.List(cacheDir)
-		if lerr != nil {
-			return lerr
-		}
-		if len(all) == 0 {
-			return fmt.Errorf("no skills in the cache (%s); run `shoka-cli skill update` first", cacheDir)
-		}
-		names = all
+		installed, err = cfg.InstallSet()
+	} else {
+		installed, err = cfg.Install(names...)
 	}
-
-	for _, name := range names {
-		if !skillcache.Has(cacheDir, name) {
-			return fmt.Errorf("skill %q is not in the cache (%s); run `shoka-cli skill update` first", name, cacheDir)
-		}
-		dst, cerr := skillcache.CopySkill(filepath.Join(cacheDir, name), destParent)
-		if cerr != nil {
-			return cerr
-		}
-		fmt.Printf("installed %s -> %s\n", name, dst)
+	if err != nil {
+		return err
+	}
+	for _, n := range installed {
+		fmt.Printf("installed %s -> %s/%s\n", n, cfg.ConventionPath, n)
 	}
 	return nil
 }
 
-// cmdSkillList shows the skills available in the synced cache and whether each is
-// installed in the target runtime's convention dir. It changes nothing — it makes
-// the (data-driven) set visible; the primary path is still `skill install` with
-// no name, which installs the whole set.
+// cmdSkillList shows the cached set and whether each skill is installed.
 func cmdSkillList(args []string) error {
 	fs := flag.NewFlagSet("skill list", flag.ContinueOnError)
 	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
 	global := fs.Bool("global", false, "inspect the user-level install location instead of the current working directory")
+	repo := fs.String("repo", "", "which source's cached set to list (default: the project repo)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cacheDir, err := skillcache.DefaultCacheDir()
+	cfg, err := skilldistConfig(*runtime, *global, *repo)
 	if err != nil {
 		return err
 	}
-	cached, err := skillcache.List(cacheDir)
+	cacheDir, err := cfg.CacheDir()
+	if err != nil {
+		return err
+	}
+	cached, err := cfg.ListCache()
 	if err != nil {
 		return err
 	}
@@ -154,14 +145,18 @@ func cmdSkillList(args []string) error {
 		fmt.Printf("no skills in the cache (%s); run `shoka-cli skill update` first\n", cacheDir)
 		return nil
 	}
-	destParent, err := skillsConventionDir(*runtime, *global)
+	installed, err := cfg.ListInstalled()
 	if err != nil {
 		return err
+	}
+	installedSet := make(map[string]bool, len(installed))
+	for _, n := range installed {
+		installedSet[n] = true
 	}
 	fmt.Printf("skills in the cache (%s):\n", cacheDir)
 	for _, name := range cached {
 		status := "not installed"
-		if skillcache.Has(destParent, name) {
+		if installedSet[name] {
 			status = "installed"
 		}
 		fmt.Printf("  %-32s %s\n", name, status)
@@ -170,17 +165,21 @@ func cmdSkillList(args []string) error {
 	return nil
 }
 
-// cmdSkillOutdated shows installed skills whose installed content differs from
-// the cache (the drift front). It changes nothing.
+// cmdSkillOutdated shows installed skills whose installed content differs from the
+// cache (the drift front). It changes nothing.
 func cmdSkillOutdated(args []string) error {
 	fs := flag.NewFlagSet("skill outdated", flag.ContinueOnError)
 	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
 	global := fs.Bool("global", false, "inspect the user-level install location instead of the current working directory")
+	repo := fs.String("repo", "", "which source's cache to compare against (default: the project repo)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	drift, err := computeDrift(*runtime, *global)
+	cfg, err := skilldistConfig(*runtime, *global, *repo)
+	if err != nil {
+		return err
+	}
+	drift, err := cfg.Outdated()
 	if err != nil {
 		return err
 	}
@@ -197,89 +196,100 @@ func cmdSkillOutdated(args []string) error {
 }
 
 // cmdSkillUpgrade is `apt upgrade`: re-copy from the cache every installed skill
-// whose cached content differs. Offline (reads the cache).
+// whose cached content differs. Offline.
 func cmdSkillUpgrade(args []string) error {
 	fs := flag.NewFlagSet("skill upgrade", flag.ContinueOnError)
 	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
 	global := fs.Bool("global", false, "upgrade the user-level install location instead of the current working directory")
+	repo := fs.String("repo", "", "which source's cache to upgrade from (default: the project repo)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	cacheDir, err := skillcache.DefaultCacheDir()
+	cfg, err := skilldistConfig(*runtime, *global, *repo)
 	if err != nil {
 		return err
 	}
-	destParent, err := skillsConventionDir(*runtime, *global)
+	upgraded, err := cfg.Upgrade()
 	if err != nil {
 		return err
 	}
-	drift, err := computeDrift(*runtime, *global)
-	if err != nil {
-		return err
-	}
-	if len(drift) == 0 {
+	if len(upgraded) == 0 {
 		fmt.Println("nothing to upgrade; all installed skills match the cache")
 		return nil
 	}
-	for _, name := range drift {
-		dst, cerr := skillcache.CopySkill(filepath.Join(cacheDir, name), destParent)
-		if cerr != nil {
-			return fmt.Errorf("upgrade %s: %w", name, cerr)
-		}
-		fmt.Printf("upgraded %s -> %s\n", name, dst)
+	for _, n := range upgraded {
+		fmt.Printf("upgraded %s -> %s/%s\n", n, cfg.ConventionPath, n)
 	}
 	return nil
 }
 
-// computeDrift returns the names of skills that are installed in the runtime's
-// convention dir, also present in the cache, and whose installed content hash
-// differs from the cached one. Skills installed but absent from the cache are
-// skipped (nothing to compare against — the cache may simply not be synced).
-func computeDrift(runtime string, global bool) ([]string, error) {
-	cacheDir, err := skillcache.DefaultCacheDir()
+// cmdSkillMakeCurrent is the one-step "be current": refresh from the source
+// (ls-remote gated, --force bypasses), upgrade drifted installed skills, and prune
+// skills removed upstream — without the operator running update+upgrade+prune or
+// thinking about the cache.
+func cmdSkillMakeCurrent(args []string) error {
+	fs := flag.NewFlagSet("skill make-current", flag.ContinueOnError)
+	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
+	global := fs.Bool("global", false, "operate on the user-level install location instead of the current working directory")
+	repo := fs.String("repo", "", "skills repository to refresh from (default: the project repo)")
+	ref := fs.String("ref", "", "branch or tag to refresh (default: the remote's default branch)")
+	force := fs.Bool("force", false, "refresh even if the cached commit already matches the remote")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := skilldistConfig(*runtime, *global, *repo)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	destParent, err := skillsConventionDir(runtime, global)
+	fmt.Printf("making skills current from %s\n", cfg.Source)
+	rep, err := cfg.MakeCurrent(*ref, *force)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	installed, err := skillcache.List(destParent)
-	if err != nil {
-		return nil, err
+	if rep.Synced {
+		reportSync("added", rep.Sync.Added)
+		reportSync("updated", rep.Sync.Updated)
+		reportSync("removed", rep.Sync.Removed)
+	} else {
+		fmt.Println("  cache already current with the source")
 	}
-	var drift []string
-	for _, name := range installed {
-		if !skillcache.Has(cacheDir, name) {
-			continue
-		}
-		instHash, herr := skillcache.DirHash(filepath.Join(destParent, name))
-		if herr != nil {
-			return nil, herr
-		}
-		cacheHash, herr := skillcache.DirHash(filepath.Join(cacheDir, name))
-		if herr != nil {
-			return nil, herr
-		}
-		if instHash != cacheHash {
-			drift = append(drift, name)
-		}
+	for _, n := range rep.Upgraded {
+		fmt.Printf("  upgraded: %s\n", n)
 	}
-	return drift, nil
+	for _, n := range rep.Pruned {
+		fmt.Printf("  pruned: %s\n", n)
+	}
+	if len(rep.Upgraded) == 0 && len(rep.Pruned) == 0 {
+		fmt.Println("  installed skills already current")
+	}
+	return nil
 }
 
-// skillsConventionDir resolves the skills directory for a runtime. The skill is
-// later placed at <returned>/<name>/. --global selects the user-level location;
-// otherwise it is relative to the current working directory. It builds on the
-// shared conventionDir resolver so the runtime→path mapping is defined once:
-//
-//	claude -> .claude/skills   (~/.claude/skills with --global)
-//	gemini -> .gemini/skills   (~/.gemini/skills with --global)
-func skillsConventionDir(runtime string, global bool) (string, error) {
-	base, err := conventionDir(runtime, global)
-	if err != nil {
-		return "", err
+// cmdSkillPrune removes installed skills that are no longer in the synced set AND
+// are provably Shoka-distributed (our signature). It never touches a skill we do
+// not own. Run `skill update` first so the cache reflects the current source.
+func cmdSkillPrune(args []string) error {
+	fs := flag.NewFlagSet("skill prune", flag.ContinueOnError)
+	runtime := fs.String("runtime", "claude", "target agent runtime: claude | gemini")
+	global := fs.Bool("global", false, "operate on the user-level install location instead of the current working directory")
+	repo := fs.String("repo", "", "which source's set defines what is current (default: the project repo)")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	return filepath.Join(base, "skills"), nil
+	cfg, err := skilldistConfig(*runtime, *global, *repo)
+	if err != nil {
+		return err
+	}
+	pruned, err := cfg.Prune()
+	if err != nil {
+		return err
+	}
+	if len(pruned) == 0 {
+		fmt.Println("nothing to prune; no managed skills were removed upstream")
+		return nil
+	}
+	for _, n := range pruned {
+		fmt.Printf("pruned %s\n", n)
+	}
+	return nil
 }

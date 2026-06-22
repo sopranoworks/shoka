@@ -103,8 +103,12 @@ func cmdInit(args []string) error {
 			return fmt.Errorf("[skill] %w", err)
 		}
 		// No --skill => install the whole synced set (cmdSkillInstall with no name);
-		// --skill <names> => install just those.
+		// --skill <names> => install just those. Thread --repo through so install
+		// reads the SAME source-namespaced cache that update just populated.
 		installArgs := []string{"--runtime", *runtime}
+		if *repo != "" {
+			installArgs = append(installArgs, "--repo", *repo)
+		}
 		if *global {
 			installArgs = append(installArgs, "--global")
 		}
