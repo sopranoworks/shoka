@@ -71,6 +71,15 @@ Three ways to install Shoka, in order of preference for a server:
   `brew services` is planned; none is published yet. On macOS today, use
   `go install` or build from source (*Quick start* below).
 
+**Supported platforms.** The `.deb` targets currently-supported Debian/Ubuntu
+releases (Ubuntu 22.04 + 24.04 LTS, Debian 12 + 13) and their derivatives, on
+amd64 and arm64; systemd is required and `adduser` is pulled in automatically by
+`apt`. The binaries are statically linked (`CGO_ENABLED=0`), so the build/CI host
+OS does not constrain where they run. End-of-support releases (e.g. Ubuntu 20.04,
+Debian 11) are outside the supported matrix, and macOS is a separate manual
+install. Details: [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Supported
+platforms*).
+
 To build and run from source for development, see *Quick start* below.
 
 ## Quick start

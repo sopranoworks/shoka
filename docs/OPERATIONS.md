@@ -11,6 +11,46 @@ path; `go install` works anywhere a Go toolchain does; Homebrew is a planned
 convenience for macOS. Building from source is covered under [*Running*](#running)
 below and in the README *Quick start*.
 
+### Supported platforms
+
+The `.deb` targets the **currently-supported (in-standard-support) Debian and
+Ubuntu releases**, on **amd64** and **arm64**:
+
+| Distro | Release | Standard support until |
+|--------|---------|------------------------|
+| Ubuntu | 24.04 LTS (noble) | 2029-04 |
+| Ubuntu | 22.04 LTS (jammy) | 2027-04 |
+| Debian | 13 (trixie) — current stable | ~2028 (then LTS) |
+| Debian | 12 (bookworm) — oldstable | 2026-07-11 (then LTS-only) |
+
+Each row above was verified by installing the rc1 `.deb` in a clean container of
+that release (`apt install ./shoka_*.deb` → clean install, the `shoka` account
+created, the binary runs, and `systemd-analyze verify` of the unit passes).
+Debian/Ubuntu **derivatives** (Linux Mint, Raspberry Pi OS on arm64, etc.) that
+track these bases are expected to work but are not individually tested.
+
+Requirements and notes:
+
+- **systemd** is required — the package ships a unit to
+  `/lib/systemd/system/shoka.service` and its maintainer scripts drive the service
+  with `systemctl`.
+- **`adduser`** is required and is **declared as a package dependency**, so
+  `sudo apt install ./shoka_*.deb` pulls it in automatically. (Minimal bases such
+  as the Ubuntu 24.04 cloud/container image omit `adduser`; installing via `apt`
+  resolves it. A bare `sudo dpkg -i` does **not** resolve dependencies — use `apt`,
+  or follow it with `sudo apt-get -f install`.)
+- The binaries are **statically linked** (`CGO_ENABLED=0`, no libc dependency), so
+  the **build host / CI runner OS does not constrain where they run** — a `.deb`
+  built on Ubuntu does not require Ubuntu, and "built on ubuntu-24.04 ⇒ needs
+  ubuntu-24.04" is a misconception.
+- **Current releases only.** End-of-standard-support releases — e.g. **Ubuntu
+  20.04** (focal, standard support ended 2025-04, now ESM-only) and **Debian 11**
+  (bullseye, LTS-only since 2024-08) — are **outside the supported matrix**, even
+  though a static binary may still run there.
+- **macOS** is not served by the `.deb`; it is a separate, manual install using the
+  launchd plist template (see [*Running as a
+  service*](#running-as-a-service-systemd--launchd)).
+
 ### Debian / Ubuntu package (`.deb`) — recommended for Linux servers
 
 Each tagged release publishes a `.deb` per architecture (`amd64`, `arm64`) on the
