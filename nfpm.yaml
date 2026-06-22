@@ -23,6 +23,13 @@ description: |
   CLI (shoka-cli).
 homepage: https://github.com/sopranoworks/shoka
 
+# Debian Policy requires declaring adduser when maintainer scripts use it:
+# packaging/postinst.sh calls addgroup/adduser (and postrm.sh delgroup/deluser).
+# adduser is NOT in the minimal Ubuntu 24.04 base, so without this the postinst
+# aborts with "addgroup: not found"; apt resolves this dependency and pulls it in.
+depends:
+  - adduser
+
 contents:
   - src: dist/shoka
     dst: /usr/bin/shoka
