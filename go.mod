@@ -12,7 +12,7 @@ require (
 	github.com/openai/openai-go/v3 v3.41.0
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/sopranoworks/skilldist v0.0.0
+	github.com/sopranoworks/skilldist v0.1.0
 	github.com/stretchr/testify v1.11.1
 	github.com/yuin/goldmark v1.8.2
 	go.etcd.io/bbolt v1.4.3
@@ -24,12 +24,6 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-// skilldist is the reusable skill-distribution module (skillmeta + the library).
-// During development it resolves to the sibling working tree; the operator swaps
-// this for the published module path + a tagged version when the repo is created
-// (see the completion report's operator steps).
-replace github.com/sopranoworks/skilldist => ../skilldist
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
