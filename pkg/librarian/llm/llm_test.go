@@ -16,12 +16,17 @@ func TestNewClient_ProviderSwitch(t *testing.T) {
 	if c, err := NewClient(LLMConfig{Provider: ProviderOpenAI, Model: "gpt-x"}); err != nil || c == nil {
 		t.Errorf("openai: got (%v, %v), want a client", c, err)
 	}
-	// Both accept a base-URL override (ollama debug) without error.
+	// Gemini constructs lazily, so it never fails here (a missing key surfaces at
+	// the health-check / first call), regardless of env.
+	if c, err := NewClient(LLMConfig{Provider: ProviderGemini, Model: "gemini-x"}); err != nil || c == nil {
+		t.Errorf("gemini: got (%v, %v), want a client", c, err)
+	}
+	// Providers accept a base-URL override (ollama/proxy) without error.
 	if _, err := NewClient(LLMConfig{Provider: ProviderOpenAI, Model: "m", BaseURL: "http://localhost:11434/v1"}); err != nil {
 		t.Errorf("openai with base_url: unexpected error %v", err)
 	}
 	// Unknown provider is a clear error, not a silent fallback.
-	if _, err := NewClient(LLMConfig{Provider: "gemini", Model: "m"}); err == nil {
+	if _, err := NewClient(LLMConfig{Provider: "cohere", Model: "m"}); err == nil {
 		t.Errorf("unknown provider must be an error")
 	}
 	if _, err := NewClient(LLMConfig{Provider: "", Model: "m"}); err == nil {
@@ -36,6 +41,7 @@ func TestLLMConfig_IsConfigured(t *testing.T) {
 	}{
 		{LLMConfig{Provider: "anthropic", Model: "claude-x"}, true},
 		{LLMConfig{Provider: "openai", Model: "gpt-x"}, true},
+		{LLMConfig{Provider: "gemini", Model: "gemini-x"}, true},
 		{LLMConfig{Provider: "anthropic"}, false}, // no model
 		{LLMConfig{Model: "claude-x"}, false},     // no provider
 		{LLMConfig{}, false},

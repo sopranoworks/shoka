@@ -323,6 +323,7 @@ catalog: {}
 # The API KEY IS AN ENVIRONMENT VARIABLE, NOT A CONFIG KEY:
 #   provider: anthropic  ->  set ANTHROPIC_API_KEY in the server's environment
 #   provider: openai     ->  set OPENAI_API_KEY    in the server's environment
+#   provider: gemini     ->  set GEMINI_API_KEY (or GOOGLE_API_KEY) in the env
 # There is no `api_key:` config key — including one is a hard load error.
 #
 # Pick ONE provider. Use a CURRENT model id from that provider. The block is
@@ -338,8 +339,15 @@ catalog: {}
 #   provider: "openai"
 #   model: "gpt-4o"                    # a current OpenAI model id
 #
+# Gemini instead:
+# librarian:
+#   provider: "gemini"
+#   model: "gemini-2.5-flash"          # a current Gemini model id
+#
 # base_url is OPTIONAL: omit for production (the SDK's default endpoint). Set it
-# only for a proxy. (Developer/debug only: point either provider at a local
-# ollama — base_url "http://localhost:11434" for anthropic or ".../v1" for
-# openai, an ollama model tag, and the placeholder key "ollama" in the env var.
-# ollama is a dev aid, not a deployment target.)
+# only for a proxy. (Developer/debug only: point the anthropic or openai provider
+# at a local ollama — base_url "http://localhost:11434" for anthropic or ".../v1"
+# for openai, an ollama model tag, and the placeholder key "ollama" in the env
+# var. ollama exposes Anthropic-/OpenAI-compatible endpoints but not the native
+# Gemini protocol, so gemini has no ollama path. ollama is a dev aid, not a
+# deployment target.)

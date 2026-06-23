@@ -99,6 +99,7 @@ type Client interface {
 const (
 	ProviderAnthropic = "anthropic"
 	ProviderOpenAI    = "openai"
+	ProviderGemini    = "gemini"
 )
 
 // LLMConfig configures the LLM client. The provider selects the SDK; the model
@@ -107,14 +108,16 @@ const (
 //
 // The API key is DELIBERATELY absent: secrets do not belong in config. Each SDK
 // auto-reads its key from the environment — ANTHROPIC_API_KEY for the anthropic
-// provider, OPENAI_API_KEY for the openai provider (for ollama debugging the env
-// key is the ignored placeholder "ollama"). Shoka never reads or handles the key.
+// provider, OPENAI_API_KEY for the openai provider, GEMINI_API_KEY or
+// GOOGLE_API_KEY for the gemini provider (for ollama debugging the env key is the
+// ignored placeholder "ollama"). Shoka never reads or handles the key.
 //
 //	prod (anthropic):  {Provider:"anthropic", Model:"claude-…"}                              + ANTHROPIC_API_KEY in env
 //	prod (openai):     {Provider:"openai",    Model:"gpt-…"}                                 + OPENAI_API_KEY in env
+//	prod (gemini):     {Provider:"gemini",    Model:"gemini-…"}                              + GEMINI_API_KEY (or GOOGLE_API_KEY) in env
 //	debug (ollama):    {Provider:"anthropic", BaseURL:"http://localhost:11434", Model:"…"}   + ANTHROPIC_API_KEY=ollama
 type LLMConfig struct {
-	Provider string // "anthropic" | "openai"
+	Provider string // "anthropic" | "openai" | "gemini"
 	BaseURL  string // "" => SDK production default; "http://localhost:11434" => local ollama
 	Model    string // required; "claude-…" / "gpt-…" / an ollama tag
 	MaxSteps int    // tool-call loop budget (max model round-trips)
@@ -136,7 +139,9 @@ func NewClient(cfg LLMConfig) (Client, error) {
 		return newAnthropicClient(cfg), nil
 	case ProviderOpenAI:
 		return newOpenAIClient(cfg), nil
+	case ProviderGemini:
+		return newGeminiClient(cfg), nil
 	default:
-		return nil, fmt.Errorf("unknown llm provider %q (want %q or %q)", cfg.Provider, ProviderAnthropic, ProviderOpenAI)
+		return nil, fmt.Errorf("unknown llm provider %q (want %q, %q or %q)", cfg.Provider, ProviderAnthropic, ProviderOpenAI, ProviderGemini)
 	}
 }

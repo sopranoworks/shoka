@@ -404,14 +404,15 @@ stores the key; the SDK reads it from the environment:
 
 - `provider: anthropic` → set **`ANTHROPIC_API_KEY`** in the server's environment.
 - `provider: openai` → set **`OPENAI_API_KEY`** in the server's environment.
+- `provider: gemini` → set **`GEMINI_API_KEY`** (or `GOOGLE_API_KEY`) in the server's environment. The genai SDK reads either; if both are set, `GOOGLE_API_KEY` wins.
 
 There is deliberately **no `api_key` config key** — putting one in the config is
 a hard load error (the guardrail against committing a secret).
 
 | Key | Type | Required | Default | Meaning |
 |-----|------|----------|---------|---------|
-| `librarian.provider` | string | yes (to enable) | — | `anthropic` or `openai`. |
-| `librarian.model` | string | yes (to enable) | — | A current model id from the provider, e.g. a `claude-…` (Anthropic) or `gpt-…` (OpenAI) string. The provider has no model environment variable, so this is required. |
+| `librarian.provider` | string | yes (to enable) | — | `anthropic`, `openai`, or `gemini`. |
+| `librarian.model` | string | yes (to enable) | — | A current model id from the provider, e.g. a `claude-…` (Anthropic), `gpt-…` (OpenAI), or `gemini-…` (Gemini) string. The provider has no model environment variable, so this is required. |
 | `librarian.base_url` | string | no | `""` | Omit for production (the SDK's default endpoint). Set only for a proxy. |
 | `librarian.max_steps` | int | no | `8` | Tool-call loop budget (model round-trips). |
 
@@ -419,9 +420,9 @@ A minimal production config:
 
 ```yaml
 librarian:
-  provider: anthropic        # or: openai
-  model: claude-3-5-haiku-latest   # use a current model id; openai e.g. gpt-4o
-# the API key is an environment variable (ANTHROPIC_API_KEY / OPENAI_API_KEY), NOT a config key
+  provider: anthropic        # or: openai, gemini
+  model: claude-3-5-haiku-latest   # use a current model id; openai e.g. gpt-4o; gemini e.g. gemini-2.5-flash
+# the API key is an environment variable (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY), NOT a config key
 ```
 
 The tool is registered **only** when `provider` and `model` are both set (the
@@ -434,11 +435,14 @@ demand (e.g. after fixing the key or when the endpoint was down). The health
 result reveals only validity (provider/model/kind), never the key. The inner
 read/list/search tools are in-process Go, not separately MCP-exposed.
 
-> Developer/debug only (NOT for deployment): either provider can be pointed at a
-> local [ollama](https://ollama.com) for a free, hermetic loop by setting
-> `base_url: http://localhost:11434` (anthropic) or `http://localhost:11434/v1`
-> (openai), an ollama `model` tag, and the placeholder key `ollama` in the env
-> var. ollama is a dev aid only and is not a supported deployment target.
+> Developer/debug only (NOT for deployment): the **anthropic** and **openai**
+> providers can be pointed at a local [ollama](https://ollama.com) for a free,
+> hermetic loop by setting `base_url: http://localhost:11434` (anthropic) or
+> `http://localhost:11434/v1` (openai), an ollama `model` tag, and the placeholder
+> key `ollama` in the env var. (ollama exposes Anthropic- and OpenAI-compatible
+> endpoints but not the native Gemini protocol, so the gemini provider has no
+> ollama debug path; its `base_url` is for a Gemini-protocol proxy/gateway only.)
+> ollama is a dev aid only and is not a supported deployment target.
 
 Validation: the server refuses to start without `storage.base_dir`,
 `server.http.listen`, or at least one MCP transport (`server.mcp.plain.listen` /

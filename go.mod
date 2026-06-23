@@ -20,6 +20,7 @@ require (
 	golang.org/x/sync v0.20.0
 	golang.org/x/term v0.43.0
 	google.golang.org/api v0.277.0
+	google.golang.org/genai v1.61.0
 	google.golang.org/genproto v0.0.0-20260504160031-60b97b32f348
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -53,6 +54,7 @@ require (
 	github.com/go-webauthn/x v0.2.6 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect

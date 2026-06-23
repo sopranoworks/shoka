@@ -9,6 +9,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/openai/openai-go/v3"
+	"google.golang.org/genai"
 )
 
 // HealthKind classifies whether the librarian's LLM config is actually usable.
@@ -40,11 +41,12 @@ func CheckHealth(ctx context.Context, cfg LLMConfig) HealthResult {
 	}
 	// The two basic key states are knowable without a round-trip, so name them
 	// plainly instead of letting them fall through to a vaguer bucket. A missing
-	// env key is auth_failed — say which variable, never its value. (For the
-	// ollama debug loop the placeholder ANTHROPIC_API_KEY=ollama is non-empty, so
-	// this passes through to the real call.)
-	if env := apiKeyEnvVar(cfg.Provider); env != "" && os.Getenv(env) == "" {
-		return HealthResult{Kind: HealthAuthFailed, Detail: env + " is empty or unset"}
+	// env key is auth_failed — say which variable(s), never the value. The key is
+	// "missing" only when EVERY accepted variable is empty (gemini reads either
+	// GEMINI_API_KEY or GOOGLE_API_KEY). (For the ollama debug loop the placeholder
+	// ANTHROPIC_API_KEY=ollama is non-empty, so this passes through to the call.)
+	if envs := apiKeyEnvVars(cfg.Provider); len(envs) > 0 && allEnvEmpty(envs) {
+		return HealthResult{Kind: HealthAuthFailed, Detail: missingKeyDetail(envs)}
 	}
 	client, err := NewClient(cfg)
 	if err != nil {
@@ -59,17 +61,45 @@ func CheckHealth(ctx context.Context, cfg LLMConfig) HealthResult {
 	return HealthResult{Kind: HealthReady}
 }
 
-// apiKeyEnvVar names the environment variable each provider's SDK reads its key
-// from, or "" for an unknown provider. We only ever check this variable's
-// PRESENCE to phrase a message — its value is never read into config or logged.
-func apiKeyEnvVar(provider string) string {
+// apiKeyEnvVars names the environment variable(s) each provider's SDK reads its
+// key from, primary first, or nil for an unknown provider. Gemini's genai SDK
+// reads either GEMINI_API_KEY or GOOGLE_API_KEY (GOOGLE_API_KEY wins if both are
+// set), so the key is present when EITHER is set. We only ever check these
+// variables' PRESENCE to phrase a message — a value is never read or logged.
+func apiKeyEnvVars(provider string) []string {
 	switch provider {
 	case ProviderAnthropic:
-		return "ANTHROPIC_API_KEY"
+		return []string{"ANTHROPIC_API_KEY"}
 	case ProviderOpenAI:
-		return "OPENAI_API_KEY"
+		return []string{"OPENAI_API_KEY"}
+	case ProviderGemini:
+		return []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}
 	default:
+		return nil
+	}
+}
+
+// allEnvEmpty reports whether every named environment variable is empty/unset.
+func allEnvEmpty(envs []string) bool {
+	for _, e := range envs {
+		if os.Getenv(e) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// missingKeyDetail names the accepted env var(s) — never a value — for the
+// auth_failed detail. With more than one accepted variable the primary is named
+// with the alternative(s) in parentheses.
+func missingKeyDetail(envs []string) string {
+	switch len(envs) {
+	case 0:
 		return ""
+	case 1:
+		return envs[0] + " is empty or unset"
+	default:
+		return envs[0] + " (or " + strings.Join(envs[1:], ", ") + ") is empty or unset"
 	}
 }
 
@@ -98,6 +128,17 @@ func classifyError(err error) HealthResult {
 			kind = HealthAuthFailed
 		}
 		return result(kind, detailFromOpenAI(oerr))
+	}
+	var gerr genai.APIError
+	if errors.As(err, &gerr) {
+		kind := classifyStatus(gerr.Code, gerr.Message)
+		// Gemini reports a rejected key two ways the status code alone misses: a
+		// 403/401 with status PERMISSION_DENIED/UNAUTHENTICATED, and a 400
+		// INVALID_ARGUMENT whose message is "API key not valid". Force auth_failed.
+		if geminiAuthError(&gerr) {
+			kind = HealthAuthFailed
+		}
+		return result(kind, detailFromGemini(&gerr))
 	}
 	// No HTTP status reached us: a dial/timeout/DNS or a local SDK error (e.g. a
 	// missing key surfaced without a round-trip). Surface its raw text verbatim.
@@ -149,6 +190,29 @@ func detailFromAnthropic(e *anthropic.Error) string {
 // fields (status, error type, message). Same safety guarantees as above.
 func detailFromOpenAI(e *openai.Error) string {
 	return clip(joinNonEmpty(statusToken(e.StatusCode), e.Type, e.Message))
+}
+
+// detailFromGemini assembles a non-empty, secret-free detail from a genai
+// APIError's structured fields (HTTP code, status string, message — all from the
+// response body). It is panic-safe (the value Error() reads no Request/Response)
+// and never contains the api key, which the genai SDK sends only in the
+// x-goog-api-key request header — never in the response body these fields come
+// from.
+func detailFromGemini(e *genai.APIError) string {
+	return clip(joinNonEmpty(statusToken(e.Code), e.Status, e.Message))
+}
+
+// geminiAuthError reports whether a genai APIError indicates an auth/permission
+// failure. A 401/403 already maps to auth_failed by status, but Gemini also
+// returns a 403/401 with status PERMISSION_DENIED/UNAUTHENTICATED and a 400
+// INVALID_ARGUMENT whose message is "API key not valid" for a rejected key.
+func geminiAuthError(e *genai.APIError) bool {
+	switch e.Status {
+	case "UNAUTHENTICATED", "PERMISSION_DENIED":
+		return true
+	}
+	msg := strings.ToLower(e.Message)
+	return strings.Contains(msg, "api key not valid") || strings.Contains(msg, "api_key_invalid")
 }
 
 func statusToken(code int) string {

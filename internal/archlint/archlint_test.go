@@ -132,6 +132,89 @@ func TestScannerDetectsViolation(t *testing.T) {
 	}
 }
 
+// llmSDKImportPrefixes are the third-party LLM provider SDKs. Like go-git, they
+// are confined to ONE directory — the librarian's LLM seam — so the provider
+// SDKs never leak into the rest of the codebase; the loop and the rest of Shoka
+// speak only the seam's neutral Message/Block/ToolDef types. Adding a provider
+// means adding a client behind the seam, not a new SDK import elsewhere.
+var llmSDKImportPrefixes = []string{
+	"github.com/anthropics/anthropic-sdk-go",
+	"github.com/openai/openai-go",
+	"google.golang.org/genai",
+}
+
+// llmSeamDir is the ONE directory tree permitted to import an LLM provider SDK.
+const llmSeamDir = "pkg/librarian/llm"
+
+// scanLLMSDKImports walks walkRoot and returns the module-relative paths of every
+// .go file importing an LLM provider SDK from outside llmSeamDir. It mirrors
+// scanGoGitImports; there is deliberately no _test.go exemption.
+func scanLLMSDKImports(t *testing.T, walkRoot, modRoot string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	var violations []string
+	err := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != walkRoot && skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if perr != nil {
+			return nil
+		}
+		importsSDK := false
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			for _, prefix := range llmSDKImportPrefixes {
+				if p == prefix || strings.HasPrefix(p, prefix+"/") {
+					importsSDK = true
+					break
+				}
+			}
+		}
+		if !importsSDK {
+			return nil
+		}
+		rel, rerr := filepath.Rel(modRoot, path)
+		if rerr != nil {
+			return rerr
+		}
+		rel = filepath.ToSlash(rel)
+		if rel != llmSeamDir && !strings.HasPrefix(rel, llmSeamDir+"/") {
+			violations = append(violations, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", walkRoot, err)
+	}
+	return violations
+}
+
+// TestLLMSDKsConfinedToSeam guarantees every LLM provider SDK (anthropic-sdk-go,
+// openai-go, and the genai SDK) is imported only under pkg/librarian/llm. A
+// provider is added as a client behind the CreateMessage seam, never as a new SDK
+// dependency leaking into the loop or the rest of Shoka. A violation fails the
+// `go test ./...` gate.
+func TestLLMSDKsConfinedToSeam(t *testing.T) {
+	root := moduleRoot(t)
+	violations := scanLLMSDKImports(t, root, root)
+	if len(violations) > 0 {
+		t.Fatalf("an LLM provider SDK is imported outside %s/:\n  %s\n\n"+
+			"Provider SDKs must stay behind the librarian's CreateMessage seam; the loop "+
+			"and the rest of Shoka speak only the seam's neutral types.",
+			llmSeamDir, strings.Join(violations, "\n  "))
+	}
+}
+
 // ----- Anchor 3: every git-ref write is atomic (2026-06-02 directive) -----
 //
 // The 2026-06-02 ref-write race was go-git's loose-ref write truncating the ref

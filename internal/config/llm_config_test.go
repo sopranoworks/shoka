@@ -62,11 +62,23 @@ librarian:
 func TestLLM_UnknownProvider(t *testing.T) {
 	_, err := loadYAML(t, llmBaseYAML+`
 librarian:
-  provider: gemini
-  model: gemini-1.5
+  provider: cohere
+  model: command-r
 `)
 	require.Error(t, err, "an unknown provider must fail validation")
 	assert.Contains(t, err.Error(), "provider")
+}
+
+// TestLLM_GeminiProviderLoads: gemini is a known provider and validates.
+func TestLLM_GeminiProviderLoads(t *testing.T) {
+	cfg, err := loadYAML(t, llmBaseYAML+`
+librarian:
+  provider: gemini
+  model: gemini-2.5-flash
+`)
+	require.NoError(t, err, "gemini provider + model must validate")
+	assert.True(t, cfg.Librarian.IsConfigured())
+	assert.Equal(t, "gemini", cfg.Librarian.Provider)
 }
 
 // TestLLM_AbsentIsNotConfigured: no librarian block ⇒ not configured, loads fine.

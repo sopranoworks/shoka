@@ -466,13 +466,14 @@ type IdentityConfig struct {
 // config that maps to pkg/librarian/llm.LLMConfig and is keyed `librarian:` in
 // YAML — scoped to this module, NOT a generic `llm:` key, so a future module
 // that also calls an LLM gets its own config namespace without colliding.
-// provider selects the SDK (anthropic|openai); model is REQUIRED (the SDKs have
-// no model env var); base_url is OPTIONAL (omitted ⇒ the SDK's production
+// provider selects the SDK (anthropic|openai|gemini); model is REQUIRED (the SDKs
+// have no model env var); base_url is OPTIONAL (omitted ⇒ the SDK's production
 // endpoint; set only for ollama/proxy).
 //
 // There is DELIBERATELY no api_key field: the API key is read from the
-// environment by the SDK (ANTHROPIC_API_KEY / OPENAI_API_KEY), never from
-// config. With strict KnownFields decoding, an `api_key:` line is a hard config
+// environment by the SDK (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY or
+// GOOGLE_API_KEY), never from config. With strict KnownFields decoding, an
+// `api_key:` line is a hard config
 // error — the intended guardrail against putting a secret in the config file.
 // When unset (IsConfigured false), the ask_the_librarian tool is not registered.
 type LLMConfig struct {
@@ -494,8 +495,8 @@ func (c LLMConfig) IsConfigured() bool {
 // field is set; an entirely-empty LLMConfig is "not configured" and skipped by
 // callers.
 func (c LLMConfig) Validate() error {
-	if c.Provider != llmProviderAnthropic && c.Provider != llmProviderOpenAI {
-		return fmt.Errorf("librarian.provider must be %q or %q, got %q", llmProviderAnthropic, llmProviderOpenAI, c.Provider)
+	if c.Provider != llmProviderAnthropic && c.Provider != llmProviderOpenAI && c.Provider != llmProviderGemini {
+		return fmt.Errorf("librarian.provider must be %q, %q or %q, got %q", llmProviderAnthropic, llmProviderOpenAI, llmProviderGemini, c.Provider)
 	}
 	if c.Model == "" {
 		return fmt.Errorf("librarian.model is required (the provider has no model environment variable)")
@@ -508,6 +509,7 @@ func (c LLMConfig) Validate() error {
 const (
 	llmProviderAnthropic = "anthropic"
 	llmProviderOpenAI    = "openai"
+	llmProviderGemini    = "gemini"
 )
 
 type Config struct {
