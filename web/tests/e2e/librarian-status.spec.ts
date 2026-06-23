@@ -24,4 +24,11 @@ test('Librarian status renders and Refresh re-checks (unconfigured server)', asy
 
   // A manual refresh re-runs the server check; with no LLM it stays unconfigured.
   await expect(page.getByTestId('librarian-kind')).toHaveText('Not configured')
+
+  // The Reload-from-config action is present; on a server with no llm block it
+  // reports unconfigured (a reload cannot enable a never-registered librarian).
+  const reload = page.getByTestId('librarian-reload')
+  await expect(reload).toBeVisible()
+  await reload.click()
+  await expect(page.getByTestId('librarian-kind')).toHaveText('Not configured')
 })

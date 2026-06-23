@@ -55,24 +55,52 @@ func New(cfg llm.LLMConfig) *Checker {
 }
 
 // Refresh runs one health-check (when configured) and stores the result. It
-// returns the new snapshot. It never blocks longer than the context allows.
+// returns the new snapshot. It never blocks longer than the context allows. The
+// config is read under the lock (Apply may swap it concurrently after a reload),
+// but the health-check runs WITHOUT the lock so it never spans a round-trip.
 func (c *Checker) Refresh(ctx context.Context) Snapshot {
-	if !c.configured {
+	c.mu.Lock()
+	cfg := c.cfg
+	configured := c.configured
+	c.mu.Unlock()
+	if !configured {
 		return c.Get()
 	}
-	res := llm.CheckHealth(ctx, c.cfg)
-	snap := Snapshot{
-		Configured: true,
-		Provider:   c.cfg.Provider,
-		Model:      c.cfg.Model,
-		Kind:       string(res.Kind),
-		Detail:     res.Detail,
-		CheckedAt:  time.Now().UTC().Format(time.RFC3339),
-	}
+	res := llm.CheckHealth(ctx, cfg)
+	snap := SnapshotFor(cfg, res)
 	c.mu.Lock()
 	c.snap = snap
 	c.mu.Unlock()
 	return snap
+}
+
+// Apply points the checker at a NEW config and records the health result just
+// observed for it — used by the librarian config-reload op, which has already run
+// CheckHealth, so the status card reflects the new model without a second call.
+// Subsequent Refreshes check the new config. Returns the stored snapshot.
+func (c *Checker) Apply(cfg llm.LLMConfig, res llm.HealthResult) Snapshot {
+	snap := SnapshotFor(cfg, res)
+	c.mu.Lock()
+	c.cfg = cfg
+	c.configured = cfg.IsConfigured()
+	c.snap = snap
+	c.mu.Unlock()
+	return snap
+}
+
+// SnapshotFor builds (without storing) the snapshot for a config + health result:
+// provider/model from the config (never the key), kind/detail from the result,
+// stamped now. Callers use it to report a reload outcome that should NOT be
+// committed (a failed reload keeps the old config but still reports the cause).
+func SnapshotFor(cfg llm.LLMConfig, res llm.HealthResult) Snapshot {
+	return Snapshot{
+		Configured: cfg.IsConfigured(),
+		Provider:   cfg.Provider,
+		Model:      cfg.Model,
+		Kind:       string(res.Kind),
+		Detail:     res.Detail,
+		CheckedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
 }
 
 // Get returns the last cached snapshot without running a check.

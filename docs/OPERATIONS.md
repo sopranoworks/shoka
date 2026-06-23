@@ -435,6 +435,27 @@ demand (e.g. after fixing the key or when the endpoint was down). The health
 result reveals only validity (provider/model/kind), never the key. The inner
 read/list/search tools are in-process Go, not separately MCP-exposed.
 
+**Changing the model (or provider) without a restart.** When a provider retires or
+renames a model — or you mistyped the model name — you do not need to restart Shoka.
+Edit the config file on the server (the `llm` block — e.g. set a new `model`), then
+go to **Settings → Librarian** and click **Reload from config file** (super-user).
+Shoka **re-reads the file**, runs the one-call connection test against the new
+settings, and:
+
+- on success, swaps the live LLM client immediately — the change takes effect at
+  once and **persists across restarts because it lives in the file you edited**;
+- on failure (e.g. the new model name is also wrong, or the file has an error), it
+  keeps the **previous** working setting and shows the typed reason, applying
+  nothing.
+
+Shoka **never writes the config file** — persistence is your own edit; the reload
+just re-reads it. The whole file is re-validated on load, so an unrelated syntax
+error elsewhere will fail the reload (and report it) without changing anything. The
+reload only rebuilds the librarian's LLM client; the rest of the running server is
+untouched, and it is manual (there is no file-watching / auto-reload). It can only
+swap an **already-enabled** librarian — adding an `llm` block to a server that
+started without one still needs a restart (the MCP tool is registered at startup).
+
 > Developer/debug only (NOT for deployment): the **anthropic** and **openai**
 > providers can be pointed at a local [ollama](https://ollama.com) for a free,
 > hermetic loop by setting `base_url: http://localhost:11434` (anthropic) or

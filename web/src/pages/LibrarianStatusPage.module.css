@@ -47,6 +47,12 @@
   font-weight: 600;
 }
 
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
 .refresh {
   padding: 0.4rem 0.9rem;
   border: 1px solid var(--border, #ccc);

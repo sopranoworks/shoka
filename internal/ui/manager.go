@@ -95,6 +95,14 @@ const (
 	// payload and are admin-only (they expose config validity, never the API key).
 	MsgLibrarianStatus        MessageType = "LIBRARIAN_STATUS"
 	MsgRefreshLibrarianStatus MessageType = "REFRESH_LIBRARIAN_STATUS"
+	// MsgReloadLibrarianConfig re-reads the config FILE and, on a passing
+	// connection test, swaps the librarian's LLM client live (a new model/
+	// provider) without a restart — the operator's edit to the authoritative YAML
+	// is the persistence (Shoka never WRITES config). It mutates server-global
+	// runtime state, so it is super-user-gated (stricter than the admin reads
+	// above). Returns a LibrarianStatus payload: the new snapshot on success, or
+	// the attempted config + the typed failure detail (old client kept) on failure.
+	MsgReloadLibrarianConfig MessageType = "RELOAD_LIBRARIAN_CONFIG"
 )
 
 type CreateProjectPayload struct {
@@ -237,6 +245,12 @@ type Manager struct {
 	// the librarian is not wired (e.g. the LLM is not configured). The handlers
 	// treat nil as "unconfigured".
 	librarianStatus *libstatus.Checker
+	// librarianReload performs an llm-block-only config reload (re-read the file,
+	// connection-test, swap the live client on success) and returns the resulting
+	// snapshot. nil when the librarian was not registered at startup (the MCP tool
+	// cannot be added live, so a reload cannot enable a never-configured librarian).
+	// Wired at cmd/shoka so internal/config never crosses into internal/ui.
+	librarianReload func(context.Context) libstatus.Snapshot
 	originChecker   func(*http.Request) bool
 	upgrader        websocket.Upgrader
 	notifyDrops     atomic.Int64
@@ -363,10 +377,11 @@ var wsLevels = map[MessageType]uiws.Op{
 // gated via authz.IsSuperUser, checked FIRST, and are deliberately absent from the level
 // tables. They are all document ops (the auth/user/OAuth core contributes none).
 var wsSuperUserOps = map[MessageType]bool{
-	MsgCreateNamespace: true,
-	MsgDeleteNamespace: true,
-	MsgMoveProject:     true,
-	MsgRenameNamespace: true, // a namespace rename relabels the whole namespace + all its grants
+	MsgCreateNamespace:       true,
+	MsgDeleteNamespace:       true,
+	MsgMoveProject:           true,
+	MsgRenameNamespace:       true, // a namespace rename relabels the whole namespace + all its grants
+	MsgReloadLibrarianConfig: true, // swaps the live librarian client (server-global runtime state)
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -490,6 +505,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleLibrarianStatus(client)
 		case MsgRefreshLibrarianStatus:
 			m.handleRefreshLibrarianStatus(client)
+		case MsgReloadLibrarianConfig:
+			m.handleReloadLibrarianConfig(client)
 		default:
 			client.SendError("Unknown message type")
 		}
@@ -787,6 +804,31 @@ func (m *Manager) handleNamespaceHealth(client *uiws.Client) {
 // SetLibrarianStatus wires the cached ask_the_librarian health checker (B-73).
 // Called once at startup from cmd/shoka; nil leaves the status "unconfigured".
 func (m *Manager) SetLibrarianStatus(c *libstatus.Checker) { m.librarianStatus = c }
+
+// SetLibrarianReloader wires the llm-block-only config-reload action (B-73).
+// Called once at startup from cmd/shoka with a closure that re-reads the config
+// file, connection-tests the new llm block, and swaps the live client on success.
+// nil (the default) leaves reload unavailable — the handler reports that.
+func (m *Manager) SetLibrarianReloader(f func(context.Context) libstatus.Snapshot) {
+	m.librarianReload = f
+}
+
+// handleReloadLibrarianConfig re-reads the config file and, on a passing
+// connection test, swaps the librarian's LLM client live (super-user only). On
+// failure the previous client is kept and the typed detail is returned. One real
+// (tiny) API call per invocation — never the API key.
+func (m *Manager) handleReloadLibrarianConfig(client *uiws.Client) {
+	if m.librarianReload == nil {
+		client.SendResponse(MsgLibrarianStatus, libstatus.Snapshot{
+			Kind:   "unconfigured",
+			Detail: "the librarian was not configured at startup; add an llm block and restart to enable it",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client.SendResponse(MsgLibrarianStatus, m.librarianReload(ctx))
+}
 
 // handleLibrarianStatus returns the cached librarian health snapshot — a cheap
 // read, NOT a fresh API call (the WebUI shows the last cached result on load).

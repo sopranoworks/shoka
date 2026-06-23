@@ -80,6 +80,9 @@ func TestGateTables_MatchPreExtraction(t *testing.T) {
 		MsgDeleteNamespace: true,
 		MsgMoveProject:     true,
 		MsgRenameNamespace: true,
+		// B-73: the librarian config reload swaps the live LLM client (server-global
+		// runtime state), so it is super-user-gated alongside the namespace ops.
+		MsgReloadLibrarianConfig: true,
 	}
 
 	m := NewManager(nil, nil, nil)

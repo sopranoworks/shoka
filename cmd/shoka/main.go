@@ -505,7 +505,22 @@ func main() {
 		startMetricsServer(ctx, cfg.Metrics.Addr, s, logger, extras...)
 	}
 
-	mcpServer := setupMCPServer(ctx, cfg, s, logger, notifyCenter)
+	mcpServer, librarianInst := setupMCPServer(ctx, cfg, s, logger, notifyCenter)
+
+	// Wire the librarian config-reload action (B-73 Option 2): a super-user Web-UI
+	// op re-reads the config FILE, connection-tests the new llm block, and on
+	// success swaps the live LLM client (a new model/provider) WITHOUT a restart.
+	// Persistence is the operator's edit to the authoritative YAML — Shoka never
+	// writes config. Only available when the librarian was registered at startup
+	// (the MCP tool cannot be added live). The closure lives here so internal/config
+	// never crosses into internal/ui; the manager only calls the callback.
+	if librarianInst != nil {
+		uim.SetLibrarianReloader(newLibrarianReloader(*configPath, librarianInst, libHealth, reloadDeps{
+			loadConfig:  config.Load,
+			checkHealth: llm.CheckHealth,
+			newClient:   llm.NewClient,
+		}))
+	}
 
 	// WebUI multi-user login (B-28 stage 1): a server-level user/session store
 	// (go-git-free bbolt sibling of oauth.db) backing the /auth/* login surface. It
@@ -732,7 +747,12 @@ func llmConfig(cfg *config.Config) llm.LLMConfig {
 	}
 }
 
-func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitStorage, logger *slog.Logger, notifyCenter *notify.Center) *mcp.Server {
+// setupMCPServer builds the MCP server and returns it together with the
+// ask_the_librarian Librarian (nil when the LLM is not configured at startup).
+// The caller uses the Librarian to wire the live config-reload swap; the MCP tool
+// itself is registered here and cannot be added live, so a reload can only swap an
+// already-registered librarian's client, never enable a never-configured one.
+func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitStorage, logger *slog.Logger, notifyCenter *notify.Center) (*mcp.Server, *librarian.Librarian) {
 	mcpServer := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "shoka",
@@ -915,6 +935,7 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	// context is never filled by the corpus. It rides AuthzMiddleware above
 	// (read-level), so the caller still needs the namespace/project scope; the
 	// inner read/list/search tools are in-process Go, not separately MCP-exposed.
+	var lib *librarian.Librarian
 	if cfg.Librarian.IsConfigured() {
 		llmClient, err := llm.NewClient(llmConfig(cfg))
 		if err != nil {
@@ -922,7 +943,7 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 			// happen; log and skip registration rather than crash serving.
 			logger.Error("ask_the_librarian: cannot build LLM client; tool not registered", "error", err)
 		} else {
-			lib := librarian.New(llmClient, cfg.Librarian.MaxSteps)
+			lib = librarian.New(llmClient, cfg.Librarian.MaxSteps)
 			mcp.AddTool(mcpServer, &mcp.Tool{
 				Name:        "ask_the_librarian",
 				Description: "Ask a natural-language question about a project's documents and get back just the answer. An internal LLM reads the project's files (read-only) and synthesizes the answer, so your own context is not filled by the corpus — ideal for consulting a large body of docs (specs, backlog, reports). Requires read access to the namespace/project.",
@@ -935,7 +956,7 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	subMgr.SetServer(mcpServer)
 	subMgr.StartReaper(ctx)
 
-	return mcpServer
+	return mcpServer, lib
 }
 
 // webAuthConfig returns the auth.Config for the Web/non-MCP routes (/drafts/,

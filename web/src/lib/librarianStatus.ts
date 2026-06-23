@@ -24,3 +24,13 @@ export function librarianStatus(): Promise<LibrarianStatus> {
 export function refreshLibrarianStatus(): Promise<LibrarianStatus> {
   return wsClient().request('REFRESH_LIBRARIAN_STATUS', {})
 }
+
+// reloadLibrarianConfig re-reads the server's config FILE, connection-tests the
+// new llm block, and on success swaps the live LLM client (a new model/provider)
+// WITHOUT a restart — the returned snapshot reflects the new config. On failure
+// the previous setting is kept and the snapshot carries the typed detail. Shoka
+// never writes config: persistence is the operator's own edit to the YAML.
+// Super-user only.
+export function reloadLibrarianConfig(): Promise<LibrarianStatus> {
+  return wsClient().request('RELOAD_LIBRARIAN_CONFIG', {})
+}

@@ -27,7 +27,7 @@ func listToolNames(t *testing.T, cfg *config.Config) map[string]bool {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nc := notify.NewCenter(100)
 
-	srv := setupMCPServer(ctx, cfg, s, logger, nc)
+	srv, _ := setupMCPServer(ctx, cfg, s, logger, nc)
 
 	ct, st := mcp.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, st, nil); err != nil {

@@ -85,14 +85,9 @@ async function seed(wsUrl: string): Promise<void> {
     path: 'config.yaml',
     content: 'name: docs\nversion: 1\n# not a heading\n',
   })
-  // A plain-text file with no recognised language: must still render as a plain
-  // <pre>, not markdown and not CodeMirror.
-  await rpc(ws, 'SAVE_FILE', {
-    namespace: 'demo',
-    projectName: 'docs',
-    path: 'notes.txt',
-    content: 'plain notes\n# not a heading\n',
-  })
+  // (A plain-text notes.txt fixture was removed: commit 6b26ba5 gated every write
+  // path — including SAVE_FILE — to the md/markdown/json/yaml allowlist, so a .txt
+  // can no longer be created; the obsolete "plain <pre>" calibre test went with it.)
   // Markdown with a fenced code block: session 4 highlights fences via
   // rehype-highlight (the .hljs class is the stable hook).
   await rpc(ws, 'SAVE_FILE', {

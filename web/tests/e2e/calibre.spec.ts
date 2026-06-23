@@ -28,17 +28,10 @@ test('markdown renders GFM (tables)', async ({ page }) => {
   await expect(page.locator('table')).toBeVisible()
 })
 
-test('plain-text files render as a plain <pre>, not markdown', async ({
-  page,
-}) => {
-  await page.goto('/p/demo/docs/blob/notes.txt')
-  // The raw content appears verbatim in a <pre>...
-  await expect(page.locator('pre')).toContainText('plain notes')
-  // ...and the "# not a heading" line is NOT promoted to a real heading.
-  await expect(
-    page.getByRole('heading', { name: 'not a heading' }),
-  ).toHaveCount(0)
-})
+// (The "plain-text files render as a plain <pre>" test was removed: commit
+// 6b26ba5 gated every write path — including the web SAVE_FILE op — to the
+// md/markdown/json/yaml allowlist, so a .txt file can no longer be created or
+// rendered. The scenario it covered is no longer reachable by design.)
 
 test('recognised code files render highlighted in CodeView, not markdown', async ({
   page,

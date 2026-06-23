@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { librarianStatus, refreshLibrarianStatus } from '../lib/librarianStatus'
+import { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig } from '../lib/librarianStatus'
 import styles from './LibrarianStatusPage.module.css'
 
 // Human labels for the server's health kinds (B-73). Never shows the API key.
@@ -20,6 +20,7 @@ const KIND_LABEL: Record<string, string> = {
 export function LibrarianStatusPage() {
   const qc = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
+  const [reloading, setReloading] = useState(false)
   const q = useQuery({ queryKey: ['librarian-status'], queryFn: librarianStatus })
 
   async function onRefresh() {
@@ -29,6 +30,16 @@ export function LibrarianStatusPage() {
       qc.setQueryData(['librarian-status'], fresh)
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  async function onReload() {
+    setReloading(true)
+    try {
+      const fresh = await reloadLibrarianConfig()
+      qc.setQueryData(['librarian-status'], fresh)
+    } finally {
+      setReloading(false)
     }
   }
 
@@ -81,14 +92,30 @@ export function LibrarianStatusPage() {
         </div>
       )}
 
-      <button
-        className={styles.refresh}
-        onClick={onRefresh}
-        disabled={refreshing}
-        data-testid="librarian-refresh"
-      >
-        {refreshing ? 'Checking…' : 'Refresh status'}
-      </button>
+      <div className={styles.actions}>
+        <button
+          className={styles.refresh}
+          onClick={onRefresh}
+          disabled={refreshing || reloading}
+          data-testid="librarian-refresh"
+        >
+          {refreshing ? 'Checking…' : 'Refresh status'}
+        </button>
+        <button
+          className={styles.refresh}
+          onClick={onReload}
+          disabled={refreshing || reloading}
+          data-testid="librarian-reload"
+        >
+          {reloading ? 'Reloading…' : 'Reload from config file'}
+        </button>
+      </div>
+      <p className={styles.intro}>
+        To change the librarian's model or provider without restarting Shoka, edit the server's config
+        file (the <code>llm</code> block), then Reload. Shoka re-reads the file and runs a connection test;
+        on success the change takes effect immediately and persists because it lives in the file you edited
+        (Shoka never writes the config). On failure the previous setting stays and the reason is shown above.
+      </p>
     </div>
   )
 }

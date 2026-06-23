@@ -6,13 +6,14 @@ import type { ReactNode } from 'react'
 
 // Mock the imperative ops so the test asserts the rendered view + the refresh
 // wiring, not the /ws/ui path.
-const { librarianStatus, refreshLibrarianStatus } = vi.hoisted(() => ({
+const { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig } = vi.hoisted(() => ({
   librarianStatus: vi.fn(),
   refreshLibrarianStatus: vi.fn(),
+  reloadLibrarianConfig: vi.fn(),
 }))
 vi.mock('../lib/librarianStatus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/librarianStatus')>()
-  return { ...actual, librarianStatus, refreshLibrarianStatus }
+  return { ...actual, librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig }
 })
 
 import { LibrarianStatusPage } from './LibrarianStatusPage'
@@ -25,6 +26,7 @@ function wrap(node: ReactNode) {
 beforeEach(() => {
   librarianStatus.mockReset()
   refreshLibrarianStatus.mockReset()
+  reloadLibrarianConfig.mockReset()
 })
 
 describe('LibrarianStatusPage', () => {
@@ -56,6 +58,33 @@ describe('LibrarianStatusPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('librarian-kind')).toHaveTextContent('Ready'))
     expect(refreshLibrarianStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads from the config file and shows the new model on success', async () => {
+    librarianStatus.mockResolvedValue({ configured: true, provider: 'openai', model: 'gpt-4o', kind: 'ready' })
+    reloadLibrarianConfig.mockResolvedValue({ configured: true, provider: 'gemini', model: 'gemini-2.5-flash', kind: 'ready' })
+
+    render(wrap(<LibrarianStatusPage />))
+    await waitFor(() => expect(screen.getByText('gpt-4o')).toBeInTheDocument())
+
+    await userEvent.click(screen.getByTestId('librarian-reload'))
+
+    await waitFor(() => expect(screen.getByText('gemini-2.5-flash')).toBeInTheDocument())
+    expect(reloadLibrarianConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the previous status and shows the detail when a reload fails the connection test', async () => {
+    librarianStatus.mockResolvedValue({ configured: true, provider: 'openai', model: 'gpt-4o', kind: 'ready' })
+    reloadLibrarianConfig.mockResolvedValue({ configured: true, provider: 'openai', model: 'gpt-typo', kind: 'model_not_found', detail: 'the model "gpt-typo" does not exist' })
+
+    render(wrap(<LibrarianStatusPage />))
+    await waitFor(() => expect(screen.getByTestId('librarian-kind')).toHaveTextContent('Ready'))
+
+    await userEvent.click(screen.getByTestId('librarian-reload'))
+
+    await waitFor(() => expect(screen.getByTestId('librarian-kind')).toHaveTextContent('Model not found'))
+    expect(screen.getByTestId('librarian-detail')).toHaveTextContent('does not exist')
+    expect(reloadLibrarianConfig).toHaveBeenCalledTimes(1)
   })
 
   it('never renders an API key', async () => {

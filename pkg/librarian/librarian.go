@@ -17,6 +17,7 @@ package librarian
 
 import (
 	"context"
+	"sync"
 
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
 )
@@ -52,7 +53,16 @@ type Result struct {
 }
 
 // Librarian runs ask_the_librarian queries against an injected LLM client.
+//
+// The client is a SWAPPABLE reference, guarded by mu, so an operator-triggered
+// config reload can replace it live (a new model/provider) without a restart.
+// The model is captured inside the client at construction (the seam carries no
+// per-call model), so a swap means installing a NEW client, not mutating a field
+// — see SetClient. Ask snapshots the reference under the lock and releases it
+// before the tool-call loop, so no lock ever spans an LLM round-trip and an
+// in-flight Ask completes on the client it started with.
 type Librarian struct {
+	mu       sync.RWMutex
 	client   llm.Client
 	maxSteps int
 }
@@ -61,6 +71,24 @@ type Librarian struct {
 // model round-trips (<= 0 falls back to a sensible default).
 func New(client llm.Client, maxSteps int) *Librarian {
 	return &Librarian{client: client, maxSteps: maxSteps}
+}
+
+// SetClient atomically swaps the live LLM client (e.g. after a config reload to a
+// new model/provider). In-flight Ask calls already snapshotted the previous
+// client and finish on it; the next Ask picks up the new one.
+func (l *Librarian) SetClient(client llm.Client) {
+	l.mu.Lock()
+	l.client = client
+	l.mu.Unlock()
+}
+
+// currentClient returns the live client reference under the read lock. The caller
+// uses the returned value without holding the lock, so a concurrent SetClient can
+// proceed and no lock spans the subsequent round-trips.
+func (l *Librarian) currentClient() llm.Client {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.client
 }
 
 // Ask answers a question over the request's corpus root. It builds a fresh
@@ -75,6 +103,8 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 		corpus = NewDirCorpus(req.Root)
 	}
 	tools := buildTools(guard, corpus)
-	answer, calls, err := runLoop(ctx, l.client, systemPrompt, req.Question, tools, l.maxSteps)
+	// Snapshot the swappable client reference before the loop; runLoop captures it
+	// by value, so a concurrent SetClient never affects this in-flight call.
+	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.maxSteps)
 	return Result{Answer: answer, Calls: calls}, err
 }
