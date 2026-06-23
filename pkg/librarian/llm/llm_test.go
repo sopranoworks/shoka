@@ -2,6 +2,7 @@ package llm
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -91,5 +92,59 @@ func TestCheckHealth_Misconfigured(t *testing.T) {
 	// No provider/model ⇒ misconfigured, with NO network call.
 	if got := CheckHealth(t.Context(), LLMConfig{}); got.Kind != HealthMisconfigured {
 		t.Errorf("empty config = %v, want misconfigured", got.Kind)
+	}
+}
+
+// The diagnostic field exists to carry the WHY: every non-ready classification —
+// and ESPECIALLY the misconfigured fallback and the local/no-HTTP-status case —
+// must yield a non-empty Detail that reflects the underlying error, never "".
+func TestClassifyError_DetailAlwaysPopulated(t *testing.T) {
+	// The misconfigured fallback (a status that maps to no specific kind) must
+	// carry a non-empty detail naming the status — no more `misconfigured detail=""`.
+	if got := classifyError(&anthropic.Error{StatusCode: 418}); got.Kind != HealthMisconfigured {
+		t.Fatalf("anthropic 418 kind = %v, want misconfigured", got.Kind)
+	} else if got.Detail == "" || !strings.Contains(got.Detail, "418") {
+		t.Errorf("misconfigured fallback detail = %q, want non-empty containing the status", got.Detail)
+	}
+	// A 400 that isn't about the model is also the fallback bucket; still non-empty.
+	if got := classifyError(&anthropic.Error{StatusCode: 400}); got.Kind != HealthMisconfigured || got.Detail == "" {
+		t.Errorf("anthropic 400 = %+v, want misconfigured with non-empty detail", got)
+	}
+	// The local / no-HTTP-status case: Detail is exactly the underlying err.Error().
+	if got := classifyError(errors.New("dial tcp: connection refused")); got.Detail != "dial tcp: connection refused" {
+		t.Errorf("local error detail = %q, want it to equal err.Error()", got.Detail)
+	}
+	// An OpenAI message-bearing error surfaces that message in the detail.
+	oerr := &openai.Error{StatusCode: 400, Message: "unsupported parameter"}
+	if got := classifyError(oerr); got.Detail == "" || !strings.Contains(got.Detail, "unsupported parameter") {
+		t.Errorf("openai detail = %q, want it to include the message", got.Detail)
+	}
+}
+
+// A body-level authentication error reads as auth_failed even when the status
+// mapping alone would not (defence in depth for a key rejected without a clean 401).
+func TestClassifyError_AuthErrorType(t *testing.T) {
+	var ae anthropic.Error
+	if err := ae.UnmarshalJSON([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`)); err != nil {
+		t.Fatalf("unmarshal synthetic anthropic error: %v", err)
+	}
+	if ae.Type() != "authentication_error" {
+		t.Skipf("SDK did not surface the body error-type (got %q); override path untestable here", ae.Type())
+	}
+	if got := classifyError(&ae); got.Kind != HealthAuthFailed {
+		t.Errorf("body authentication_error = %v, want auth_failed", got.Kind)
+	}
+}
+
+// A missing env key is named plainly as auth_failed with NO network call, and the
+// detail names only the variable — never any value.
+func TestCheckHealth_MissingKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "") // force empty regardless of the host env
+	got := CheckHealth(t.Context(), LLMConfig{Provider: ProviderAnthropic, Model: "claude-x"})
+	if got.Kind != HealthAuthFailed {
+		t.Fatalf("missing key kind = %v, want auth_failed", got.Kind)
+	}
+	if got.Detail != "ANTHROPIC_API_KEY is empty or unset" {
+		t.Errorf("missing key detail = %q, want the env-var-name message", got.Detail)
 	}
 }

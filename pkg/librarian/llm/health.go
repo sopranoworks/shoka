@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -36,9 +38,17 @@ func CheckHealth(ctx context.Context, cfg LLMConfig) HealthResult {
 	if !cfg.IsConfigured() {
 		return HealthResult{Kind: HealthMisconfigured, Detail: "provider and model are required"}
 	}
+	// The two basic key states are knowable without a round-trip, so name them
+	// plainly instead of letting them fall through to a vaguer bucket. A missing
+	// env key is auth_failed — say which variable, never its value. (For the
+	// ollama debug loop the placeholder ANTHROPIC_API_KEY=ollama is non-empty, so
+	// this passes through to the real call.)
+	if env := apiKeyEnvVar(cfg.Provider); env != "" && os.Getenv(env) == "" {
+		return HealthResult{Kind: HealthAuthFailed, Detail: env + " is empty or unset"}
+	}
 	client, err := NewClient(cfg)
 	if err != nil {
-		return HealthResult{Kind: HealthMisconfigured, Detail: err.Error()}
+		return HealthResult{Kind: HealthMisconfigured, Detail: clip(err.Error())}
 	}
 	_, err = client.CreateMessage(ctx, CreateMessageParams{
 		Messages: []Message{{Role: RoleUser, Content: []Block{{Type: BlockText, Text: "ping"}}}},
@@ -49,20 +59,58 @@ func CheckHealth(ctx context.Context, cfg LLMConfig) HealthResult {
 	return HealthResult{Kind: HealthReady}
 }
 
-// classifyError maps an SDK / transport error to a HealthResult. It reads the
-// SDK error's status code + message (never calling .Error(), which dereferences
-// the request/response), so it is safe on synthetic errors in tests too.
+// apiKeyEnvVar names the environment variable each provider's SDK reads its key
+// from, or "" for an unknown provider. We only ever check this variable's
+// PRESENCE to phrase a message — its value is never read into config or logged.
+func apiKeyEnvVar(provider string) string {
+	switch provider {
+	case ProviderAnthropic:
+		return "ANTHROPIC_API_KEY"
+	case ProviderOpenAI:
+		return "OPENAI_API_KEY"
+	default:
+		return ""
+	}
+}
+
+// classifyError maps an SDK / transport error to a HealthResult. On EVERY
+// non-ready outcome it populates Detail with the underlying error — for the SDK
+// errors, the structured status/type/body fields (read directly, never via
+// .Error(), which dereferences the nil Request/Response of a synthetic test
+// error); for any other error, its err.Error() text. The api key is NEVER
+// included: it lives only in the Authorization header, which none of these fields
+// expose. result() guarantees Detail is never empty on a non-ready kind.
 func classifyError(err error) HealthResult {
 	var aerr *anthropic.Error
 	if errors.As(err, &aerr) {
-		return HealthResult{Kind: classifyStatus(aerr.StatusCode, aerr.RawJSON()), Detail: statusDetail(aerr.StatusCode)}
+		kind := classifyStatus(aerr.StatusCode, aerr.RawJSON())
+		// A body-level auth/permission error reads as auth_failed even if the
+		// status line didn't say so (a 401/403 already maps to auth_failed).
+		if t := aerr.Type(); t == "authentication_error" || t == "permission_error" {
+			kind = HealthAuthFailed
+		}
+		return result(kind, detailFromAnthropic(aerr))
 	}
 	var oerr *openai.Error
 	if errors.As(err, &oerr) {
-		return HealthResult{Kind: classifyStatus(oerr.StatusCode, oerr.Message), Detail: shortDetail(oerr.Message)}
+		kind := classifyStatus(oerr.StatusCode, oerr.Message)
+		if oerr.Code == "invalid_api_key" || oerr.Type == "authentication_error" {
+			kind = HealthAuthFailed
+		}
+		return result(kind, detailFromOpenAI(oerr))
 	}
-	// No HTTP status reached us: a dial/timeout/DNS failure.
-	return HealthResult{Kind: HealthUnreachable, Detail: "could not reach the LLM endpoint"}
+	// No HTTP status reached us: a dial/timeout/DNS or a local SDK error (e.g. a
+	// missing key surfaced without a round-trip). Surface its raw text verbatim.
+	return result(HealthUnreachable, clip(err.Error()))
+}
+
+// result builds a HealthResult, guaranteeing a non-empty Detail for any non-ready
+// outcome. The misconfigured fallback in particular must never log detail="".
+func result(kind HealthKind, detail string) HealthResult {
+	if kind != HealthReady && strings.TrimSpace(detail) == "" {
+		detail = "the LLM call failed (no further detail available)"
+	}
+	return HealthResult{Kind: kind, Detail: detail}
 }
 
 // classifyStatus maps an HTTP status (and the response message, for the 400
@@ -89,27 +137,47 @@ func classifyStatus(code int, msg string) HealthKind {
 	}
 }
 
-func statusDetail(code int) string {
-	switch {
-	case code == 401 || code == 403:
-		return "the API key (environment variable) is missing or invalid"
-	case code == 404:
-		return "the model was not found — check the model name"
-	case code >= 500:
-		return "the LLM endpoint returned a server error"
-	default:
-		return ""
-	}
+// detailFromAnthropic assembles a non-empty, secret-free detail from an Anthropic
+// SDK error's structured fields (status, body error-type, raw body). It reads no
+// Request/Response, so it is safe on the synthetic errors built in tests, and it
+// never contains the api key (which is only ever in the Authorization header).
+func detailFromAnthropic(e *anthropic.Error) string {
+	return clip(joinNonEmpty(statusToken(e.StatusCode), string(e.Type()), e.RawJSON()))
 }
 
-// shortDetail trims a provider message to a single concise line (it may name the
-// model, which is not a secret; it never contains the key).
-func shortDetail(msg string) string {
+// detailFromOpenAI assembles the equivalent from an OpenAI SDK error's structured
+// fields (status, error type, message). Same safety guarantees as above.
+func detailFromOpenAI(e *openai.Error) string {
+	return clip(joinNonEmpty(statusToken(e.StatusCode), e.Type, e.Message))
+}
+
+func statusToken(code int) string {
+	if code == 0 {
+		return ""
+	}
+	return fmt.Sprintf("HTTP %d", code)
+}
+
+// joinNonEmpty joins the non-blank parts with ": ", dropping empties so a sparse
+// synthetic error (e.g. only a status code) still yields a tidy single line.
+func joinNonEmpty(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, strings.TrimSpace(p))
+		}
+	}
+	return strings.Join(kept, ": ")
+}
+
+// clip reduces a message to a single concise line and caps its length, so a large
+// response body never floods the startup log or the WebUI status card.
+func clip(msg string) string {
 	msg = strings.TrimSpace(msg)
 	if i := strings.IndexAny(msg, "\n\r"); i >= 0 {
 		msg = msg[:i]
 	}
-	const max = 160
+	const max = 200
 	if len(msg) > max {
 		msg = msg[:max] + "…"
 	}
