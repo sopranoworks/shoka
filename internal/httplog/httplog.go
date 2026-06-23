@@ -26,7 +26,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sopranoworks/shoka/internal/reqtrace"
+	"github.com/sopranoworks/shoka/pkg/reqtrace"
 )
 
 // sessionIDHeader is the Streamable HTTP session identifier header (MCP spec,

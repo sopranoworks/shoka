@@ -21,7 +21,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/sopranoworks/shoka/internal/reqtrace"
+	"github.com/sopranoworks/shoka/pkg/reqtrace"
 	"github.com/sopranoworks/shoka/pkg/serverurl"
 )
 

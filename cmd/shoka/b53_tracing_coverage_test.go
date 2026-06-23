@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/sopranoworks/shoka/internal/httplog"
-	"github.com/sopranoworks/shoka/internal/reqtrace"
 	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/oauth"
+	"github.com/sopranoworks/shoka/pkg/reqtrace"
 )
 
 // B-53 §2.6 — prove no path is exempt: a single correlated entry-to-exit trace

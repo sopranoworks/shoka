@@ -14,8 +14,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 
-	"github.com/sopranoworks/shoka/internal/reqtrace"
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
+	"github.com/sopranoworks/shoka/pkg/reqtrace"
 	"github.com/sopranoworks/shoka/pkg/serverurl"
 	"github.com/sopranoworks/shoka/pkg/tokenfp"
 )

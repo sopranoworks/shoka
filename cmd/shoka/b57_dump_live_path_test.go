@@ -13,9 +13,9 @@ import (
 
 	"github.com/sopranoworks/shoka/internal/config"
 	"github.com/sopranoworks/shoka/internal/httplog"
-	"github.com/sopranoworks/shoka/internal/reqtrace"
 	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/oauth"
+	"github.com/sopranoworks/shoka/pkg/reqtrace"
 )
 
 // B-57 — the LIVE-PATH proof the B-56 unit test could not give.
