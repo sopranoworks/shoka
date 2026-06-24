@@ -322,12 +322,28 @@ export class WsRequestClient {
 
 let singleton: WsRequestClient | null = null
 
-function socketUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${window.location.host}/ws/ui`
+// The WebSocket path the singleton connects to, on `window.location.host`. Default
+// `/ws/ui` is Shoka's endpoint; a consumer (e.g. a product reusing these screens) can
+// point the shared client at a different path via configureWsClient before first use.
+let configuredPath = '/ws/ui'
+
+/**
+ * Configure the process-wide client before its first use. Currently only the socket
+ * `path` is configurable (default `/ws/ui`). Calling this after the singleton has been
+ * constructed has no effect on the live connection (the path is read at construction);
+ * configure it at app bootstrap, before any wsClient() call. Shoka uses the default and
+ * never calls this.
+ */
+export function configureWsClient(opts: { path?: string }): void {
+  if (opts.path) configuredPath = opts.path
 }
 
-/** The process-wide /ws/ui client, constructed on first use. */
+function socketUrl(): string {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}${configuredPath}`
+}
+
+/** The process-wide WebSocket client (path per configureWsClient), constructed on first use. */
 export function wsClient(): WsRequestClient {
   if (!singleton) singleton = new WsRequestClient(socketUrl())
   return singleton

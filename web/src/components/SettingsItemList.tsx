@@ -1,6 +1,7 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { visibleSettingsItems } from '../lib/settingsRegistry'
 import { useIsSuperUser, useManagesAnyNamespace } from '../lib/authStatus'
+import { useCoreScreens } from '../lib/coreScreens'
 import styles from './Sidebar.module.css'
 
 // SettingsItemList is the Settings rail mode's sidebar: the permission-filtered list
@@ -11,11 +12,12 @@ import styles from './Sidebar.module.css'
 export function SettingsItemList() {
   const isSuperUser = useIsSuperUser()
   const managesAnyNamespace = useManagesAnyNamespace()
+  const { extraSettingsItems } = useCoreScreens()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const selected = useRouterState({
     select: (s) => (s.location.search as { item?: string }).item,
   })
-  const items = visibleSettingsItems({ isSuperUser, managesAnyNamespace })
+  const items = visibleSettingsItems({ isSuperUser, managesAnyNamespace }, extraSettingsItems)
   const proj = pathname.match(/^\/p\/([^/]+)\/([^/]+)/)
 
   return (

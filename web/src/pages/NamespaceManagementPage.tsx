@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { Fragment, type ReactNode, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useIsSuperUser } from '../lib/authStatus'
 import { useToast } from '../lib/toast'
+import { useCoreScreens } from '../lib/coreScreens'
 import { PromptDialog } from '../components/PromptDialog'
 import { TypeToConfirmDialog } from '../components/TypeToConfirmDialog'
 import { MoveProjectDialog } from '../components/MoveProjectDialog'
@@ -57,6 +58,11 @@ export function NamespaceManagementPage() {
   const qc = useQueryClient()
   const { add: toast } = useToast()
   const isSuperUser = useIsSuperUser()
+  // Consumer-injected sections (Layer-C extension seam). Undefined by default, so Shoka
+  // renders no extra sections and the output is identical; a consumer (e.g. GitYard)
+  // supplies these via CoreScreensProvider to add SSH-key (namespace) / seed-config,
+  // sync-status, Resume (project) sections without modifying this screen.
+  const { renderNamespaceSections, renderProjectSections } = useCoreScreens()
   const health = useQuery({ queryKey: ['namespace-health'], queryFn: namespaceHealth })
 
   const [add, setAdd] = useState<AddTarget>(null)
@@ -157,6 +163,8 @@ export function NamespaceManagementPage() {
             onAdoptProject={(name) =>
               run(namespaceRecover('adopt', nh.name, name), `Adopted ${nh.name}/${name}.`)
             }
+            renderNamespaceSections={renderNamespaceSections}
+            renderProjectSections={renderProjectSections}
           />
         ))
       )}
@@ -256,6 +264,8 @@ function NamespaceBlock({
   onDropMissing,
   onCleanOrphan,
   onAdoptProject,
+  renderNamespaceSections,
+  renderProjectSections,
 }: {
   nh: NamespaceHealth
   isSuperUser: boolean
@@ -268,6 +278,8 @@ function NamespaceBlock({
   onDropMissing: (proj: string) => void
   onCleanOrphan: (name: string) => void
   onAdoptProject: (name: string) => void
+  renderNamespaceSections?: (namespace: string) => ReactNode
+  renderProjectSections?: (namespace: string, project: string) => ReactNode
 }) {
   // Go marshals an empty namespace's project slice as JSON null — tolerate it.
   const projects = nh.projects ?? []
@@ -316,18 +328,31 @@ function NamespaceBlock({
             </tr>
           </thead>
           <tbody>
-            {projects.map((p) => (
-              <ProjectRow
-                key={p.name}
-                p={p}
-                namespace={nh.name}
-                isSuperUser={isSuperUser}
-                onMove={() => onMoveProject(p.name)}
-                onRename={() => onRenameProject(p.name)}
-                onDelete={() => onDeleteProject(p.name)}
-                onDropMissing={() => onDropMissing(p.name)}
-              />
-            ))}
+            {projects.map((p) => {
+              // A consumer may inject a per-project section (seed config, sync status,
+              // Resume). It renders as an extra full-width row beneath the project's row,
+              // keeping it associated with the project. Default (no renderer / nullish
+              // result) emits nothing — identical DOM.
+              const projectExtra = renderProjectSections?.(nh.name, p.name)
+              return (
+                <Fragment key={p.name}>
+                  <ProjectRow
+                    p={p}
+                    namespace={nh.name}
+                    isSuperUser={isSuperUser}
+                    onMove={() => onMoveProject(p.name)}
+                    onRename={() => onRenameProject(p.name)}
+                    onDelete={() => onDeleteProject(p.name)}
+                    onDropMissing={() => onDropMissing(p.name)}
+                  />
+                  {projectExtra ? (
+                    <tr data-testid={`proj-sections-${nh.name}-${p.name}`}>
+                      <td colSpan={3}>{projectExtra}</td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              )
+            })}
           </tbody>
         </table>
       )}
@@ -376,6 +401,10 @@ function NamespaceBlock({
           ))}
         </div>
       )}
+
+      {/* Consumer-injected namespace-level section (e.g. SSH-key management). Default
+          undefined → nothing rendered → identical DOM. */}
+      {renderNamespaceSections?.(nh.name)}
     </section>
   )
 }

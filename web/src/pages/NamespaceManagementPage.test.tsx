@@ -26,6 +26,7 @@ vi.mock('../lib/nsManageOps', async (importOriginal) => {
 vi.mock('../lib/authStatus', () => ({ useIsSuperUser: isSuperUser }))
 
 import { NamespaceManagementPage } from './NamespaceManagementPage'
+import { CoreScreensProvider } from '../lib/coreScreens'
 import type { HealthReport } from '../lib/nsManageOps'
 
 const report: HealthReport = {
@@ -271,5 +272,43 @@ describe('NamespaceManagementPage', () => {
     // Project rename IS available (admin-on-ns — every listed namespace is administerable).
     const alphaRow = within(foo).getByTestId('proj-foo-alpha')
     expect(within(alphaRow).getByRole('button', { name: 'Rename…' })).toBeInTheDocument()
+  })
+})
+
+// Layer-C extension seam: a consumer injects per-namespace and per-project sections via
+// CoreScreensProvider. Default (no provider) renders nothing extra — covered implicitly by
+// every test above (none of them sees these nodes).
+describe('NamespaceManagementPage — injectable sections', () => {
+  beforeEach(() => {
+    isSuperUser.mockReset()
+    namespaceHealth.mockReset()
+    namespaceHealth.mockResolvedValue(report)
+  })
+
+  it('renders consumer-injected namespace- and project-level sections in place', async () => {
+    isSuperUser.mockReturnValue(true)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <CoreScreensProvider
+            value={{
+              renderNamespaceSections: (ns) => <div data-testid={`ssh-${ns}`}>SSH keys for {ns}</div>,
+              renderProjectSections: (ns, proj) => <span data-testid={`seed-${ns}-${proj}`}>seed</span>,
+            }}
+          >
+            {children}
+          </CoreScreensProvider>
+        </ToastProvider>
+      </QueryClientProvider>
+    )
+    render(<NamespaceManagementPage />, { wrapper })
+
+    // Namespace-level section appears inside each namespace block.
+    expect(await screen.findByTestId('ssh-foo')).toHaveTextContent('SSH keys for foo')
+    expect(screen.getByTestId('ssh-empty')).toBeInTheDocument()
+    // Project-level section appears as an extra row keyed to the project.
+    expect(screen.getByTestId('proj-sections-foo-alpha')).toBeInTheDocument()
+    expect(screen.getByTestId('seed-foo-alpha')).toHaveTextContent('seed')
   })
 })

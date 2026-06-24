@@ -31,4 +31,23 @@ describe('visibleSettingsItems', () => {
     const ids = visibleSettingsItems({ isSuperUser: false, managesAnyNamespace: true }).map((i) => i.id)
     expect(ids).toEqual(['account', 'namespaces'])
   })
+
+  // Extension seam (Layer-C): a consumer can inject extra items, merged AFTER the
+  // built-ins and filtered by their own visibility predicate. Default (no extras) is
+  // unchanged — the tests above pass `visibleSettingsItems(v)` with no second arg.
+  it('merges injected extra items after the built-ins, respecting their predicate', () => {
+    const extras = [
+      { id: 'ssh-keys', label: 'SSH keys', visible: (v: { isSuperUser: boolean }) => v.isSuperUser },
+      { id: 'always', label: 'Always', visible: () => true },
+    ]
+    const su = visibleSettingsItems({ isSuperUser: true, managesAnyNamespace: true }, extras).map((i) => i.id)
+    expect(su).toContain('ssh-keys')
+    expect(su).toContain('always')
+    // built-ins still come first, extras appended in order
+    expect(su.indexOf('account')).toBeLessThan(su.indexOf('ssh-keys'))
+
+    const plain = visibleSettingsItems({ isSuperUser: false, managesAnyNamespace: false }, extras).map((i) => i.id)
+    expect(plain).not.toContain('ssh-keys') // gated extra hidden from non-super-user
+    expect(plain).toContain('always') // always-visible extra shown
+  })
 })

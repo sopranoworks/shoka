@@ -14,11 +14,23 @@ export interface SettingsVisibility {
   managesAnyNamespace: boolean
 }
 
+import type { ComponentType } from 'react'
+
 export interface SettingsItem {
   id: string
   label: string
   // visible decides whether this item appears for the given viewer.
   visible: (v: SettingsVisibility) => boolean
+  // component is the screen rendered when this item is selected. The built-in items leave
+  // it undefined — SettingsPage maps their ids to its statically-imported screens (so the
+  // page code stays code-split in the Settings chunk, not pulled into the sidebar). An
+  // INJECTED item (a consumer extending the registry) supplies its own component here, and
+  // the registry-driven dispatch renders it.
+  component?: ComponentType
+  // deniedBody is the paragraph shown (under the item's label as title) when visible() is
+  // false at dispatch time — the permission re-check the server ultimately enforces. Omit
+  // for always-visible items (e.g. My Account).
+  deniedBody?: string
 }
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
@@ -27,10 +39,20 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   // ops act on the session identity only), so it is safe for all viewers.
   { id: 'account', label: 'My Account', visible: () => true },
   // User management + OAuth connections are SUPER-USER-ONLY.
-  { id: 'users', label: 'User management', visible: (v) => v.isSuperUser },
+  {
+    id: 'users',
+    label: 'User management',
+    visible: (v) => v.isSuperUser,
+    deniedBody: 'You do not have permission to manage users.',
+  },
   // The OAuth/MCP connection management screen — its real home now. The OAUTH_* ops are
   // admin-gated server-side (stages 2/4), so this filter is the UI half.
-  { id: 'oauth', label: 'OAuth connections', visible: (v) => v.isSuperUser },
+  {
+    id: 'oauth',
+    label: 'OAuth connections',
+    visible: (v) => v.isSuperUser,
+    deniedBody: 'You do not have permission to manage OAuth connections.',
+  },
   // Namespace / project management (B-28 part 2) — visible to a super-user OR ANY
   // namespace-admin (NOT super-user-only), the server-derived manages-any-namespace
   // predicate. The screen's per-op controls are further gated (namespace add/delete =
@@ -39,14 +61,25 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
     id: 'namespaces',
     label: 'Namespace / project management',
     visible: (v) => v.isSuperUser || v.managesAnyNamespace,
+    deniedBody: 'You do not have permission to manage namespaces or projects.',
   },
   // ask_the_librarian health (B-73) — SUPER-USER-ONLY: it reports server-wide LLM
   // config validity (provider/model/connectivity), never a secret. The LIBRARIAN_*
   // ws ops are admin-gated server-side, so this filter is the UI half.
-  { id: 'librarian', label: 'Librarian', visible: (v) => v.isSuperUser },
+  {
+    id: 'librarian',
+    label: 'Librarian',
+    visible: (v) => v.isSuperUser,
+    deniedBody: 'You do not have permission to view the librarian status.',
+  },
 ]
 
-// visibleSettingsItems returns the items the current viewer may access.
-export function visibleSettingsItems(v: SettingsVisibility): SettingsItem[] {
-  return SETTINGS_ITEMS.filter((it) => it.visible(v))
+// visibleSettingsItems returns the items the current viewer may access. `extras` are
+// consumer-injected items (default none) merged AFTER the built-ins, so a second product
+// can extend the Settings list without modifying this module.
+export function visibleSettingsItems(
+  v: SettingsVisibility,
+  extras: SettingsItem[] = [],
+): SettingsItem[] {
+  return [...SETTINGS_ITEMS, ...extras].filter((it) => it.visible(v))
 }
