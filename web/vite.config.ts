@@ -22,6 +22,13 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   base: '/',
   plugins: [react()],
+  resolve: {
+    alias: {
+      '@shoka/web-core/tokens.css': '../packages/web-core/src/styles/tokens.css',
+      '@shoka/web-core/pages/SettingsPage': '../packages/web-core/src/pages/SettingsPage.tsx',
+      '@shoka/web-core': '../packages/web-core/src/index.ts',
+    },
+  },
   build: {
     outDir: '../server/dist',
     emptyOutDir: true,
