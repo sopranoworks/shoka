@@ -15,7 +15,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // the socket so the queryFn never hits the network — it stays pending (Loading),
 // which is all we need: the point is the component renders without a hooks error
 // when a file is selected in History mode.
-vi.mock('../lib/wsClient', () => ({
+vi.mock('@shoka/web-core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shoka/web-core')>()),
   wsClient: () => ({ request: () => new Promise(() => {}) }),
 }))
 

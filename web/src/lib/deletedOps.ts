@@ -1,4 +1,4 @@
-import { wsClient } from './wsClient'
+import { wsClient } from '@shoka/web-core'
 
 // Client ops for the admin deleted-file log (the 2026-06-18 deleted-log
 // directive). list_deleted is a cheap read of the per-project deleted-file log;

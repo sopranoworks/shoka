@@ -15,9 +15,9 @@ import {
   joinPath,
   validateMoveInput,
 } from '../lib/moveController'
-import { useToast } from '../lib/toast'
+import { useToast } from '@shoka/web-core'
 import { useTrashController } from '../lib/trashController'
-import type { FileNode, TreeNode } from '../lib/types'
+import type { FileNode, TreeNode } from '@shoka/web-core'
 import styles from './FileTree.module.css'
 
 /**

@@ -1,73 +1,32 @@
 import { useQuery, useQueries } from '@tanstack/react-query'
-import { wsClient } from './wsClient'
+import { wsClient } from '@shoka/web-core'
 import { flattenFilePaths } from './tree'
-import { listConnections } from './oauthOps'
-import { listDomains } from './domainOps'
-import { listConfidentialClients } from './confidentialOps'
 import type {
-  ProjectInfo,
   FileNode,
   FileContent,
   HistoryPayload,
   FileAtContent,
   FileDiff,
-} from './types'
+} from '@shoka/web-core'
+import { useProjectsQuery } from '@shoka/web-core'
 
-// The OAuth connections list query key — invalidated after a revoke so the list
-// reflects the store. There is no oauth NOTIFY (the store emits none), so a
-// live-refresh is manual: invalidate-on-revoke is the floor, plus an explicit
-// Refresh action on the management view (a NOTIFY-driven live list is a possible
-// later (b)-store enhancement, out of scope for (c)).
-export const OAUTH_CONNECTIONS_KEY = ['oauth-connections'] as const
+// The reusable read-queries (OAuth management + the project list) live in
+// @shoka/web-core; re-export them so existing app callers keep importing from
+// '../lib/queries' unchanged.
+export {
+  OAUTH_CONNECTIONS_KEY,
+  OAUTH_DOMAINS_KEY,
+  OAUTH_CLIENTS_KEY,
+  useConnectionsQuery,
+  useDomainsQuery,
+  useConfidentialClientsQuery,
+  useProjectsQuery,
+} from '@shoka/web-core'
 
-// The live OAuth/MCP connections, for the admin management view. `enabled` gates
-// the fetch on the admin predicate so a non-admin never even issues OAUTH_LIST.
-export function useConnectionsQuery(enabled = true) {
-  return useQuery({
-    queryKey: OAUTH_CONNECTIONS_KEY,
-    enabled,
-    queryFn: () => listConnections(),
-  })
-}
-
-// B-71 Stage 2d: the dynamic "domain" entries (trusted domain + per-domain TTL + a
-// consent-set indicator) for the domain-mode management screen. Admin-gated like the
-// connections query; invalidated after a create/update/delete.
-export const OAUTH_DOMAINS_KEY = ['oauth-domains'] as const
-
-export function useDomainsQuery(enabled = true) {
-  return useQuery({
-    queryKey: OAUTH_DOMAINS_KEY,
-    enabled,
-    queryFn: () => listDomains(),
-  })
-}
-
-// B-71 Stage 3: the confidential pre-issued clients (Client ID + Secret) for the
-// confidential-mode management screen. Admin-gated like the domains query; invalidated after an
-// issue/revoke. The secret is never in this list (only on the issue response, once).
-export const OAUTH_CLIENTS_KEY = ['oauth-confidential-clients'] as const
-
-export function useConfidentialClientsQuery(enabled = true) {
-  return useQuery({
-    queryKey: OAUTH_CLIENTS_KEY,
-    enabled,
-    queryFn: () => listConfidentialClients(),
-  })
-}
-
-// All data is read over the /ws/ui request/response surface (lib/wsClient) and
-// flows through TanStack Query, so navigation is cache-driven and instant on
-// revisit. Cache keys: ['projects'], ['tree', ns, project], ['file', ns,
-// project, path]. Invalidation on NOTIFY is session 2; here data is fetched
-// once per key and refreshed by a full reload.
-
-export function useProjectsQuery() {
-  return useQuery({
-    queryKey: ['projects'],
-    queryFn: () => wsClient().request<ProjectInfo[]>('GET_PROJECTS', {}),
-  })
-}
+// Document-tree / file / history queries — the app's read surface. All data is read
+// over the /ws/ui request/response surface (wsClient) and flows through TanStack Query,
+// so navigation is cache-driven and instant on revisit. Cache keys: ['projects'],
+// ['tree', ns, project], ['file', ns, project, path].
 
 export function useTreeQuery(namespace: string, project: string) {
   return useQuery({

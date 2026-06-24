@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { login, loginPasskey, isPasskeyCapable } from '../lib/authClient'
+import { login, loginPasskey, isPasskeyCapable } from '@shoka/web-core'
 import { RedeemInvite } from './RedeemInvite'
 import styles from './AuthScreen.module.css'
 

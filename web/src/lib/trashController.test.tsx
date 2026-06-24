@@ -8,7 +8,7 @@ import {
   createRouter,
   createMemoryHistory,
 } from '@tanstack/react-router'
-import { ToastProvider } from './toast'
+import { ToastProvider } from '@shoka/web-core'
 import { TrashProvider, useTrashController } from './trashController'
 
 // Mock fileOps: readFileFresh captures the enqueue-time etag; deleteFile is the

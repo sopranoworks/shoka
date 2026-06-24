@@ -7,7 +7,7 @@ import {
   newTOTP,
   type NewTOTP,
   type InviteInfo,
-} from '../lib/authClient'
+} from '@shoka/web-core'
 import styles from './AuthScreen.module.css'
 
 // RedeemInvite is the invitee's flow off the login screen (B-28 stage 3): enter the

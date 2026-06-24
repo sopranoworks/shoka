@@ -9,7 +9,7 @@ import { saveFile, fileExists } from '../lib/fileOps'
 import { validateFilePath } from '../lib/pathValidation'
 import { newFilePrefill } from '../lib/newFilePrefill'
 import { ConfirmDialog } from '../components/ConfirmDialog'
-import { PromptDialog } from '../components/PromptDialog'
+import { PromptDialog } from '@shoka/web-core'
 import styles from './EditorPage.module.css'
 
 // Path-less new-file workflow (session 4 §3.7). The buffer (useEditorBuffer) is

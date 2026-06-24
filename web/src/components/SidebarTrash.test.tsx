@@ -9,7 +9,7 @@ import {
   createMemoryHistory,
 } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
-import { ToastProvider } from '../lib/toast'
+import { ToastProvider } from '@shoka/web-core'
 import { TrashProvider, useTrashController } from '../lib/trashController'
 import { SidebarTrash } from './SidebarTrash'
 

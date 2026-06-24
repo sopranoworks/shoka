@@ -30,7 +30,7 @@ const NewFilePage = lazy(() =>
 // The Settings view's right pane (B-28 stage 3) — the gear rail mode's content,
 // lazy since it pulls the user-management + OAuth connections screens.
 const SettingsPage = lazy(() =>
-  import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
+  import('@shoka/web-core').then((m) => ({ default: m.SettingsPage })),
 )
 // The admin "Deleted files" view (B-28, the 2026-06-18 deleted-log directive):
 // lists a project's deleted files and revives one forward-only. Lazy — it is an

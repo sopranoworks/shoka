@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const request = vi.fn()
-vi.mock('./wsClient', () => ({
+vi.mock('@shoka/web-core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shoka/web-core')>()),
   wsClient: () => ({ request }),
 }))
 

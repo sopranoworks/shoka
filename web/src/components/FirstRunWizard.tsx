@@ -5,7 +5,7 @@ import {
   isPasskeyCapable,
   newTOTP,
   type NewTOTP,
-} from '../lib/authClient'
+} from '@shoka/web-core'
 import styles from './AuthScreen.module.css'
 
 // FirstRunWizard is the zero-config first-run setup (B-28 stage 1): with no users

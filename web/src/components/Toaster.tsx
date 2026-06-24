@@ -1,4 +1,4 @@
-import { useToast } from '../lib/toast'
+import { useToast } from '@shoka/web-core'
 import styles from './Toaster.module.css'
 
 // Bottom-right stack of dismissible toasts (catalog.invariant_violation

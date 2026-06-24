@@ -5,7 +5,7 @@ import {
   ancestorDirs,
   namespacesOf,
 } from './tree'
-import type { FileNode } from './types'
+import type { FileNode } from '@shoka/web-core'
 
 const tree: FileNode[] = [
   {

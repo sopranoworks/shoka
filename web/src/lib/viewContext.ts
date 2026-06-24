@@ -1,4 +1,4 @@
-import type { ViewContext } from './notifyRouter'
+import type { ViewContext } from '@shoka/web-core'
 
 // Derive the NOTIFY ViewContext (which view's core is displayed) from the URL
 // pathname. Namespace/project are decoded; the file path (splat) is kept raw so

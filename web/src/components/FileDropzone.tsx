@@ -2,7 +2,7 @@ import { useCallback, type ReactNode } from 'react'
 import { useDrop } from 'react-dnd'
 import { NativeTypes } from 'react-dnd-html5-backend'
 import { useQueryClient } from '@tanstack/react-query'
-import { useToast } from '../lib/toast'
+import { useToast } from '@shoka/web-core'
 import { addDroppedFile, type AddOutcome } from '../lib/fileAdd'
 import styles from './FileDropzone.module.css'
 

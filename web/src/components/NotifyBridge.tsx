@@ -1,16 +1,16 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { wsClient } from '../lib/wsClient'
+import { wsClient } from '@shoka/web-core'
 import {
   routeNotify,
   routeReconnect,
   parseNotifyEvent,
   type ViewContext,
-} from '../lib/notifyRouter'
+} from '@shoka/web-core'
 import { deriveViewContext } from '../lib/viewContext'
 import { useBanner } from '../lib/banner'
-import { useToast } from '../lib/toast'
+import { useToast } from '@shoka/web-core'
 import { useEditSignal } from '../lib/editSignal'
 
 // Non-visual: wires the /ws/ui NOTIFY stream and reconnect events into the

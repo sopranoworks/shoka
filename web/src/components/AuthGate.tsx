@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { getStatus, type AuthStatus } from '../lib/authClient'
-import { wsClient } from '../lib/wsClient'
+import { getStatus, type AuthStatus } from '@shoka/web-core'
+import { wsClient } from '@shoka/web-core'
 import { FirstRunWizard } from './FirstRunWizard'
 import { LoginScreen } from './LoginScreen'
 

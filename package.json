@@ -1,0 +1,13 @@
+{
+  "name": "shoka-workspace",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "web"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build -w web"
+  }
+}

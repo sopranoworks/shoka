@@ -7,7 +7,7 @@ import {
 } from '../lib/queries'
 import { classifyFile, isHighlightableCode } from '../lib/fileKind'
 import { Markdown } from '../components/Markdown'
-import type { HistoryCommit, FileDiff } from '../lib/types'
+import type { HistoryCommit, FileDiff } from '@shoka/web-core'
 import type { HistorySearch } from '../router'
 import filePage from './FilePage.module.css'
 import styles from './HistoryPage.module.css'

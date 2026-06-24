@@ -1,6 +1,6 @@
 import { useEffect, useReducer } from 'react'
 import { useConnectionStatus } from '../lib/useConnectionStatus'
-import { wsClient } from '../lib/wsClient'
+import { wsClient } from '@shoka/web-core'
 import styles from './ConnectionStatus.module.css'
 
 function clock(ms: number | null): string {

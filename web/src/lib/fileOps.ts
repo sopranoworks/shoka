@@ -1,4 +1,4 @@
-import { wsClient } from './wsClient'
+import { wsClient } from '@shoka/web-core'
 import type {
   FileContent,
   SaveAck,
@@ -6,7 +6,7 @@ import type {
   MoveAck,
   DeleteAck,
   RecoverAck,
-} from './types'
+} from '@shoka/web-core'
 
 // Imperative /ws/ui file operations for the editor. Unlike the read queries
 // (lib/queries), these are user-initiated mutations, so they live outside

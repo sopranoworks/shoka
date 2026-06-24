@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { wsClient } from './wsClient'
-import type { SearchMatch } from './types'
+import { wsClient } from '@shoka/web-core'
+import type { SearchMatch } from '@shoka/web-core'
 
 // Project-scoped full-text/filename search over /ws/ui SEARCH_FILES (session 4).
 // The backend tool (storage.SearchFiles, the same one the MCP search_files tool

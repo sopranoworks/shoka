@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type { BannerIntent } from './notifyRouter'
+import type { BannerIntent } from '@shoka/web-core'
 
 // Holds the single per-view banner. Multiple NOTIFY events on the same view
 // collapse into one banner (show replaces; they do not stack). Navigation

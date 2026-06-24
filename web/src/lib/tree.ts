@@ -1,4 +1,4 @@
-import type { FileNode, TreeNode, ProjectInfo } from './types'
+import type { FileNode, TreeNode, ProjectInfo } from '@shoka/web-core'
 
 // Map the backend's FileNode tree to react-arborist's TreeNode shape. A file's
 // id is its full path, so the tree's `selection` can be driven by the URL path.

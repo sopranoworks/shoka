@@ -1,7 +1,7 @@
 /* Design tokens (the :root custom-prop block + [data-theme=light] overrides) live in
    tokens.css so a consumer can import them standalone. @import must precede all other
    rules. Behaviour is unchanged — the tokens are identical, just relocated. */
-@import './tokens.css';
+@import '@shoka/web-core/tokens.css';
 
 * {
   box-sizing: border-box;

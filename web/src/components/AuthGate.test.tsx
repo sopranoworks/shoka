@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { AuthGate } from './AuthGate'
-import * as authClient from '../lib/authClient'
+import * as authClient from '@shoka/web-core'
 
 // wsClient opens a real socket on connect(); stub it so AuthGate's "enter the app"
 // branch does not try to open /ws/ui in jsdom.
-vi.mock('../lib/wsClient', () => ({ wsClient: () => ({ connect: vi.fn() }) }))
+vi.mock('@shoka/web-core', async (importOriginal) => ({ ...(await importOriginal<typeof import('@shoka/web-core')>()), wsClient: () => ({ connect: vi.fn() }) }))
 
 function mockStatus(s: Partial<authClient.AuthStatus>) {
   vi.spyOn(authClient, 'getStatus').mockResolvedValue({

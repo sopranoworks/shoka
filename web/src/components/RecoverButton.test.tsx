@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { ToastProvider } from '../lib/toast'
+import { ToastProvider } from '@shoka/web-core'
 
 const recoverProject = vi.fn()
 vi.mock('../lib/fileOps', () => ({

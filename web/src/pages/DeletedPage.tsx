@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useIsAdmin } from '../lib/admin'
+import { useIsAdmin } from '@shoka/web-core'
 import { listDeleted, reviveFile, type DeletedEntry } from '../lib/deletedOps'
-import { useToast } from '../lib/toast'
+import { useToast } from '@shoka/web-core'
 import styles from './DeletedPage.module.css'
 
 // The administrator-only "Deleted files" view (B-28, the 2026-06-18 deleted-log

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { recoverProject } from '../lib/fileOps'
-import { useToast } from '../lib/toast'
+import { useToast } from '@shoka/web-core'
 import styles from './RecoverButton.module.css'
 
 // RecoverButton is the in-product recovery control shown on a non-healthy project:
