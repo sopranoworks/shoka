@@ -1,7 +1,7 @@
 import CodeMirror from '@uiw/react-codemirror'
 import { EditorView } from '@codemirror/view'
 import { languageForPath } from '../lib/cmLanguages'
-import { useTheme } from '../lib/theme'
+import { useTheme } from '@shoka/web-core'
 import styles from './CodeView.module.css'
 
 // Read-only syntax-highlighted view for non-markdown source files (session 4).

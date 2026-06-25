@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import type { RailView } from '../components/ActivityRail'
+
+export type RailView = 'explorer' | 'search' | 'history' | 'settings'
 
 // Stable references so passing them as props never churns the rail.
 const NONE_DISABLED: RailView[] = []

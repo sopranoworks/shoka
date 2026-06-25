@@ -7,16 +7,37 @@ import {
   createRouter,
   createMemoryHistory,
 } from '@tanstack/react-router'
-import { ActivityRail, type RailView } from '../components/ActivityRail'
 import {
+  ActivityRail,
+  ShellProvider,
+  useNoopRailReset,
+  type ShellConfig,
+} from '@shoka/web-core'
+import {
+  type RailView,
   useRailSelect,
   useResetRailToExplorerOnProjectChange,
 } from './useRailSelect'
 
-// Render the ActivityRail wired to the real useRailSelect controls (onSelect +
-// disabledItems) inside a memory router at `url` — mirroring how Shell composes
-// them. `rail`/`sidebarOpen` are the current Shell state (fixed per render); the
-// spies capture what the handler would do.
+const TEST_RAIL_ITEMS: ShellConfig['railItems'] = [
+  { id: 'explorer', label: 'Explorer', icon: <span>E</span> },
+  { id: 'search', label: 'Search', icon: <span>S</span> },
+  { id: 'history', label: 'History', icon: <span>H</span> },
+  { id: 'settings', label: 'Settings', icon: <span>G</span> },
+]
+
+function testShellConfig(
+  overrides: Partial<ShellConfig> = {},
+): ShellConfig {
+  return {
+    railItems: TEST_RAIL_ITEMS,
+    renderSidebar: () => null,
+    useRailControls: useRailSelect,
+    useResetRailOnProjectChange: useNoopRailReset,
+    ...overrides,
+  }
+}
+
 function setup(
   url: string,
   opts: {
@@ -41,7 +62,13 @@ function setup(
       <ActivityRail active={rail} onSelect={onSelect} disabled={disabledItems} />
     )
   }
-  const rootRoute = createRootRoute({ component: Harness })
+  const rootRoute = createRootRoute({
+    component: () => (
+      <ShellProvider value={testShellConfig()}>
+        <Harness />
+      </ShellProvider>
+    ),
+  })
   const mk = (path: string) =>
     createRoute({ getParentRoute: () => rootRoute, path, component: () => null })
   const router = createRouter({
@@ -58,9 +85,6 @@ function setup(
   return router
 }
 
-// D#2 (RED→GREEN): on a no-project route (the project list "/" and the admin
-// screens) every rail item is disabled — no mode is meaningful before a project is
-// chosen. RED before: Explorer was enabled and routed to "/".
 describe('useRailSelect — no-project route disables ALL rail items', () => {
   it.each([
     ['/', 'project list'],
@@ -74,15 +98,11 @@ describe('useRailSelect — no-project route disables ALL rail items', () => {
       expect(btn).toHaveAttribute('aria-disabled', 'true')
       fireEvent.click(btn)
     }
-    // Disabled buttons do nothing: no navigation, no rail change.
     expect(router.state.location.pathname).toBe(url)
     expect(setRail).not.toHaveBeenCalled()
   })
 })
 
-// D#3: the rail is a consistent toggle — clicking the active item while its pane
-// is open closes the sidebar; clicking any other item opens that pane. Uniform
-// across Explorer/Search/History.
 describe('useRailSelect — consistent open/close toggle (project view)', () => {
   it.each(['explorer', 'search', 'history'] as RailView[])(
     'clicking the active+open %s closes the sidebar (does not re-set the rail)',
@@ -128,8 +148,6 @@ describe('useRailSelect — consistent open/close toggle (project view)', () => 
   })
 })
 
-// History opens the active file's history in the right pane directly (no cushion),
-// on open — the 4fc366f behaviour, preserved through the toggle change.
 describe('useRailSelect — History opens the active file’s history (on open)', () => {
   it('from a file view, navigates to that file’s history route', async () => {
     const router = setup('/p/ns/proj/blob/reports/doc.md', { rail: 'explorer' })
@@ -150,9 +168,6 @@ describe('useRailSelect — History opens the active file’s history (on open)'
   })
 })
 
-// Defect 1 (RED→GREEN): Explorer leaving History returns the content to the SAME
-// file's file view — symmetric to File→History. RED before: the URL stayed on
-// /history/<file> (Explorer click only set the rail).
 describe('useRailSelect — Explorer on a history route returns to /blob/<same file>', () => {
   it('from a sub-dir file history, navigates to that file’s blob view + rail Explorer', async () => {
     const setRail = vi.fn()
@@ -184,8 +199,6 @@ describe('useRailSelect — Explorer on a history route returns to /blob/<same f
   })
 })
 
-// D#4: selecting a project defaults the rail to Explorer; navigating among a
-// project's files/history does NOT reset it.
 describe('useResetRailToExplorerOnProjectChange', () => {
   function mountReset(url: string, setRail: (v: RailView) => void) {
     function Harness() {
@@ -223,7 +236,6 @@ describe('useResetRailToExplorerOnProjectChange', () => {
       to: '/p/$namespace/$project/history/$',
       params: { namespace: 'ns', project: 'proj', _splat: 'doc.md' },
     })
-    // Same project key ⇒ no reset.
     await new Promise((r) => setTimeout(r, 0))
     expect(setRail).not.toHaveBeenCalled()
   })

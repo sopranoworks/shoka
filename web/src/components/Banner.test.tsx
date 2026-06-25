@@ -1,8 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
-import { BannerProvider, useBanner } from '../lib/banner'
-import { Banner } from './Banner'
+import { BannerProvider, useBanner, Banner } from '@shoka/web-core'
 
 function Shower({ reload }: { reload: () => void }) {
   const { show } = useBanner()

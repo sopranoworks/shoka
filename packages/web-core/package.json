@@ -16,7 +16,8 @@
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-router": "^1.95.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-resizable-panels": "^2.1.7"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",

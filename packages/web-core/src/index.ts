@@ -1,9 +1,35 @@
-// @shoka/web-core — the reusable core-screen surface.
+// @shoka/web-core — the reusable core surface: screens, shell, and providers.
 //
-// A second product (e.g. GitYard) imports the auth/user/OAuth/settings/namespace
-// screens, the settings framework, the WebSocket client + ops, and the shared hooks
-// from here, and extends them via CoreScreensProvider — without modifying this package.
-// The design tokens are a separate import: `@shoka/web-core/tokens.css`.
+// A second product (e.g. GitYard) imports the shell layout, the content screens,
+// the settings framework, the WebSocket client + ops, and the shared hooks/providers
+// from here, and extends them via ShellProvider + CoreScreensProvider — without
+// modifying this package. Design tokens: `@shoka/web-core/tokens.css`.
+
+// --- shell layout ----------------------------------------------------------
+export { Shell } from './components/Shell'
+export { TitleBar, titleBarStyles } from './components/TitleBar'
+export { ActivityRail, activityRailStyles } from './components/ActivityRail'
+export { StatusBar } from './components/StatusBar'
+export { ConnectionStatus } from './components/ConnectionStatus'
+export { Banner } from './components/Banner'
+
+// --- shell config (injection seam) -----------------------------------------
+export {
+  ShellProvider,
+  useShellConfig,
+  useSimpleRailControls,
+  useNoopRailReset,
+  type ShellConfig,
+  type RailItemDef,
+} from './lib/shellConfig'
+
+// --- shell providers -------------------------------------------------------
+export { ThemeProvider, useTheme, type Theme } from './lib/theme'
+export { PaletteProvider, usePalette } from './lib/palette'
+export { BannerProvider, useBanner } from './lib/banner'
+export { EditSignalProvider, useEditSignal, type EditSignal } from './lib/editSignal'
+export { useMediaQuery } from './lib/useMediaQuery'
+export { useConnectionStatus } from './lib/useConnectionStatus'
 
 // --- screens ---------------------------------------------------------------
 export { MyAccountPage } from './pages/MyAccountPage'

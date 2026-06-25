@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import type { RailView } from './ActivityRail'
+import type { RailView } from '../lib/useRailSelect'
 import { FileTree, type TreeOpenMode } from './FileTree'
 import { FileDropzone } from './FileDropzone'
 import { SettingsItemList } from '@shoka/web-core'
 import { useTreeQuery } from '../lib/queries'
+import { filterTree, sortTree, type SortMode } from '../lib/tree'
 import { dirOf } from '../lib/moveController'
 import styles from './Sidebar.module.css'
 
@@ -82,10 +83,12 @@ function ProjectTree({
 }) {
   const { data: tree, isError } = useTreeQuery(ns, proj)
   const navigate = useNavigate()
-  // "+ New file" launches the create flow prefilled with the current location:
-  // the directory of the open file (so the new file lands beside it), or the
-  // project root when no file is open. The path stays editable to any nested
-  // target (B-31 fix #3/#4) — this is the reach-it-from-anywhere affordance.
+  const [filter, setFilter] = useState('')
+  const [sortMode, setSortMode] = useState<SortMode>('name-asc')
+  const filteredTree = useMemo(
+    () => (tree ? sortTree(filterTree(tree, filter), sortMode) : undefined),
+    [tree, filter, sortMode],
+  )
   const launchDir = activePath ? dirOf(activePath) : ''
   return (
     <div className={styles.pane}>
@@ -94,8 +97,6 @@ function ProjectTree({
           <span className={styles.projNs}>{ns}/</span>
           {proj}
         </span>
-        {/* "+ New file" belongs to the file view only — creating a file from a
-            history view makes no sense, so it is hidden in History mode. */}
         {openMode !== 'history' && (
           <button
             type="button"
@@ -115,22 +116,53 @@ function ProjectTree({
         )}
       </SectionHeader>
       <div className={styles.treeWrap}>
-        {/* Native external-file dropzone (B-28): wraps the whole tree pane so a
-            drop anywhere — onto a folder row (→ that folder) or the empty area
-            (→ project root) — adds the file. Distinct from the internal-node
-            trash/move DnD; covers the empty/loading states too. */}
         <FileDropzone namespace={ns} project={proj}>
+          <div className={styles.filterBar}>
+            <div className={styles.filterInputWrap}>
+              <input
+                className={styles.filterInput}
+                type="search"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter files…"
+                aria-label="Filter files by name"
+              />
+              {filter && (
+                <button
+                  className={styles.filterClear}
+                  onClick={() => setFilter('')}
+                  aria-label="Clear filter"
+                  type="button"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <select
+              className={styles.sortSelect}
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              aria-label="Sort files"
+            >
+              <option value="name-asc">Name A→Z</option>
+              <option value="name-desc">Name Z→A</option>
+              <option value="date-desc">Newest</option>
+              <option value="date-asc">Oldest</option>
+            </select>
+          </div>
           {isError ? (
             <div className={styles.empty}>Could not load files.</div>
-          ) : !tree ? (
+          ) : !filteredTree ? (
             <div className={styles.empty}>Loading…</div>
-          ) : tree.length === 0 ? (
-            <div className={styles.empty}>No files.</div>
+          ) : filteredTree.length === 0 ? (
+            <div className={styles.empty}>
+              {filter ? 'No matching files.' : 'No files.'}
+            </div>
           ) : (
             <FileTree
               namespace={ns}
               project={proj}
-              nodes={tree}
+              nodes={filteredTree}
               activePath={activePath}
               openMode={openMode}
             />

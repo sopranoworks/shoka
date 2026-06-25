@@ -8,7 +8,7 @@ import {
   createMemoryHistory,
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { ThemeProvider } from '../lib/theme'
+import { ThemeProvider } from '@shoka/web-core'
 
 // The create flow's two collaborators, stubbed so we assert the UI behaviour (the
 // prefill, the full path the create carries) rather than the /ws/ui path.

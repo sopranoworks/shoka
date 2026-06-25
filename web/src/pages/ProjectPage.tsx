@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { projectRoute } from '../router'
 import { useTreeQuery } from '../lib/queries'
 import { flattenFilePaths } from '../lib/tree'
-import { usePalette } from '../lib/palette'
+import { usePalette } from '@shoka/web-core'
 import styles from './ProjectPage.module.css'
 
 export function ProjectPage() {

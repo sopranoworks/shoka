@@ -6,7 +6,7 @@ import {
   Outlet,
   redirect,
 } from '@tanstack/react-router'
-import { Shell } from './components/Shell'
+import { Shell } from '@shoka/web-core'
 import { RouteFallback } from './components/RouteFallback'
 import { RepoListPage } from './pages/RepoListPage'
 import { ProjectPage } from './pages/ProjectPage'

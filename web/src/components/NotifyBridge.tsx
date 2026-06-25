@@ -9,9 +9,7 @@ import {
   type ViewContext,
 } from '@shoka/web-core'
 import { deriveViewContext } from '../lib/viewContext'
-import { useBanner } from '../lib/banner'
-import { useToast } from '@shoka/web-core'
-import { useEditSignal } from '../lib/editSignal'
+import { useBanner, useToast, useEditSignal } from '@shoka/web-core'
 
 // Non-visual: wires the /ws/ui NOTIFY stream and reconnect events into the
 // query cache + banner/toast UI, and clears the banner on navigation. Mounted
