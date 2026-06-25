@@ -4,7 +4,7 @@ import {
   flattenFilePaths,
   ancestorDirs,
   namespacesOf,
-} from './tree'
+} from '@shoka/web-core'
 import type { FileNode } from '@shoka/web-core'
 
 const tree: FileNode[] = [

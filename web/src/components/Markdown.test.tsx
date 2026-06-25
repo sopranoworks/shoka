@@ -12,7 +12,7 @@ const { parse, mermaidRender, initialize } = vi.hoisted(() => ({
 }))
 vi.mock('mermaid', () => ({ default: { initialize, parse, render: mermaidRender } }))
 
-import { Markdown } from './Markdown'
+import { Markdown } from '@shoka/web-core'
 
 const fence = (lang: string, body: string) => '```' + lang + '\n' + body + '\n```\n'
 

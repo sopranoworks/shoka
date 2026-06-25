@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fuzzyScore, fuzzyFilter } from './fuzzy'
+import { fuzzyScore, fuzzyFilter } from '@shoka/web-core'
 
 describe('fuzzyScore', () => {
   it('returns 0 for an empty query', () => {

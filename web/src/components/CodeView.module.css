@@ -1,5 +1,0 @@
-/* Read-only code viewer. Let CodeMirror own its scroll; cap nothing so the
-   page body's scroll container handles overflow. */
-.codeView {
-  font-size: var(--fs-sm);
-}

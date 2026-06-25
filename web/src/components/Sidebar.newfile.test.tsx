@@ -6,28 +6,53 @@ import {
   createRoute,
   createRouter,
   createMemoryHistory,
+  Link,
 } from '@tanstack/react-router'
 
-// The Explorer tree query is irrelevant to the header affordance under test;
-// stub it to an empty tree so ExplorerForProject renders its header (and the
-// "+ New file" button) without a QueryClient.
-vi.mock('../lib/queries', () => ({
-  useTreeQuery: () => ({ data: [], isError: false }),
-}))
-// Stub the orthogonal native-file-drop wrapper (own QueryClient/Toast/DnD deps);
-// this test probes the new-file button, not the dropzone (covered elsewhere).
-vi.mock('./FileDropzone', () => ({
-  FileDropzone: (props: { children?: unknown }) => <>{props.children as never}</>,
-}))
+vi.mock('../../../packages/web-core/src/lib/queries', async (importOriginal) => {
+  const orig = await importOriginal<Record<string, unknown>>()
+  return { ...orig, useTreeQuery: () => ({ data: [], isError: false }) }
+})
 
-import { Sidebar } from './Sidebar'
+import {
+  Sidebar,
+  ShellProvider,
+  ContentProvider,
+  useSimpleRailControls,
+  useNoopRailReset,
+  sidebarStyles,
+  dirOf,
+} from '@shoka/web-core'
 
-// Mount the Explorer sidebar at `url` in a memory router that includes the /new
-// route (with the ?in= search), so clicking "+ New file" resolves a real
-// navigation we can assert on.
+const minShell = {
+  railItems: [],
+  renderSidebar: () => null,
+  useRailControls: useSimpleRailControls,
+  useResetRailOnProjectChange: useNoopRailReset,
+}
+
 function renderExplorer(url: string) {
   const rootRoute = createRootRoute({
-    component: () => <Sidebar view="explorer" />,
+    component: () => (
+      <ShellProvider value={minShell}>
+        <ContentProvider
+          value={{
+            renderNewFileButton: (ns, proj, launchDir) => (
+              <Link
+                to="/p/$namespace/$project/new"
+                params={{ namespace: ns, project: proj }}
+                search={launchDir ? { in: launchDir } : {}}
+                className={sidebarStyles.newFileBtn}
+              >
+                + New file
+              </Link>
+            ),
+          }}
+        >
+          <Sidebar view="explorer" />
+        </ContentProvider>
+      </ShellProvider>
+    ),
   })
   const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -64,12 +89,10 @@ function renderExplorer(url: string) {
   return router
 }
 
-// Fix #3: the create flow must be reachable from the Explorer header, prefilled
-// with the current location.
 describe('Explorer "+ New file" affordance (B-31 #3)', () => {
   it('from a file view, navigates to /new carrying the file’s directory (in=subdir)', async () => {
     const router = renderExplorer('/p/ns/proj/blob/subdir/note.md')
-    fireEvent.click(await screen.findByRole('button', { name: 'New file' }))
+    fireEvent.click(await screen.findByRole('link', { name: '+ New file' }))
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/p/ns/proj/new')
       expect(router.state.location.search).toEqual({ in: 'subdir' })
@@ -78,7 +101,7 @@ describe('Explorer "+ New file" affordance (B-31 #3)', () => {
 
   it('from the project root, navigates to /new with no prefill', async () => {
     const router = renderExplorer('/p/ns/proj')
-    fireEvent.click(await screen.findByRole('button', { name: 'New file' }))
+    fireEvent.click(await screen.findByRole('link', { name: '+ New file' }))
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/p/ns/proj/new')
       expect(router.state.location.search).toEqual({})

@@ -11,8 +11,7 @@ import {
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { readFileFresh, type DeleteResult } from './fileOps'
-import { deriveViewContext } from './viewContext'
-import { useToast } from '@shoka/web-core'
+import { deriveViewContext, useToast } from '@shoka/web-core'
 import { TrashQueue, type TrashItem } from './trashQueue'
 
 // The React layer over the deferred-execution TrashQueue (lib/trashQueue). It is

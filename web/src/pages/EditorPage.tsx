@@ -4,18 +4,22 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useNavigate, useBlocker } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { editRoute } from '../router'
-import { useFileQuery } from '../lib/queries'
-import { useEditSignal, useMediaQuery, useTheme } from '@shoka/web-core'
+import {
+  useFileQuery,
+  useEditSignal,
+  useMediaQuery,
+  useTheme,
+  languageForPath,
+  useDebouncedValue,
+  classifyFile,
+  Markdown,
+  DiffView,
+  PromptDialog,
+} from '@shoka/web-core'
 import { useEditorBuffer } from '../lib/useEditorBuffer'
-import { languageForPath } from '../lib/cmLanguages'
-import { useDebouncedValue } from '../lib/useDebouncedValue'
-import { classifyFile } from '../lib/fileKind'
 import { saveFile, readFileFresh, fileExists } from '../lib/fileOps'
-import { Markdown } from '../components/Markdown'
 import { ConflictBanner } from '../components/ConflictBanner'
 import { ConfirmDialog } from '../components/ConfirmDialog'
-import { PromptDialog } from '@shoka/web-core'
-import { DiffView } from '../components/DiffView'
 import { ExternalChangeBanner } from '../components/ExternalChangeBanner'
 import styles from './EditorPage.module.css'
 

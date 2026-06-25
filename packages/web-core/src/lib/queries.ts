@@ -1,9 +1,17 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueries } from '@tanstack/react-query'
 import { wsClient } from './wsClient'
 import { listConnections } from './oauthOps'
 import { listDomains } from './domainOps'
 import { listConfidentialClients } from './confidentialOps'
-import type { ProjectInfo } from './types'
+import { flattenFilePaths } from './tree'
+import type {
+  ProjectInfo,
+  FileNode,
+  FileContent,
+  HistoryPayload,
+  FileAtContent,
+  FileDiff,
+} from './types'
 
 // Reusable read-queries shared by the core screens (OAuth management + the project
 // list used by user/namespace management). The document-tree/file/history queries live
@@ -58,4 +66,119 @@ export function useProjectsQuery() {
     queryKey: ['projects'],
     queryFn: () => wsClient().request<ProjectInfo[]>('GET_PROJECTS', {}),
   })
+}
+
+// --- Content queries (document tree / file / history) ----------------------
+
+export function useTreeQuery(namespace: string, project: string) {
+  return useQuery({
+    queryKey: ['tree', namespace, project],
+    queryFn: async () =>
+      (await wsClient().request<FileNode[] | null>('GET_TREE', {
+        namespace,
+        projectName: project,
+      })) ?? [],
+  })
+}
+
+export function useFileQuery(namespace: string, project: string, path: string) {
+  return useQuery({
+    queryKey: ['file', namespace, project, path],
+    enabled: path !== '',
+    queryFn: () =>
+      wsClient().request<FileContent>('READ_FILE', {
+        namespace,
+        projectName: project,
+        path,
+      }),
+  })
+}
+
+export function useHistoryQuery(
+  namespace: string,
+  project: string,
+  path: string,
+) {
+  return useQuery({
+    queryKey: ['history', namespace, project, path],
+    enabled: path !== '',
+    queryFn: () =>
+      wsClient().request<HistoryPayload>('GET_HISTORY', {
+        namespace,
+        projectName: project,
+        path,
+      }),
+  })
+}
+
+export function useFileAtQuery(
+  namespace: string,
+  project: string,
+  path: string,
+  hash: string,
+) {
+  return useQuery({
+    queryKey: ['file-at', namespace, project, path, hash],
+    enabled: path !== '' && hash !== '',
+    queryFn: () =>
+      wsClient().request<FileAtContent>('GET_FILE_AT', {
+        namespace,
+        projectName: project,
+        path,
+        hash,
+      }),
+  })
+}
+
+export function useDiffQuery(
+  namespace: string,
+  project: string,
+  path: string,
+  fromHash: string,
+  toHash: string,
+) {
+  return useQuery({
+    queryKey: ['diff', namespace, project, path, fromHash, toHash],
+    enabled: path !== '' && fromHash !== '' && toHash !== '',
+    queryFn: () =>
+      wsClient().request<FileDiff>('GET_DIFF', {
+        namespace,
+        projectName: project,
+        path,
+        fromHash,
+        toHash,
+      }),
+  })
+}
+
+export interface GlobalFile {
+  namespace: string
+  project: string
+  path: string
+}
+
+export function useAllProjectFiles(enabled: boolean): GlobalFile[] {
+  const { data: projects = [] } = useProjectsQuery()
+
+  const results = useQueries({
+    queries: projects.map((p) => ({
+      queryKey: ['tree', p.namespace, p.name],
+      queryFn: async () =>
+        (await wsClient().request<FileNode[] | null>('GET_TREE', {
+          namespace: p.namespace,
+          projectName: p.name,
+        })) ?? [],
+      enabled,
+    })),
+  })
+
+  const files: GlobalFile[] = []
+  results.forEach((r, i) => {
+    const p = projects[i]
+    if (!p || !r.data) return
+    for (const path of flattenFilePaths(r.data)) {
+      files.push({ namespace: p.namespace, project: p.name, path })
+    }
+  })
+  return files
 }

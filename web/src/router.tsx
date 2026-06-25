@@ -6,12 +6,15 @@ import {
   Outlet,
   redirect,
 } from '@tanstack/react-router'
-import { Shell } from '@shoka/web-core'
+import {
+  Shell,
+  RepoListPage,
+  ProjectPage,
+  BlobPage,
+  HistoryPage,
+  SearchPage,
+} from '@shoka/web-core'
 import { RouteFallback } from './components/RouteFallback'
-import { RepoListPage } from './pages/RepoListPage'
-import { ProjectPage } from './pages/ProjectPage'
-import { BlobPage } from './pages/BlobPage'
-import { HistoryPage } from './pages/HistoryPage'
 
 // The editor route pulls in CodeMirror and the @codemirror/lang-* packages —
 // the heaviest part of the app. Lazy-loading it (and the search route) keeps
@@ -20,9 +23,6 @@ import { HistoryPage } from './pages/HistoryPage'
 // chunk, so opening a code file or the editor pays the cost once.
 const EditorPage = lazy(() =>
   import('./pages/EditorPage').then((m) => ({ default: m.EditorPage })),
-)
-const SearchPage = lazy(() =>
-  import('./pages/SearchPage').then((m) => ({ default: m.SearchPage })),
 )
 const NewFilePage = lazy(() =>
   import('./pages/NewFilePage').then((m) => ({ default: m.NewFilePage })),
@@ -143,7 +143,7 @@ const searchRoute = createRoute({
     const q = typeof search.q === 'string' ? search.q : undefined
     return q ? { q } : {}
   },
-  component: lazyRoute(SearchPage),
+  component: SearchPage,
 })
 
 // "/p/$namespace/$project/new" path-less new-file editor (session 4). Additive

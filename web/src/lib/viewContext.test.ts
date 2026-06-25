@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveViewContext } from './viewContext'
+import { deriveViewContext } from '@shoka/web-core'
 
 describe('deriveViewContext', () => {
   it('recognises home', () => {

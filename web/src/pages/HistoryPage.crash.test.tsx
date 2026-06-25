@@ -20,7 +20,7 @@ vi.mock('@shoka/web-core', async (importOriginal) => ({
   wsClient: () => ({ request: () => new Promise(() => {}) }),
 }))
 
-import { HistoryPage } from './HistoryPage'
+import { HistoryPage } from '@shoka/web-core'
 
 function renderHistoryRouter(initial: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

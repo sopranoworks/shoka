@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyFile } from './fileKind'
+import { classifyFile } from '@shoka/web-core'
 
 describe('classifyFile', () => {
   it('treats .md and .markdown as markdown', () => {

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const request = vi.fn()
-vi.mock('@shoka/web-core', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@shoka/web-core')>()),
+vi.mock('../../../packages/web-core/src/lib/wsClient', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   wsClient: () => ({ request }),
 }))
 
-import { searchFiles } from './search'
+import { searchFiles } from '@shoka/web-core'
 
 describe('searchFiles', () => {
   beforeEach(() => {

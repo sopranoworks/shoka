@@ -11,9 +11,7 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { moveFile } from './fileOps'
 import { validateFilePath } from './pathValidation'
-import { deriveViewContext } from './viewContext'
-import type { FileContent } from '@shoka/web-core'
-import { PromptDialog } from '@shoka/web-core'
+import { deriveViewContext, PromptDialog, type FileContent } from '@shoka/web-core'
 import { MoveCollisionWarning } from '../components/MoveCollisionWarning'
 
 // The single controller every move surface (dialog, palette, inline rename,

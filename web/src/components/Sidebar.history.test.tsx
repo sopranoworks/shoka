@@ -8,16 +8,18 @@ import {
   createMemoryHistory,
 } from '@tanstack/react-router'
 
-// Stub the tree query (non-empty so ProjectTree renders the tree) and the
-// FileTree itself (react-arborist needs ResizeObserver, unavailable in jsdom) —
-// the stub surfaces the props we care about: openMode and the highlighted path.
-vi.mock('../lib/queries', () => ({
-  useTreeQuery: () => ({
-    data: [{ name: 'doc.md', path: 'doc.md', isFile: true }],
-    isError: false,
-  }),
-}))
-vi.mock('./FileTree', () => ({
+vi.mock('../../../packages/web-core/src/lib/queries', async (importOriginal) => {
+  const orig = await importOriginal<Record<string, unknown>>()
+  return {
+    ...orig,
+    useTreeQuery: () => ({
+      data: [{ name: 'doc.md', path: 'doc.md', isFile: true }],
+      isError: false,
+    }),
+  }
+})
+
+vi.mock('../../../packages/web-core/src/components/FileTree', () => ({
   FileTree: ({
     openMode,
     activePath,
@@ -31,19 +33,51 @@ vi.mock('./FileTree', () => ({
       data-active={activePath ?? ''}
     />
   ),
-}))
-// Stub the orthogonal native-file-drop wrapper (own QueryClient/Toast/DnD deps);
-// these tests probe History-mode rail/tree behaviour, not the dropzone (covered
-// by fileAdd.test.ts + the real-browser E2E).
-vi.mock('./FileDropzone', () => ({
-  FileDropzone: (props: { children?: unknown }) => <>{props.children as never}</>,
+  fileOpenRoute: (m: string) =>
+    m === 'history'
+      ? '/p/$namespace/$project/history/$'
+      : '/p/$namespace/$project/blob/$',
+  fileTreeStyles: {},
 }))
 
-import { Sidebar } from './Sidebar'
+import {
+  Sidebar,
+  ShellProvider,
+  ContentProvider,
+  useSimpleRailControls,
+  useNoopRailReset,
+  sidebarStyles,
+} from '@shoka/web-core'
 
-function renderSidebar(view: 'explorer' | 'history', url: string) {
+const minShell = {
+  railItems: [],
+  renderSidebar: () => null,
+  useRailControls: useSimpleRailControls,
+  useResetRailOnProjectChange: useNoopRailReset,
+}
+
+function renderSidebar(
+  view: 'explorer' | 'history',
+  url: string,
+  withNewFile = false,
+) {
+  const contentConfig = withNewFile
+    ? {
+        renderNewFileButton: () => (
+          <button type="button" className={sidebarStyles.newFileBtn} aria-label="New file">
+            + New file
+          </button>
+        ),
+      }
+    : {}
   const rootRoute = createRootRoute({
-    component: () => <Sidebar view={view} />,
+    component: () => (
+      <ShellProvider value={minShell}>
+        <ContentProvider value={contentConfig}>
+          <Sidebar view={view} />
+        </ContentProvider>
+      </ShellProvider>
+    ),
   })
   const mk = (path: string) =>
     createRoute({ getParentRoute: () => rootRoute, path, component: () => null })
@@ -61,16 +95,12 @@ function renderSidebar(view: 'explorer' | 'history', url: string) {
   return router
 }
 
-// Fix A: the History rail keeps the file tree in place and shows history in the
-// right pane — the old "View history →" cushion is gone.
 describe('Sidebar History panel — tree retained, no cushion (B-31)', () => {
   it('renders the file tree (openMode="history") and NO "View history →" cushion', async () => {
     renderSidebar('history', '/p/ns/proj/history/doc.md')
     const tree = await screen.findByTestId('filetree')
     expect(tree).toHaveAttribute('data-openmode', 'history')
-    // The history tree highlights the file the right pane is showing.
     expect(tree).toHaveAttribute('data-active', 'doc.md')
-    // The pointless cushion link is gone.
     expect(screen.queryByText(/view history/i)).toBeNull()
   })
 
@@ -90,20 +120,15 @@ describe('Sidebar History panel — tree retained, no cushion (B-31)', () => {
   })
 })
 
-// E (B-31 consistency fix): the "+ New file" affordance is present (clearly
-// visible at rest) in Explorer mode, but hidden in History mode — creating a file
-// from a history view is meaningless.
 describe('Sidebar "+ New file" affordance — Explorer only (B-31 E)', () => {
-  it('is present at rest in Explorer mode (its resting class, no hover needed)', async () => {
-    renderSidebar('explorer', '/p/ns/proj/blob/doc.md')
+  it('is present in Explorer mode when renderNewFileButton is provided', async () => {
+    renderSidebar('explorer', '/p/ns/proj/blob/doc.md', true)
     const btn = await screen.findByRole('button', { name: 'New file' })
-    // Rendered with its (resting) class — visibility is not gated behind a hover
-    // pseudo-class; the resting style itself is legible (E1, a CSS change).
     expect(btn.className).toMatch(/newFileBtn/)
   })
 
   it('is NOT rendered in History mode (RED→GREEN)', async () => {
-    renderSidebar('history', '/p/ns/proj/history/doc.md')
+    renderSidebar('history', '/p/ns/proj/history/doc.md', true)
     await screen.findByTestId('filetree')
     expect(screen.queryByRole('button', { name: 'New file' })).toBeNull()
   })

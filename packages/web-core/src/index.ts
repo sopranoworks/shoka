@@ -31,13 +31,54 @@ export { EditSignalProvider, useEditSignal, type EditSignal } from './lib/editSi
 export { useMediaQuery } from './lib/useMediaQuery'
 export { useConnectionStatus } from './lib/useConnectionStatus'
 
-// --- screens ---------------------------------------------------------------
+// --- content screens -------------------------------------------------------
+export { RepoListPage } from './pages/RepoListPage'
+export { ProjectPage } from './pages/ProjectPage'
+export { BlobPage } from './pages/BlobPage'
+export { HistoryPage } from './pages/HistoryPage'
+export { SearchPage } from './pages/SearchPage'
+
+// --- admin/settings screens ------------------------------------------------
 export { MyAccountPage } from './pages/MyAccountPage'
 export { UserManagementPage } from './pages/UserManagementPage'
 export { ConnectionsPage } from './pages/ConnectionsPage'
 export { NamespaceManagementPage } from './pages/NamespaceManagementPage'
 export { LibrarianStatusPage } from './pages/LibrarianStatusPage'
 export { SettingsPage } from './pages/SettingsPage'
+
+// --- content components ----------------------------------------------------
+export { Sidebar, sidebarStyles } from './components/Sidebar'
+export { FileTree, fileTreeStyles, fileOpenRoute, type TreeOpenMode } from './components/FileTree'
+export { Markdown } from './components/Markdown'
+export { CodeView } from './components/CodeView'
+export { DiffView, type DiffViewProps } from './components/DiffView'
+export { RecoverButton } from './components/RecoverButton'
+
+// --- content config (injection seam) ---------------------------------------
+export {
+  ContentProvider,
+  useContentConfig,
+  type ContentConfig,
+} from './lib/contentConfig'
+
+// --- content supporting libs -----------------------------------------------
+export {
+  toTreeNodes,
+  filterTree,
+  sortTree,
+  flattenFilePaths,
+  ancestorDirs,
+  namespacesOf,
+  dirOf,
+  type SortMode,
+} from './lib/tree'
+export { classifyFile, isHighlightableCode, type FileKind } from './lib/fileKind'
+export { searchFiles, useSearchQuery } from './lib/search'
+export { fuzzyScore, fuzzyFilter, type FuzzyResult } from './lib/fuzzy'
+export { deriveViewContext } from './lib/viewContext'
+export { useDebouncedValue } from './lib/useDebouncedValue'
+export { lineDiff, type DiffRow, type DiffRowType } from './lib/lineDiff'
+export { languageForPath } from './lib/cmLanguages'
 
 // --- settings framework ----------------------------------------------------
 export { SettingsItemList } from './components/SettingsItemList'

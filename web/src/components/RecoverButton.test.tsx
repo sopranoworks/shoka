@@ -2,14 +2,14 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { ToastProvider } from '@shoka/web-core'
 
-const recoverProject = vi.fn()
-vi.mock('../lib/fileOps', () => ({
-  recoverProject: (ns: string, p: string) => recoverProject(ns, p),
+const request = vi.fn()
+vi.mock('../../../packages/web-core/src/lib/wsClient', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  wsClient: () => ({ request }),
 }))
 
-import { RecoverButton } from './RecoverButton'
+import { RecoverButton, ToastProvider } from '@shoka/web-core'
 
 function wrap(ui: ReactNode) {
   const qc = new QueryClient()
@@ -25,14 +25,10 @@ function wrap(ui: ReactNode) {
 }
 
 describe('RecoverButton', () => {
-  beforeEach(() => recoverProject.mockReset())
+  beforeEach(() => request.mockReset())
 
   it('re-syncs the named project and refreshes the projects badge', async () => {
-    recoverProject.mockResolvedValueOnce({
-      namespace: 'shoka',
-      project: 'maintenance',
-      state: 'healthy',
-      recovered: true,
+    request.mockResolvedValueOnce({
       message: 'Re-synced to the on-disk HEAD; the project is healthy and writes are enabled.',
     })
     const { invalidate } = wrap(
@@ -44,7 +40,10 @@ describe('RecoverButton', () => {
     )
 
     await waitFor(() =>
-      expect(recoverProject).toHaveBeenCalledWith('shoka', 'maintenance'),
+      expect(request).toHaveBeenCalledWith('RECOVER_PROJECT', {
+        namespace: 'shoka',
+        projectName: 'maintenance',
+      }),
     )
     await waitFor(() =>
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['projects'] }),
@@ -52,11 +51,7 @@ describe('RecoverButton', () => {
   })
 
   it('still refreshes the badge when recovery reports genuine drift', async () => {
-    recoverProject.mockResolvedValueOnce({
-      namespace: 'shoka',
-      project: 'maintenance',
-      state: 'corrupted',
-      recovered: false,
+    request.mockResolvedValueOnce({
       message: 'genuine uncommitted drift; use accept-working-tree or accept-head',
     })
     const { invalidate } = wrap(

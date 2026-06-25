@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { lineDiff } from './lineDiff'
+import { lineDiff } from '@shoka/web-core'
 
 describe('lineDiff', () => {
   it('all-same content yields only same rows', () => {

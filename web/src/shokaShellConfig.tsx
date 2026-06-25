@@ -2,8 +2,8 @@ import type { ReactNode } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { DndProvider, useDrop } from 'react-dnd'
 import { HTML5Backend } from 'react-dnd-html5-backend'
-import { titleBarStyles, type ShellConfig } from '@shoka/web-core'
-import { Sidebar } from './components/Sidebar'
+import { titleBarStyles, Sidebar, ContentProvider, type ShellConfig } from '@shoka/web-core'
+import { useShokaContentConfig } from './shokaContentConfig'
 import { SidebarTrash } from './components/SidebarTrash'
 import { CommandPalette } from './components/CommandPalette'
 import { Toaster } from './components/Toaster'
@@ -14,7 +14,6 @@ import {
   useRailSelect,
   useResetRailToExplorerOnProjectChange,
   isSettingsPath,
-  type RailView,
 } from './lib/useRailSelect'
 
 // --- Rail items (Shoka's activity bar) ------------------------------------
@@ -174,12 +173,19 @@ function ShokaBreadcrumbs({ styles }: { styles: Record<string, string> }) {
 
 // --- Shoka shell wrapper (DnD + trash + move providers) -------------------
 
+function ShokaContentBridge({ children }: { children: ReactNode }) {
+  const config = useShokaContentConfig()
+  return <ContentProvider value={config}>{children}</ContentProvider>
+}
+
 function ShokaShellWrapper({ children }: { children: ReactNode }) {
   return (
     <MoveProvider>
       <TrashProvider>
         <DndProvider backend={HTML5Backend}>
-          {children}
+          <ShokaContentBridge>
+            {children}
+          </ShokaContentBridge>
         </DndProvider>
       </TrashProvider>
     </MoveProvider>
@@ -264,7 +270,7 @@ function deriveActiveRail(pathname: string, rail: string): string {
 export const shokaShellConfig: ShellConfig = {
   brandName: 'Shoka',
   railItems: SHOKA_RAIL_ITEMS,
-  renderSidebar: (view) => <Sidebar view={view as RailView} />,
+  renderSidebar: (view) => <Sidebar view={view} />,
   renderSidebarExtra: () => <SidebarTrash />,
   renderRailBottom: (styles) => <TrashRailButton styles={styles} />,
   renderBreadcrumbs: (styles) => <ShokaBreadcrumbs styles={styles} />,

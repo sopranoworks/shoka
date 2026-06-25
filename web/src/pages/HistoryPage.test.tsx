@@ -14,13 +14,14 @@ import {
 const useHistoryQuery = vi.fn()
 const useFileAtQuery = vi.fn()
 const useDiffQuery = vi.fn()
-vi.mock('../lib/queries', () => ({
+vi.mock('../../../packages/web-core/src/lib/queries', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   useHistoryQuery: (...a: unknown[]) => useHistoryQuery(...a),
   useFileAtQuery: (...a: unknown[]) => useFileAtQuery(...a),
   useDiffQuery: (...a: unknown[]) => useDiffQuery(...a),
 }))
 
-import { HistoryPage } from './HistoryPage'
+import { HistoryPage } from '@shoka/web-core'
 
 const COMMITS = [
   {

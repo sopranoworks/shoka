@@ -8,7 +8,7 @@ import {
   parseNotifyEvent,
   type ViewContext,
 } from '@shoka/web-core'
-import { deriveViewContext } from '../lib/viewContext'
+import { deriveViewContext } from '@shoka/web-core'
 import { useBanner, useToast, useEditSignal } from '@shoka/web-core'
 
 // Non-visual: wires the /ws/ui NOTIFY stream and reconnect events into the

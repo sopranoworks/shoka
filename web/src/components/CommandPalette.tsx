@@ -4,10 +4,13 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { usePalette, useTheme } from '@shoka/web-core'
 import { useMoveController, dirOf } from '../lib/moveController'
 import { useIsAdmin } from '@shoka/web-core'
-import { useProjectsQuery, useAllProjectFiles } from '../lib/queries'
-import { namespacesOf } from '../lib/tree'
-import { deriveViewContext } from '../lib/viewContext'
-import { fuzzyFilter } from '../lib/fuzzy'
+import {
+  useProjectsQuery,
+  useAllProjectFiles,
+  namespacesOf,
+  deriveViewContext,
+  fuzzyFilter,
+} from '@shoka/web-core'
 import styles from './CommandPalette.module.css'
 import './cmdk.css'
 

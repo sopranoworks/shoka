@@ -7,15 +7,30 @@ import {
   createRouter,
   createMemoryHistory,
 } from '@tanstack/react-router'
-import { Sidebar } from './Sidebar'
+import {
+  Sidebar,
+  ShellProvider,
+  ContentProvider,
+  useSimpleRailControls,
+  useNoopRailReset,
+} from '@shoka/web-core'
 
-// Render the Sidebar at "/" (no project open) inside a minimal memory router so
-// its empty-state <Link to="/"> resolves. With no active project the Explorer
-// and Search panes show only their empty prompt — no project tree query runs,
-// so no QueryClient is needed.
+const minShell = {
+  railItems: [],
+  renderSidebar: () => null,
+  useRailControls: useSimpleRailControls,
+  useResetRailOnProjectChange: useNoopRailReset,
+}
+
 function renderSidebar(view: 'explorer' | 'search') {
   const rootRoute = createRootRoute({
-    component: () => <Sidebar view={view} />,
+    component: () => (
+      <ShellProvider value={minShell}>
+        <ContentProvider>
+          <Sidebar view={view} />
+        </ContentProvider>
+      </ShellProvider>
+    ),
   })
   const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -29,9 +44,6 @@ function renderSidebar(view: 'explorer' | 'search') {
   render(<RouterProvider router={router as never} />)
 }
 
-// C (B-31 consistency fix): with no project open there is nothing to explore, so
-// the Explorer pane renders genuinely empty — no "EXPLORER" heading, no "Choose a
-// project →" cushion. (RED before: the cushion was present.)
 describe('Sidebar Explorer pane with no project open (B-31 C)', () => {
   it('renders no EXPLORER heading and no "Choose a project" cushion', () => {
     renderSidebar('explorer')
@@ -40,6 +52,3 @@ describe('Sidebar Explorer pane with no project open (B-31 C)', () => {
     expect(screen.queryByText(/repositor/i)).toBeNull()
   })
 })
-
-// The History-panel behaviour (B-31 fix: tree retained, no "View history →"
-// cushion) is exercised in Sidebar.history.test.tsx, which mocks the tree query.

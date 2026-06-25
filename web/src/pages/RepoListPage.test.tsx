@@ -1,19 +1,15 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
+import {
+  RouterProvider,
+  createRootRoute,
+  createRouter,
+  createRoute,
+  createMemoryHistory,
+} from '@tanstack/react-router'
 
-// RepoListPage reads its namespace filter from the index route and its data from
-// the projects query. Both are mocked so the page can render standalone without
-// the full app router/Shell — we are asserting its user-facing wording, not its
-// data path. With an empty (settled) project list the page renders only its
-// header chrome and the "no projects" state, so no <Link> cards are built and no
-// live router context is needed.
-vi.mock('../router', () => ({
-  indexRoute: {
-    useSearch: () => ({}),
-    useNavigate: () => () => {},
-  },
-}))
-vi.mock('../lib/queries', () => ({
+vi.mock('../../../packages/web-core/src/lib/queries', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   useProjectsQuery: () => ({
     data: [],
     isPending: false,
@@ -22,17 +18,29 @@ vi.mock('../lib/queries', () => ({
   }),
 }))
 
-import { RepoListPage } from './RepoListPage'
+import { RepoListPage } from '@shoka/web-core'
+
+function renderPage() {
+  const rootRoute = createRootRoute()
+  const indexRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/',
+    component: RepoListPage,
+  })
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([indexRoute]),
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+  return render(<RouterProvider router={router as never} />)
+}
 
 describe('RepoListPage terminology (B-31)', () => {
-  it('uses Shoka’s "project" wording, not "repository"', () => {
-    const { container } = render(<RepoListPage />)
-    // Heading is "Projects", not the wrong-term "Repositories".
+  it('uses "project" wording, not "repository"', async () => {
+    const { container } = renderPage()
     expect(
-      screen.getByRole('heading', { name: 'Projects' }),
+      await screen.findByRole('heading', { name: 'Projects' }),
     ).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Repositories' })).toBeNull()
-    // No "repository"/"Repositories" wording anywhere in the rendered chrome.
     expect(container.textContent).not.toMatch(/repositor/i)
   })
 })

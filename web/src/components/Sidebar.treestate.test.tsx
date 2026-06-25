@@ -8,47 +8,55 @@ import {
   createRouter,
   createMemoryHistory,
 } from '@tanstack/react-router'
-import type { RailView } from './ActivityRail'
 
-// Stub the tree query (non-empty so ProjectTree renders the tree) and FileTree
-// (react-arborist needs ResizeObserver, unavailable in jsdom). The stub's host
-// <div> identity is the probe: if FileTree is NOT remounted across a rail switch,
-// React reconciles the SAME DOM node in place; if it IS remounted, a new node
-// appears. (react-arborist holds its expansion state internally, seeded once at
-// mount — so "not remounted" === "expansion preserved".)
-vi.mock('../lib/queries', () => ({
-  useTreeQuery: () => ({
-    data: [{ name: 'doc.md', path: 'doc.md', isFile: true }],
-    isError: false,
-  }),
-}))
-vi.mock('./FileTree', () => ({
+vi.mock('../../../packages/web-core/src/lib/queries', async (importOriginal) => {
+  const orig = await importOriginal<Record<string, unknown>>()
+  return {
+    ...orig,
+    useTreeQuery: () => ({
+      data: [{ name: 'doc.md', path: 'doc.md', isFile: true }],
+      isError: false,
+    }),
+  }
+})
+
+vi.mock('../../../packages/web-core/src/components/FileTree', () => ({
   FileTree: ({ openMode }: { openMode?: string }) => (
     <div data-testid="filetree" data-openmode={openMode} />
   ),
-}))
-// FileDropzone is an orthogonal native-file-drop wrapper (its own deps:
-// QueryClient/Toast/DnD providers); these tests probe Sidebar's tree/rail logic,
-// not the dropzone (covered by fileAdd.test.ts + the real-browser E2E). Stub it to
-// a pass-through, mirroring the FileTree mock above.
-vi.mock('./FileDropzone', () => ({
-  FileDropzone: (props: { children?: unknown }) => <>{props.children as never}</>,
+  fileOpenRoute: (m: string) =>
+    m === 'history'
+      ? '/p/$namespace/$project/history/$'
+      : '/p/$namespace/$project/blob/$',
+  fileTreeStyles: {},
 }))
 
-import { Sidebar } from './Sidebar'
+import {
+  Sidebar,
+  ShellProvider,
+  ContentProvider,
+  useSimpleRailControls,
+  useNoopRailReset,
+} from '@shoka/web-core'
 
-// Harness holds the rail `view` in state and exposes a button to flip Explorer↔
-// History — mirroring Shell's rail toggle WITHOUT remounting Sidebar (Shell is
-// persistent), so we isolate whether the rail switch remounts the tree.
+const minShell = {
+  railItems: [],
+  renderSidebar: () => null,
+  useRailControls: useSimpleRailControls,
+  useResetRailOnProjectChange: useNoopRailReset,
+}
+
 function renderWithFlip(url: string) {
   function Harness() {
-    const [view, setView] = useState<RailView>('explorer')
+    const [view, setView] = useState<string>('explorer')
     return (
-      <>
-        <button onClick={() => setView('history')}>to-history</button>
-        <button onClick={() => setView('explorer')}>to-explorer</button>
-        <Sidebar view={view} />
-      </>
+      <ShellProvider value={minShell}>
+        <ContentProvider>
+          <button onClick={() => setView('history')}>to-history</button>
+          <button onClick={() => setView('explorer')}>to-explorer</button>
+          <Sidebar view={view} />
+        </ContentProvider>
+      </ShellProvider>
     )
   }
   const rootRoute = createRootRoute({ component: Harness })
@@ -68,11 +76,6 @@ function renderWithFlip(url: string) {
   return router
 }
 
-// Defect 2 (RED→GREEN): the file tree must keep its expansion across Explorer↔
-// History. The tree must NOT remount on the switch (a remount re-initialises
-// react-arborist to all-collapsed — the 29→5 collapse). RED before: Sidebar
-// returned different ExplorerView/HistoryView component types, so the tree
-// remounted (a new DOM node) on each switch.
 describe('Sidebar tree preserved across Explorer↔History (B-31)', () => {
   it('does NOT remount the FileTree when switching Explorer→History→Explorer', async () => {
     renderWithFlip('/p/ns/proj/blob/doc.md')
@@ -81,8 +84,6 @@ describe('Sidebar tree preserved across Explorer↔History (B-31)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'to-history' }))
     const afterHistory = screen.getByTestId('filetree')
-    // Same DOM node ⇒ FileTree reconciled in place (not remounted) ⇒ arborist
-    // expansion preserved. Only the openMode prop flipped.
     expect(afterHistory).toBe(initial)
     expect(afterHistory).toHaveAttribute('data-openmode', 'history')
 
