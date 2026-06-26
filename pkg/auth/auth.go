@@ -39,6 +39,10 @@ type Principal struct {
 	// (internal/tools.AuthzMiddleware) enforces it. Empty is treated as "*" for
 	// backward compatibility with tokens minted before the field existed.
 	Scope string
+	// ExtraPermissions is an opaque key-value store for application-specific
+	// permission extensions, carried from the token record through validation.
+	// Consumers read the keys they understand; nil means no restrictions.
+	ExtraPermissions map[string]any
 }
 
 // RejectReason is a discrete OAuth token-rejection category (B-53 §2.4), returned

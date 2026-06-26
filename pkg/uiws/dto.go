@@ -71,5 +71,6 @@ type OAuthIssueSelfPayload struct {
 // validity_seconds is the chosen token lifetime in whole seconds. 0/absent ⇒ the finite global
 // default (never infinite); a NEGATIVE value is rejected (no indefinite).
 type OAuthIssueSelfRequest struct {
-	ValiditySeconds int64 `json:"validity_seconds"`
+	ValiditySeconds  int64          `json:"validity_seconds"`
+	ExtraPermissions map[string]any `json:"extra_permissions,omitempty"`
 }

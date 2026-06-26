@@ -415,7 +415,7 @@ func main() {
 		// /authorize does — so a CLI token is indistinguishable from any other. All
 		// oauth/serverurl/identity wiring stays here in main; the manager only
 		// admin-gates and calls. The minted token is never logged on this path.
-		uim.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+		uim.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error) {
 			base, berr := serverurl.Base(cfg.Server.MCP.OAuth.ExternalURL, r)
 			if berr != nil {
 				return "", time.Time{}, berr
@@ -435,6 +435,7 @@ func main() {
 				time.Now(),
 				accessTTL,
 				accessTTL,
+				extraPermissions,
 			)
 			if nerr != nil {
 				return "", time.Time{}, nerr
@@ -471,7 +472,7 @@ func main() {
 			if scope == "" {
 				scope = "*"
 			}
-			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email, ClientID: rec.ClientID, Scope: scope}, "", true
+			return auth.Principal{Name: rec.Principal.Name, Email: rec.Principal.Email, ClientID: rec.ClientID, Scope: scope, ExtraPermissions: rec.ExtraPermissions}, "", true
 		}
 	}
 	// The Web/non-MCP routes (/drafts/, /ws/ui, /api/) get their OWN authenticator

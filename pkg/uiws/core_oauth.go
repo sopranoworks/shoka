@@ -468,7 +468,7 @@ func (h *CoreHandlers) handleOAuthIssueSelf(client *Client, payload json.RawMess
 		client.SendError("OAUTH_ISSUE_SELF validity must not be negative (no indefinite)")
 		return
 	}
-	token, expiry, err := h.selfIssuer.IssueSelf(client.req, time.Duration(p.ValiditySeconds)*time.Second)
+	token, expiry, err := h.selfIssuer.IssueSelf(client.req, time.Duration(p.ValiditySeconds)*time.Second, p.ExtraPermissions)
 	if err != nil {
 		// The error is generic on the wire; the token never appears in it.
 		client.SendError("Failed to issue a token")

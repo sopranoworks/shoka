@@ -91,7 +91,7 @@ func TestEndToEndCredentialPath(t *testing.T) {
 	}
 	m := ui.NewManager(s, dm, nil)
 	m.SetOAuthStore(store) // *oauthstore.Store satisfies OAuthConnectionStore
-	m.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+	m.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration, _ map[string]any) (string, time.Time, error) {
 		if accessTTL <= 0 {
 			accessTTL = time.Hour
 		}

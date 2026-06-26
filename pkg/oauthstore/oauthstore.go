@@ -146,6 +146,12 @@ type SeriesRecord struct {
 	// validation path and the authz gate both interpret as "*" — so old tokens stay
 	// all-access and age out as they expire; no migration is required.
 	Scope string `json:"scope,omitempty"`
+	// ExtraPermissions is an opaque key-value store for application-specific
+	// permission extensions. Shoka stores and returns it but does not interpret
+	// the contents. Consumers read the keys they understand and use application
+	// defaults for missing keys. A nil/empty map means no restrictions. Existing
+	// tokens without the field unmarshal to nil — backward compatible.
+	ExtraPermissions map[string]any `json:"extra_permissions,omitempty"`
 }
 
 // RegisteredClient is a Dynamic Client Registration record (RFC 7591, B-63): a
@@ -306,7 +312,7 @@ func (s *Store) TakeCode(code string, now time.Time) (CodeRecord, error) {
 // persists the series. It returns the new SeriesRecord (carrying the freshly
 // generated handles). Each call is an independent series — multiple concurrent
 // connections produce multiple independent series.
-func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, now time.Time, accessTTL, refreshTTL time.Duration) (SeriesRecord, error) {
+func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, now time.Time, accessTTL, refreshTTL time.Duration, extraPermissions ...map[string]any) (SeriesRecord, error) {
 	seriesID, err := NewHandle()
 	if err != nil {
 		return SeriesRecord{}, err
@@ -318,6 +324,10 @@ func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, 
 	refresh, err := NewHandle()
 	if err != nil {
 		return SeriesRecord{}, err
+	}
+	var ep map[string]any
+	if len(extraPermissions) > 0 {
+		ep = extraPermissions[0]
 	}
 	rec := SeriesRecord{
 		SeriesID:         seriesID,
@@ -332,6 +342,7 @@ func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, 
 		AccessExpiry:     now.Add(accessTTL),
 		RefreshExpiry:    now.Add(refreshTTL),
 		Scope:            scope,
+		ExtraPermissions: ep,
 	}
 	if err := s.putSeries(rec, "", ""); err != nil {
 		return SeriesRecord{}, err

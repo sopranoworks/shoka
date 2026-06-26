@@ -1,7 +1,9 @@
 package oauthstore
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -363,5 +365,98 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	t.Cleanup(func() { _ = s2.Close() })
 	if _, err := s2.Lookup(r.AccessToken, now); err != nil {
 		t.Fatalf("series did not survive reopen: %v", err)
+	}
+}
+
+func TestExtraPermissions_RoundTrip(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	p := Principal{Name: "Op", Email: "op@example.test"}
+
+	ep := map[string]any{
+		"allowed_branches": []any{"task-42/", "fix-99/"},
+		"rate_limit":       float64(100),
+	}
+	rec, err := s.NewSeries("shoka-cli", p, "res", "*", now, accessTTL, refreshTTL, ep)
+	if err != nil {
+		t.Fatalf("NewSeries with extra_permissions: %v", err)
+	}
+
+	got, err := s.Lookup(rec.AccessToken, now)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if got.ExtraPermissions == nil {
+		t.Fatal("ExtraPermissions is nil after Lookup, expected the stored map")
+	}
+	branches, ok := got.ExtraPermissions["allowed_branches"].([]any)
+	if !ok || len(branches) != 2 || branches[0] != "task-42/" {
+		t.Fatalf("allowed_branches round-trip failed: %v", got.ExtraPermissions["allowed_branches"])
+	}
+	rate, ok := got.ExtraPermissions["rate_limit"].(float64)
+	if !ok || rate != 100 {
+		t.Fatalf("rate_limit round-trip failed: %v", got.ExtraPermissions["rate_limit"])
+	}
+}
+
+func TestExtraPermissions_NilBackwardCompat(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	p := Principal{Name: "Op", Email: "op@example.test"}
+
+	rec, err := s.NewSeries("shoka-cli", p, "res", "*", now, accessTTL, refreshTTL)
+	if err != nil {
+		t.Fatalf("NewSeries without extra_permissions: %v", err)
+	}
+
+	got, err := s.Lookup(rec.AccessToken, now)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if got.ExtraPermissions != nil {
+		t.Fatalf("ExtraPermissions should be nil for a token without it, got %v", got.ExtraPermissions)
+	}
+}
+
+func TestExtraPermissions_SurvivesRotation(t *testing.T) {
+	s := openTemp(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	p := Principal{Name: "Op", Email: "op@example.test"}
+
+	ep := map[string]any{"allowed_branches": []any{"task-42/"}}
+	rec, err := s.NewSeries("shoka-cli", p, "res", "*", now, accessTTL, refreshTTL, ep)
+	if err != nil {
+		t.Fatalf("NewSeries: %v", err)
+	}
+
+	rotated, err := s.Rotate(rec.RefreshToken, now, accessTTL, refreshTTL)
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	got, err := s.Lookup(rotated.AccessToken, now)
+	if err != nil {
+		t.Fatalf("Lookup after rotation: %v", err)
+	}
+	if got.ExtraPermissions == nil {
+		t.Fatal("ExtraPermissions lost after rotation")
+	}
+	branches, ok := got.ExtraPermissions["allowed_branches"].([]any)
+	if !ok || len(branches) != 1 || branches[0] != "task-42/" {
+		t.Fatalf("allowed_branches round-trip after rotation failed: %v", got.ExtraPermissions)
+	}
+}
+
+func TestExtraPermissions_OmittedFromJSON_WhenNil(t *testing.T) {
+	rec := SeriesRecord{
+		SeriesID: "test",
+		Scope:    "*",
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "extra_permissions") {
+		t.Fatalf("nil ExtraPermissions should be omitted from JSON, got: %s", data)
 	}
 }

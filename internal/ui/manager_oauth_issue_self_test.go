@@ -69,7 +69,7 @@ func TestWSUI_OAuthIssueSelfReturnsToken(t *testing.T) {
 	exp := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	var gotReq bool
 	var gotTTL time.Duration
-	issuer := uiws.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+	issuer := uiws.OAuthSelfIssuerFunc(func(r *http.Request, accessTTL time.Duration, _ map[string]any) (string, time.Time, error) {
 		gotReq = r != nil // the request must reach the issuer (for resource derivation)
 		gotTTL = accessTTL
 		return want, exp, nil
@@ -104,7 +104,7 @@ func TestWSUI_OAuthIssueSelfReturnsToken(t *testing.T) {
 // validity_seconds threading (always pass the old fixed TTL) → gotTTL != the chosen value → fail.
 func TestWSUI_OAuthIssueSelfThreadsChosenExpiry(t *testing.T) {
 	var gotTTL time.Duration
-	issuer := uiws.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration) (string, time.Time, error) {
+	issuer := uiws.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration, _ map[string]any) (string, time.Time, error) {
 		gotTTL = accessTTL
 		return "tok", time.Unix(1, 0), nil
 	})
@@ -130,7 +130,7 @@ func TestWSUI_OAuthIssueSelfThreadsChosenExpiry(t *testing.T) {
 
 func TestWSUI_OAuthIssueSelfRefusedForNonAdmin(t *testing.T) {
 	var called bool
-	issuer := uiws.OAuthSelfIssuerFunc(func(*http.Request, time.Duration) (string, time.Time, error) {
+	issuer := uiws.OAuthSelfIssuerFunc(func(*http.Request, time.Duration, map[string]any) (string, time.Time, error) {
 		called = true
 		return "should-not-be-minted", time.Time{}, nil
 	})
