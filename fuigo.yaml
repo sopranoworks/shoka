@@ -1,2 +1,3 @@
 steps:
-  - cd build/frontend && go run .
+  - command: go run .
+    workdir: build/frontend
