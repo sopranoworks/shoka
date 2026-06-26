@@ -1,0 +1,2 @@
+steps:
+  - cd build/frontend && go run .
