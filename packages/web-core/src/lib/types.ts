@@ -28,6 +28,7 @@ export interface FileNode {
   name: string
   path: string
   isDir: boolean
+  modifiedAt?: string
   children?: FileNode[]
 }
 
@@ -232,11 +233,27 @@ export interface FileDiff {
   hunks?: DiffHunk[]
 }
 
+// One server network endpoint in the SERVER_NETWORK_INFO response.
+export interface NetworkElement {
+  label: string
+  protocol: string
+  listen_address: string
+  external_url?: string
+  status: 'active' | 'disabled' | (string & {})
+  description?: string
+}
+
+// The SERVER_NETWORK_INFO response payload.
+export interface NetworkInfoPayload {
+  elements: NetworkElement[]
+}
+
 // react-arborist node, derived from FileNode via lib/tree.
 export interface TreeNode {
   id: string // unique within a project; for files this is the file path
   name: string // leaf label (last path segment)
   path: string // full slash-joined path (directories included)
   isFile: boolean
+  modifiedAt?: string
   children?: TreeNode[]
 }

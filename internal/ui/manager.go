@@ -103,7 +103,23 @@ const (
 	// above). Returns a LibrarianStatus payload: the new snapshot on success, or
 	// the attempted config + the typed failure detail (old client kept) on failure.
 	MsgReloadLibrarianConfig MessageType = "RELOAD_LIBRARIAN_CONFIG"
+	// MsgServerNetworkInfo returns the server's network endpoints (listen addresses,
+	// external URLs, protocols, status). Read-level, global — any authenticated user
+	// may see how to connect.
+	MsgServerNetworkInfo MessageType = "SERVER_NETWORK_INFO"
 )
+
+// NetworkElement is one server network endpoint in the SERVER_NETWORK_INFO response.
+// Shoka populates HTTP + MCP entries; consumers (GitYard) add their own via the
+// NetworkInfoProvider extension point.
+type NetworkElement struct {
+	Label         string `json:"label"`
+	Protocol      string `json:"protocol"`
+	ListenAddress string `json:"listen_address"`
+	ExternalURL   string `json:"external_url,omitempty"`
+	Status        string `json:"status"`
+	Description   string `json:"description,omitempty"`
+}
 
 type CreateProjectPayload struct {
 	Namespace   string `json:"namespace"`
@@ -219,10 +235,11 @@ type SearchResultPayload struct {
 }
 
 type FileNode struct {
-	Name     string     `json:"name"`
-	Path     string     `json:"path"`
-	IsDir    bool       `json:"isDir"`
-	Children []FileNode `json:"children,omitempty"`
+	Name       string     `json:"name"`
+	Path       string     `json:"path"`
+	IsDir      bool       `json:"isDir"`
+	ModifiedAt string     `json:"modifiedAt,omitempty"`
+	Children   []FileNode `json:"children,omitempty"`
 }
 
 // Administrator authorization for the OAUTH_*/ADMIN_* management requests is enforced by
@@ -250,8 +267,9 @@ type Manager struct {
 	// snapshot. nil when the librarian was not registered at startup (the MCP tool
 	// cannot be added live, so a reload cannot enable a never-configured librarian).
 	// Wired at cmd/shoka so internal/config never crosses into internal/ui.
-	librarianReload func(context.Context) libstatus.Snapshot
-	originChecker   func(*http.Request) bool
+	librarianReload  func(context.Context) libstatus.Snapshot
+	networkInfoProvider func() []NetworkElement
+	originChecker    func(*http.Request) bool
 	upgrader        websocket.Upgrader
 	notifyDrops     atomic.Int64
 	// connSeq assigns each connection a unique sender id ("ws-<seq>"). Atomic so
@@ -370,6 +388,8 @@ var wsLevels = map[MessageType]uiws.Op{
 	// gated the same as the read.
 	MsgLibrarianStatus:        {Level: authz.LevelAdmin, Global: true},
 	MsgRefreshLibrarianStatus: {Level: authz.LevelAdmin, Global: true},
+
+	MsgServerNetworkInfo: {Level: authz.LevelRead, Global: true},
 }
 
 // wsSuperUserOps are the /ws/ui messages that require a SUPER-USER (wildcard admin), not
@@ -507,6 +527,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleRefreshLibrarianStatus(client)
 		case MsgReloadLibrarianConfig:
 			m.handleReloadLibrarianConfig(client)
+		case MsgServerNetworkInfo:
+			m.handleServerNetworkInfo(client)
 		default:
 			client.SendError("Unknown message type")
 		}
@@ -813,6 +835,26 @@ func (m *Manager) SetLibrarianReloader(f func(context.Context) libstatus.Snapsho
 	m.librarianReload = f
 }
 
+// SetNetworkInfoProvider wires the server network endpoint provider. Called once
+// at startup from cmd/shoka with a closure that returns the server's listener
+// entries. Consumers (GitYard) supply their own provider that includes SSH/git entries.
+func (m *Manager) SetNetworkInfoProvider(f func() []NetworkElement) {
+	m.networkInfoProvider = f
+}
+
+func (m *Manager) handleServerNetworkInfo(client *uiws.Client) {
+	var elements []NetworkElement
+	if m.networkInfoProvider != nil {
+		elements = m.networkInfoProvider()
+	}
+	if elements == nil {
+		elements = []NetworkElement{}
+	}
+	client.SendResponse(MsgServerNetworkInfo, struct {
+		Elements []NetworkElement `json:"elements"`
+	}{Elements: elements})
+}
+
 // handleReloadLibrarianConfig re-reads the config file and, on a passing
 // connection test, swaps the librarian's LLM client live (super-user only). On
 // failure the previous client is kept and the typed detail is returned. One real
@@ -955,7 +997,7 @@ func (m *Manager) handleGetTree(client *uiws.Client, payload json.RawMessage) {
 }
 
 func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, error) {
-	files, _, err := m.storage.ListFiles(namespace, projectName, path)
+	files, modTimes, err := m.storage.ListFiles(namespace, projectName, path)
 	if err != nil {
 		return nil, err
 	}
@@ -970,6 +1012,10 @@ func (m *Manager) getTree(namespace, projectName, path string) ([]FileNode, erro
 			Name:  name,
 			Path:  nodePath,
 			IsDir: isDir,
+		}
+
+		if t, ok := modTimes[f]; ok {
+			node.ModifiedAt = t.UTC().Format(time.RFC3339)
 		}
 
 		if isDir {

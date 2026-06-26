@@ -34,6 +34,9 @@ export interface SettingsItem {
 }
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
+  // Server Info is visible to EVERY authenticated user — anyone needs to know how to
+  // connect. The SERVER_NETWORK_INFO op is read-level (global), not admin-gated.
+  { id: 'server-info', label: 'Server Info', visible: () => true },
   // My Account is the per-user self-service page — visible to EVERY authenticated user
   // (NOT super-user-only). The server enforces self-access structurally (the ACCOUNT_*
   // ops act on the session identity only), so it is safe for all viewers.
@@ -80,6 +83,8 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 export function visibleSettingsItems(
   v: SettingsVisibility,
   extras: SettingsItem[] = [],
+  hiddenIds: string[] = [],
 ): SettingsItem[] {
-  return [...SETTINGS_ITEMS, ...extras].filter((it) => it.visible(v))
+  const hidden = new Set(hiddenIds)
+  return [...SETTINGS_ITEMS, ...extras].filter((it) => !hidden.has(it.id) && it.visible(v))
 }

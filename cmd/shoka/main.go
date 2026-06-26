@@ -281,6 +281,45 @@ func main() {
 		}()
 	}
 
+	// Server Info: wire the network endpoint provider for the SERVER_NETWORK_INFO
+	// ws op. Reads listen addresses and external URLs from config; consumers extend.
+	uim.SetNetworkInfoProvider(func() []ui.NetworkElement {
+		var elements []ui.NetworkElement
+		elements = append(elements, ui.NetworkElement{
+			Label:         "HTTP",
+			Protocol:      "https",
+			ListenAddress: cfg.Server.HTTP.Listen,
+			ExternalURL:   cfg.Server.HTTP.ExternalURL,
+			Status:        "active",
+			Description:   "Web UI and API",
+		})
+		if cfg.Server.MCP.Plain.Listen != "" {
+			desc := "Bearer token authentication"
+			if !cfg.Server.MCP.Plain.BearerAuth {
+				desc = "No authentication (loopback only)"
+			}
+			elements = append(elements, ui.NetworkElement{
+				Label:         "MCP (plain)",
+				Protocol:      "mcp",
+				ListenAddress: cfg.Server.MCP.Plain.Listen,
+				ExternalURL:   cfg.Server.MCP.Plain.ExternalURL,
+				Status:        "active",
+				Description:   desc,
+			})
+		}
+		if cfg.Server.MCP.OAuth.Listen != "" {
+			elements = append(elements, ui.NetworkElement{
+				Label:         "MCP (OAuth)",
+				Protocol:      "mcp",
+				ListenAddress: cfg.Server.MCP.OAuth.Listen,
+				ExternalURL:   cfg.Server.MCP.OAuth.ExternalURL,
+				Status:        "active",
+				Description:   "OAuth 2.0 (CIMD/DCR/confidential)",
+			})
+		}
+		return elements
+	})
+
 	// B-50: "is OAuth active" ≡ the OAuth MCP transport is configured (its listen
 	// address is set). The former server.auth.oauth.enabled flag is gone. The
 	// per-port listener wiring is phase 2; phase 1 only repoints the reads.

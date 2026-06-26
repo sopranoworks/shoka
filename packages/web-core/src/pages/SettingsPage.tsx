@@ -5,6 +5,7 @@ import { UserManagementPage } from './UserManagementPage'
 import { ConnectionsPage } from './ConnectionsPage'
 import { NamespaceManagementPage } from './NamespaceManagementPage'
 import { LibrarianStatusPage } from './LibrarianStatusPage'
+import { ServerInfoPage } from './ServerInfoPage'
 import { useIsSuperUser, useManagesAnyNamespace } from '../lib/authStatus'
 import { SETTINGS_ITEMS, type SettingsItem } from '../lib/settingsRegistry'
 import { useCoreScreens } from '../lib/coreScreens'
@@ -15,6 +16,7 @@ import styles from './SettingsPage.module.css'
 // the always-present sidebar via the registry. Injected items carry their own
 // `component`; built-ins resolve through this map.
 const BUILTIN_COMPONENTS: Record<string, ComponentType> = {
+  'server-info': ServerInfoPage,
   account: MyAccountPage,
   users: UserManagementPage,
   oauth: ConnectionsPage,
@@ -42,13 +44,14 @@ export function SettingsPage() {
   const item = useRouterState({ select: (s) => (s.location.search as { item?: string }).item })
   const isSuperUser = useIsSuperUser()
   const managesAnyNamespace = useManagesAnyNamespace()
-  const { extraSettingsItems } = useCoreScreens()
+  const { extraSettingsItems, hiddenSettingsItemIds } = useCoreScreens()
 
   if (!item) {
     return <Placeholder title="Settings" body="Choose a setting from the list." />
   }
 
-  const items: SettingsItem[] = [...SETTINGS_ITEMS, ...(extraSettingsItems ?? [])]
+  const hidden = new Set(hiddenSettingsItemIds ?? [])
+  const items: SettingsItem[] = [...SETTINGS_ITEMS, ...(extraSettingsItems ?? [])].filter((it) => !hidden.has(it.id))
   const entry = items.find((it) => it.id === item)
   const Component = entry?.component ?? (entry ? BUILTIN_COMPONENTS[entry.id] : undefined)
   if (!entry || !Component) {
