@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { getStatus, type AuthStatus } from '@shoka/web-core'
+import { useQueryClient } from '@tanstack/react-query'
+import { getStatus, seedAuthStatus, type AuthStatus } from '@shoka/web-core'
 import { wsClient } from '@shoka/web-core'
 import { FirstRunWizard } from './FirstRunWizard'
 import { LoginScreen } from './LoginScreen'
@@ -11,13 +12,17 @@ import { LoginScreen } from './LoginScreen'
 //     -> the app, opening the /ws/ui socket only then (the login screen never
 //        opens /ws/ui, which would 401 once a user exists).
 export function AuthGate({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient()
   const [status, setStatus] = useState<AuthStatus | null>(null)
   const [failed, setFailed] = useState(false)
 
   function refresh() {
     setFailed(false)
     getStatus()
-      .then(setStatus)
+      .then((s) => {
+        seedAuthStatus(queryClient, s)
+        setStatus(s)
+      })
       .catch(() => setFailed(true))
   }
   useEffect(refresh, [])

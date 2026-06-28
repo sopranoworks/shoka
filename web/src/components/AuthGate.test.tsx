@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthGate } from './AuthGate'
 import * as authClient from '@shoka/web-core'
 
@@ -17,12 +18,17 @@ function mockStatus(s: Partial<authClient.AuthStatus>) {
   })
 }
 
+function renderWithQuery(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+}
+
 describe('AuthGate', () => {
   beforeEach(() => vi.restoreAllMocks())
 
   it('shows the first-run wizard when no users exist and first-run is allowed', async () => {
     mockStatus({ users_exist: false, first_run_allowed: true })
-    render(
+    renderWithQuery(
       <AuthGate>
         <div>APP CONTENT</div>
       </AuthGate>,
@@ -33,7 +39,7 @@ describe('AuthGate', () => {
 
   it('shows the login screen when users exist but the request is not authenticated', async () => {
     mockStatus({ users_exist: true, authenticated: false })
-    render(
+    renderWithQuery(
       <AuthGate>
         <div>APP CONTENT</div>
       </AuthGate>,
@@ -44,7 +50,7 @@ describe('AuthGate', () => {
 
   it('renders the app (viewing under the session) once authenticated', async () => {
     mockStatus({ users_exist: true, authenticated: true, principal: { email: 'op@x.com', display_name: 'Op', is_admin: true } })
-    render(
+    renderWithQuery(
       <AuthGate>
         <div>APP CONTENT</div>
       </AuthGate>,
@@ -54,7 +60,7 @@ describe('AuthGate', () => {
 
   it('renders the app without login when no users exist and first-run is disabled (no-lockout)', async () => {
     mockStatus({ users_exist: false, first_run_allowed: false })
-    render(
+    renderWithQuery(
       <AuthGate>
         <div>APP CONTENT</div>
       </AuthGate>,

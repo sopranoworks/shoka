@@ -22,14 +22,14 @@ describe('visibleSettingsItems', () => {
     expect(ids).not.toContain('namespaces')
   })
 
-  it('shows My Account to everyone (a plain non-admin sees ONLY account)', () => {
+  it('shows Server Info + My Account to everyone (a plain non-admin sees ONLY those)', () => {
     const ids = visibleSettingsItems({ isSuperUser: false, managesAnyNamespace: false }).map((i) => i.id)
-    expect(ids).toEqual(['account'])
+    expect(ids).toEqual(['server-info', 'account'])
   })
 
-  it('shows account + namespaces to a namespace-admin (not super-user)', () => {
+  it('shows server-info + account + namespaces to a namespace-admin (not super-user)', () => {
     const ids = visibleSettingsItems({ isSuperUser: false, managesAnyNamespace: true }).map((i) => i.id)
-    expect(ids).toEqual(['account', 'namespaces'])
+    expect(ids).toEqual(['server-info', 'account', 'namespaces'])
   })
 
   // Extension seam (Layer-C): a consumer can inject extra items, merged AFTER the

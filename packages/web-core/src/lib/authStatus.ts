@@ -1,14 +1,21 @@
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, keepPreviousData, type QueryClient } from '@tanstack/react-query'
 import { getStatus, type AuthStatus } from './authClient'
+
+export const AUTH_STATUS_KEY = ['auth-status'] as const
 
 export function useAuthStatus() {
   return useQuery<AuthStatus>({
-    queryKey: ['auth-status'],
+    queryKey: AUTH_STATUS_KEY,
     queryFn: getStatus,
     staleTime: 30_000,
+    gcTime: Infinity,
     retry: 2,
     placeholderData: keepPreviousData,
   })
+}
+
+export function seedAuthStatus(qc: QueryClient, status: AuthStatus): void {
+  qc.setQueryData(AUTH_STATUS_KEY, status)
 }
 
 // useIsSuperUser reports whether the current viewer is a super-user (admin over all
