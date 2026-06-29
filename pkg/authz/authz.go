@@ -99,10 +99,10 @@ func ParseScope(scope string) []Grant {
 func parseGrant(g string) Grant {
 	var zone string
 	if i := strings.Index(g, "/"); i >= 0 {
-		after := g[i+1:]
-		if strings.HasPrefix(after, "namespace:") || after == "*" || strings.HasPrefix(after, "*:") {
+		colonPos := strings.Index(g, ":")
+		if colonPos < 0 || i < colonPos {
 			zone = g[:i]
-			g = after
+			g = g[i+1:]
 		}
 	}
 
@@ -123,6 +123,13 @@ func parseGrant(g string) Grant {
 			}
 			ns, proj, _ := strings.Cut(rest, "/")
 			grant = Grant{Namespace: ns, Project: proj, Level: lvl}
+		} else if rest, lvl, ok := splitPerm(g); ok {
+			ns, proj, _ := strings.Cut(rest, ":")
+			if ns != "" {
+				grant = Grant{Namespace: ns, Project: proj, Level: lvl}
+			} else {
+				grant = Grant{Level: LevelNone}
+			}
 		} else {
 			grant = Grant{Level: LevelNone}
 		}

@@ -113,6 +113,13 @@ func TestParseScope_ZonePrefix(t *testing.T) {
 		{"custom/namespace:bar:r", Grant{Zone: "custom", Namespace: "bar", Level: LevelRead}},
 		{"git/*:admin", Grant{Zone: "git", Wildcard: true, Level: LevelAdmin}},
 		{"git/*", Grant{Zone: "git", Wildcard: true, Level: LevelAdmin}},
+		// Prefix-less ns:proj:level format (GitYard generates these)
+		{"test:prtest:rw", Grant{Namespace: "test", Project: "prtest", Level: LevelWrite}},
+		{"test:prtest:r", Grant{Namespace: "test", Project: "prtest", Level: LevelRead}},
+		{"test:prtest:admin", Grant{Namespace: "test", Project: "prtest", Level: LevelAdmin}},
+		{"foo:rw", Grant{Namespace: "foo", Level: LevelWrite}},
+		// Zoned prefix-less format
+		{"git/test:prtest:rw", Grant{Zone: "git", Namespace: "test", Project: "prtest", Level: LevelWrite}},
 	}
 	for _, c := range cases {
 		g := ParseScope(c.in)
