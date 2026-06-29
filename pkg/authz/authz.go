@@ -67,7 +67,8 @@ func (l Level) String() string {
 // Grant is one parsed scope entry: a target (wildcard, or a namespace optionally
 // narrowed to a project) at a permission level.
 type Grant struct {
-	Wildcard  bool // target is "*" — matches every namespace
+	Zone      string // "" for Shoka-native scopes; non-empty for downstream zones (e.g. "git")
+	Wildcard  bool   // target is "*" — matches every namespace
 	Namespace string
 	Project   string // "" = namespace-wide
 	Level     Level
@@ -96,30 +97,38 @@ func ParseScope(scope string) []Grant {
 }
 
 func parseGrant(g string) Grant {
-	if g == "*" {
-		return Grant{Wildcard: true, Level: LevelAdmin}
-	}
-	if g == NoAccessScope {
-		// The explicit no-access sentinel (cascade-cleanup's empty-scope substitute):
-		// a grant that matches nothing, so the principal has LevelNone everywhere.
-		return Grant{Level: LevelNone}
-	}
-	if rest, lvl, ok := splitPerm(g); ok && rest == "*" {
-		return Grant{Wildcard: true, Level: lvl}
-	}
-	if strings.HasPrefix(g, "namespace:") {
-		target := strings.TrimPrefix(g, "namespace:")
-		rest, lvl, ok := splitPerm(target)
-		if !ok {
-			// Legacy level-less namespace grant: "all actions in the namespace"
-			// without admin ⇒ read-write.
-			rest, lvl = target, LevelWrite
+	var zone string
+	if i := strings.Index(g, "/"); i >= 0 {
+		after := g[i+1:]
+		if strings.HasPrefix(after, "namespace:") || after == "*" || strings.HasPrefix(after, "*:") {
+			zone = g[:i]
+			g = after
 		}
-		ns, proj, _ := strings.Cut(rest, "/")
-		return Grant{Namespace: ns, Project: proj, Level: lvl}
 	}
-	// Unrecognised target shape: a conservative no-op grant (matches nothing).
-	return Grant{Level: LevelNone}
+
+	var grant Grant
+	switch {
+	case g == "*":
+		grant = Grant{Wildcard: true, Level: LevelAdmin}
+	case g == NoAccessScope:
+		grant = Grant{Level: LevelNone}
+	default:
+		if rest, lvl, ok := splitPerm(g); ok && rest == "*" {
+			grant = Grant{Wildcard: true, Level: lvl}
+		} else if strings.HasPrefix(g, "namespace:") {
+			target := strings.TrimPrefix(g, "namespace:")
+			rest, lvl, ok := splitPerm(target)
+			if !ok {
+				rest, lvl = target, LevelWrite
+			}
+			ns, proj, _ := strings.Cut(rest, "/")
+			grant = Grant{Namespace: ns, Project: proj, Level: lvl}
+		} else {
+			grant = Grant{Level: LevelNone}
+		}
+	}
+	grant.Zone = zone
+	return grant
 }
 
 // splitPerm strips a trailing ":admin" / ":rw" / ":r" suffix, returning the target,
@@ -151,6 +160,9 @@ func EffectiveLevel(grants []Grant, namespace, project string) Level {
 }
 
 func matches(g Grant, namespace, project string) bool {
+	if g.Zone != "" {
+		return false // Shoka ignores zoned scopes; downstream consumers filter by zone
+	}
 	if namespace == "" {
 		return true // global op: every grant contributes to the max
 	}

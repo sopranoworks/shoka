@@ -169,6 +169,69 @@ func TestRewriteNamespaceGrants(t *testing.T) {
 	}
 }
 
+func TestIsSuperUser_ZonedWildcardIsNot(t *testing.T) {
+	if IsSuperUser("git/*:admin") {
+		t.Fatal("zoned wildcard admin must not be super-user")
+	}
+	if IsSuperUser("git/*:admin,namespace:foo:rw") {
+		t.Fatal("zoned wildcard + unzoned non-admin must not be super-user")
+	}
+}
+
+func TestAdminNamespaces_IgnoresZoned(t *testing.T) {
+	ns, su := AdminNamespaces("git/namespace:foo:admin,namespace:bar:admin")
+	if su {
+		t.Fatal("must not be super-user")
+	}
+	if want := []string{"bar"}; !reflect.DeepEqual(ns, want) {
+		t.Errorf("AdminNamespaces = %v, want %v (zoned foo should be ignored)", ns, want)
+	}
+}
+
+func TestPruneNamespaceGrants_PreservesZoned(t *testing.T) {
+	scope := "namespace:foo:admin,git/namespace:foo:rw"
+	got, removed := PruneNamespaceGrants(scope, "foo")
+	if removed != 1 {
+		t.Errorf("should remove 1 (unzoned only), removed %d", removed)
+	}
+	if got != "git/namespace:foo:rw" {
+		t.Errorf("zoned grant should survive: got %q", got)
+	}
+}
+
+func TestPruneProjectGrants_PreservesZoned(t *testing.T) {
+	scope := "namespace:foo/p1:rw,git/namespace:foo/p1:admin"
+	got, removed := PruneProjectGrants(scope, "foo", "p1")
+	if removed != 1 {
+		t.Errorf("should remove 1, removed %d", removed)
+	}
+	if got != "git/namespace:foo/p1:admin" {
+		t.Errorf("zoned grant should survive: got %q", got)
+	}
+}
+
+func TestRewriteProjectGrants_PreservesZoned(t *testing.T) {
+	scope := "namespace:foo/p1:rw,git/namespace:foo/p1:admin"
+	got, n := RewriteProjectGrants(scope, "foo", "p1", "bar", "p1")
+	if n != 1 {
+		t.Errorf("should rewrite 1, got %d", n)
+	}
+	if got != "namespace:bar/p1:rw,git/namespace:foo/p1:admin" {
+		t.Errorf("zoned grant should be untouched: got %q", got)
+	}
+}
+
+func TestRewriteNamespaceGrants_PreservesZoned(t *testing.T) {
+	scope := "namespace:src:rw,git/namespace:src:admin"
+	got, n := RewriteNamespaceGrants(scope, "src", "dst")
+	if n != 1 {
+		t.Errorf("should rewrite 1, got %d", n)
+	}
+	if got != "namespace:dst:rw,git/namespace:src:admin" {
+		t.Errorf("zoned grant should be untouched: got %q", got)
+	}
+}
+
 // TestNoAccessScope_DeniesEverything proves the cascade-cleanup substitute really grants
 // nothing — the whole point of using it instead of "" (which would read as super-user).
 func TestNoAccessScope_DeniesEverything(t *testing.T) {
