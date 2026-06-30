@@ -153,7 +153,7 @@ func (f *fakeOAuthStore) GenerateDomainConsent(string) (string, error)          
 func (f *fakeOAuthStore) DomainEntryForClient(string) (oauthstore.RegistrationEntry, bool) {
 	return oauthstore.RegistrationEntry{}, false
 }
-func (f *fakeOAuthStore) IssueConfidentialClient(string, time.Duration, time.Time) (oauthstore.RegistrationEntry, string, error) {
+func (f *fakeOAuthStore) IssueConfidentialClient(string, string, time.Duration, time.Time) (oauthstore.RegistrationEntry, string, error) {
 	return oauthstore.RegistrationEntry{}, "", nil
 }
 func (f *fakeOAuthStore) RevokeByClientID(string) (int, error) { return 0, nil }

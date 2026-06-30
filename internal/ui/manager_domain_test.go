@@ -115,8 +115,8 @@ func TestWSUI_DomainDeleteRevokesTokens(t *testing.T) {
 		t.Fatalf("create domain: %v", err)
 	}
 	// A CIMD series under the domain + a self-issued series (not under any domain).
-	under, _ := store.NewSeries("https://connector.example/meta", p, "res", "*", now, time.Hour, 24*time.Hour)
-	self, _ := store.NewSeries(oauthstore.SelfIssuedClientID, p, "res", "*", now, time.Hour, 24*time.Hour)
+	under, _ := store.NewSeries("https://connector.example/meta", p, "res", "*", "", now, time.Hour, 24*time.Hour)
+	self, _ := store.NewSeries(oauthstore.SelfIssuedClientID, p, "res", "*", "", now, time.Hour, 24*time.Hour)
 
 	conn := newOAuthManager(t, "", store)
 	resp := roundTrip(t, conn, uiws.MsgDomainDelete, fmt.Sprintf(`{"id":%q}`, dom.ID))
@@ -144,8 +144,8 @@ func TestWSUI_OAuthListGroupsByDomain(t *testing.T) {
 		t.Fatalf("create domain: %v", err)
 	}
 	// A CIMD connection whose host is a SUBDOMAIN of the entry (groups under it), + self-issued.
-	_, _ = store.NewSeries("https://sub.connector.example/meta", p, "res", "*", now, time.Hour, 24*time.Hour)
-	_, _ = store.NewSeries(oauthstore.SelfIssuedClientID, p, "res", "*", now, time.Hour, 24*time.Hour)
+	_, _ = store.NewSeries("https://sub.connector.example/meta", p, "res", "*", "", now, time.Hour, 24*time.Hour)
+	_, _ = store.NewSeries(oauthstore.SelfIssuedClientID, p, "res", "*", "", now, time.Hour, 24*time.Hour)
 
 	conn := newOAuthManager(t, "", store)
 	list := decodeOAuthList(t, roundTrip(t, conn, uiws.MsgOAuthList, `{}`))

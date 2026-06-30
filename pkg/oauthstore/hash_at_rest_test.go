@@ -50,7 +50,7 @@ func dbContainsRaw(t *testing.T, s *Store, raw string) bool {
 func TestHashAtRest_StoredValueIsHashNotRawToken(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
-	rec, err := s.NewSeries("https://c/meta", Principal{Name: "Op"}, "res", "*", now, accessTTL, refreshTTL)
+	rec, err := s.NewSeries("https://c/meta", Principal{Name: "Op"}, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestHashAtRest_StoredValueIsHashNotRawToken(t *testing.T) {
 func TestHashAtRest_LookupAndRotateByRawToken(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
-	rec, err := s.NewSeries("https://c/meta", Principal{Name: "Op"}, "res", "*", now, accessTTL, refreshTTL)
+	rec, err := s.NewSeries("https://c/meta", Principal{Name: "Op"}, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}

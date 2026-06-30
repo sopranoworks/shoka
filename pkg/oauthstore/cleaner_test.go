@@ -16,11 +16,11 @@ func TestNewSeries_ScopeRoundTrips(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	p := Principal{Name: "Op", Email: "op@example.test"}
 
-	star, err := s.NewSeries("https://c/meta", p, "res", "*", now, accessTTL, refreshTTL)
+	star, err := s.NewSeries("https://c/meta", p, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries star: %v", err)
 	}
-	scoped, err := s.NewSeries("https://c/meta", p, "res", "namespace:foo", now, accessTTL, refreshTTL)
+	scoped, err := s.NewSeries("https://c/meta", p, "res", "namespace:foo", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries scoped: %v", err)
 	}
@@ -90,18 +90,18 @@ func TestDeleteDeadSeries_DeletesRefreshExpiredImmediately(t *testing.T) {
 	p := Principal{Name: "Op"}
 
 	// live: refresh far in the future.
-	live, err := s.NewSeries("https://c/meta", p, "res", "*", now, accessTTL, refreshTTL)
+	live, err := s.NewSeries("https://c/meta", p, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries live: %v", err)
 	}
 	// accessExpiredRefreshLive: access expired, refresh still valid — a usable connection.
-	accLive, err := s.NewSeries("https://c/meta", p, "res", "*",
+	accLive, err := s.NewSeries("https://c/meta", p, "res", "*", "",
 		now.Add(-accessTTL-time.Minute), accessTTL, refreshTTL) // access-exp = now-1m, refresh-exp future
 	if err != nil {
 		t.Fatalf("NewSeries accessExpiredRefreshLive: %v", err)
 	}
 	// dead: refresh expired one minute ago — with NO grace, swept immediately.
-	dead, err := s.NewSeries("https://c/meta", p, "res", "*",
+	dead, err := s.NewSeries("https://c/meta", p, "res", "*", "",
 		now.Add(-refreshTTL-time.Minute), accessTTL, refreshTTL) // refresh-exp = now-1m
 	if err != nil {
 		t.Fatalf("NewSeries dead: %v", err)
@@ -134,17 +134,17 @@ func TestDeleteDeadSeries_BoundaryIsRefreshExpiry(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	p := Principal{Name: "Op"}
 
-	atBoundary, err := s.NewSeries("https://c/meta", p, "res", "*",
+	atBoundary, err := s.NewSeries("https://c/meta", p, "res", "*", "",
 		now.Add(-refreshTTL), accessTTL, refreshTTL) // refresh-exp == now exactly
 	if err != nil {
 		t.Fatalf("NewSeries atBoundary: %v", err)
 	}
-	justPast, err := s.NewSeries("https://c/meta", p, "res", "*",
+	justPast, err := s.NewSeries("https://c/meta", p, "res", "*", "",
 		now.Add(-refreshTTL-time.Nanosecond), accessTTL, refreshTTL) // refresh-exp = now-1ns
 	if err != nil {
 		t.Fatalf("NewSeries justPast: %v", err)
 	}
-	justFuture, err := s.NewSeries("https://c/meta", p, "res", "*",
+	justFuture, err := s.NewSeries("https://c/meta", p, "res", "*", "",
 		now.Add(-refreshTTL+time.Nanosecond), accessTTL, refreshTTL) // refresh-exp = now+1ns
 	if err != nil {
 		t.Fatalf("NewSeries justFuture: %v", err)
@@ -175,18 +175,18 @@ func seedSeriesByAge(t *testing.T, s *Store) (liveID, accessExpiredID, deadID st
 	now := time.Now()
 	p := Principal{Name: "Op"}
 
-	live, err := s.NewSeries("https://c/meta", p, "res", "*", now, accessTTL, refreshTTL)
+	live, err := s.NewSeries("https://c/meta", p, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries live: %v", err)
 	}
 	// access expired (now-1m), refresh still in the future — a usable connection, kept.
-	accLive, err := s.NewSeries("https://c/meta", p, "res", "*",
+	accLive, err := s.NewSeries("https://c/meta", p, "res", "*", "",
 		now.Add(-accessTTL-time.Minute), accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries accessExpired: %v", err)
 	}
 	// refresh expired a minute ago — dead, swept immediately (no grace).
-	dead, err := s.NewSeries("https://c/meta", p, "res", "*",
+	dead, err := s.NewSeries("https://c/meta", p, "res", "*", "",
 		now.Add(-refreshTTL-time.Minute), accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries dead: %v", err)

@@ -163,7 +163,7 @@ func TestGenerateDomainConsent(t *testing.T) {
 	if _, err := s.GenerateDomainConsent("no-such-id"); err != ErrNotFound {
 		t.Fatalf("unknown id: err=%v, want ErrNotFound", err)
 	}
-	conf, _, _ := s.IssueConfidentialClient("*", time.Hour, now)
+	conf, _, _ := s.IssueConfidentialClient("*", "", time.Hour, now)
 	if _, err := s.GenerateDomainConsent(conf.ID); err == nil {
 		t.Fatal("GenerateDomainConsent on a confidential entry must error")
 	}

@@ -59,10 +59,11 @@ export async function revokeConnection(seriesId: string): Promise<void> {
 // default (never infinite). Throws OAuthDeniedError on an admin/oauth-disabled refusal.
 export async function issueSelfToken(
   validitySeconds = 0,
+  name = '',
 ): Promise<OAuthIssueSelfPayload> {
-  const frame = await wsClient().requestFrame('OAUTH_ISSUE_SELF', {
-    validity_seconds: validitySeconds,
-  })
+  const payload: Record<string, unknown> = { validity_seconds: validitySeconds }
+  if (name) payload.name = name
+  const frame = await wsClient().requestFrame('OAUTH_ISSUE_SELF', payload)
   if (frame.type === 'OAUTH_DENIED') {
     const p = frame.payload as OAuthDenied
     throw new OAuthDeniedError(p.reason, p.message)

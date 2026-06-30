@@ -661,7 +661,7 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	// DCR/CIMD/self tokens stay all-access (Scope "*"); a confidential token carries its pre-issued
 	// scope. The tools/call authz gate reads this scope; "*" allows every namespace.
 	access, refresh := s.issuanceTTL(rec.ClientID) // per-domain TTL else the global finite default
-	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, scope, s.now(), access, refresh)
+	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, scope, "", s.now(), access, refresh)
 	if err != nil {
 		lg.Error("oauth token issuance failed",
 			"grant_type", "authorization_code", "client_id", rec.ClientID, "reason", "series-create-failed")

@@ -41,7 +41,7 @@ type OAuthConnectionStore interface {
 	DomainEntryForClient(clientID string) (oauthstore.RegistrationEntry, bool)
 	// IssueConfidentialClient mints a confidential pre-issued client (B-71 Stage 3): a client_id
 	// + a high-entropy secret; only the hash is stored; the RAW secret is returned ONCE.
-	IssueConfidentialClient(scope string, validity time.Duration, now time.Time) (oauthstore.RegistrationEntry, string, error)
+	IssueConfidentialClient(scope, name string, validity time.Duration, now time.Time) (oauthstore.RegistrationEntry, string, error)
 	// RevokeByClientID revokes every token series issued to a client_id (the confidential-client
 	// delete cascade). Returns the number revoked.
 	RevokeByClientID(clientID string) (int, error)
@@ -59,15 +59,15 @@ type OAuthConnectionStore interface {
 // returns the access token and its expiry; the holder never sees how it is minted.
 // nil when OAuth is disabled.
 type OAuthSelfIssuer interface {
-	IssueSelf(r *http.Request, accessTTL time.Duration, extraPermissions map[string]any) (accessToken string, accessExpiry time.Time, err error)
+	IssueSelf(r *http.Request, name string, accessTTL time.Duration, extraPermissions map[string]any) (accessToken string, accessExpiry time.Time, err error)
 }
 
 // OAuthSelfIssuerFunc adapts a function to OAuthSelfIssuer.
-type OAuthSelfIssuerFunc func(r *http.Request, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error)
+type OAuthSelfIssuerFunc func(r *http.Request, name string, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error)
 
 // IssueSelf calls f.
-func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error) {
-	return f(r, accessTTL, extraPermissions)
+func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request, name string, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error) {
+	return f(r, name, accessTTL, extraPermissions)
 }
 
 // UserAdminStore is the narrow capability the super-user-only user-management ops

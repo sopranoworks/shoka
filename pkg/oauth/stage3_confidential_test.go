@@ -23,7 +23,7 @@ import (
 // covered by the manager + E2E tests) and returns its client_id + raw secret.
 func (h testAS) issueConfidential(t *testing.T, scope string, validity time.Duration) (clientID, secret string) {
 	t.Helper()
-	entry, raw, err := h.store.IssueConfidentialClient(scope, validity, h.as.now())
+	entry, raw, err := h.store.IssueConfidentialClient(scope, "", validity, h.as.now())
 	if err != nil {
 		t.Fatalf("IssueConfidentialClient: %v", err)
 	}

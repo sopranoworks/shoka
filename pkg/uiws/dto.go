@@ -15,6 +15,7 @@ type OAuthConnectionInfo struct {
 	// tokens can), so exposing it to an admin client is safe.
 	SeriesID      string `json:"series_id"`
 	SeriesIDShort string `json:"series_id_short"`
+	Name          string `json:"name,omitempty"`
 	// ClientID is the connecting client's CIMD metadata URL (its identity). Shown
 	// at runtime only; no concrete value is ever written into source/tests.
 	ClientID       string    `json:"client_id"`
@@ -65,6 +66,7 @@ type OAuthDeniedPayload struct {
 type OAuthIssueSelfPayload struct {
 	AccessToken  string    `json:"access_token"`
 	AccessExpiry time.Time `json:"access_expiry"`
+	Name         string    `json:"name,omitempty"`
 }
 
 // OAuthIssueSelfRequest carries the operator's per-issuance FINITE expiry (B-71 Stage 4):
@@ -72,5 +74,6 @@ type OAuthIssueSelfPayload struct {
 // default (never infinite); a NEGATIVE value is rejected (no indefinite).
 type OAuthIssueSelfRequest struct {
 	ValiditySeconds  int64          `json:"validity_seconds"`
+	Name             string         `json:"name,omitempty"`
 	ExtraPermissions map[string]any `json:"extra_permissions,omitempty"`
 }

@@ -82,7 +82,7 @@ func TestWSUI_ConfidentialRevokeCascade(t *testing.T) {
 	var issued uiws.ConfidentialIssuePayload
 	_ = json.Unmarshal(resp.Payload, &issued)
 	// A live token issued to this confidential client.
-	series, err := store.NewSeries(issued.ClientID, oauthstore.Principal{Name: "Op"}, "r", "*", time.Now(), time.Hour, time.Hour)
+	series, err := store.NewSeries(issued.ClientID, oauthstore.Principal{Name: "Op"}, "r", "*", "", time.Now(), time.Hour, time.Hour)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}

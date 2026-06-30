@@ -127,7 +127,7 @@ func TestRenameNamespace_DualGrantRewrite(t *testing.T) {
 	if _, _, err := us.CreateInvite("invitee@x", "namespace:src/p2:rw", "super@x", now, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := oas.NewSeries("c1", oauthstore.Principal{Name: "n"}, "res", "namespace:src/p1:r", now, time.Hour, 24*time.Hour); err != nil {
+	if _, err := oas.NewSeries("c1", oauthstore.Principal{Name: "n"}, "res", "namespace:src/p1:r", "", now, time.Hour, 24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 

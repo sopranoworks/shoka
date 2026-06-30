@@ -224,7 +224,7 @@ func TestB71RealClient_SelfIssued(t *testing.T) {
 	env := newB71Env(t)
 	rec, err := env.store.NewSeries(oauthstore.SelfIssuedClientID,
 		oauthstore.Principal{Name: "Op Erator", Email: "op@example.test"},
-		"https://rs.example/mcp", "*", time.Now(), time.Hour, 24*time.Hour)
+		"https://rs.example/mcp", "*", "", time.Now(), time.Hour, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestB71RealClient_SelfIssued(t *testing.T) {
 // the confidential OAuth flow and calls a tool.
 func TestB71RealClient_Confidential(t *testing.T) {
 	env := newB71Env(t)
-	entry, secret, err := env.store.IssueConfidentialClient("*", time.Hour, time.Now())
+	entry, secret, err := env.store.IssueConfidentialClient("*", "", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestB71RealClient_Confidential(t *testing.T) {
 // below fails. The all-access (a)/(b) tokens demonstrate exactly that contrast.
 func TestB71RealClient_ScopedAllowedVsDenied(t *testing.T) {
 	env := newB71Env(t)
-	entry, secret, err := env.store.IssueConfidentialClient("namespace:foo:rw", time.Hour, time.Now())
+	entry, secret, err := env.store.IssueConfidentialClient("namespace:foo:rw", "", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestB71RealClient_FiniteExpiry(t *testing.T) {
 	env := newB71Env(t)
 	rec, err := env.store.NewSeries(oauthstore.SelfIssuedClientID,
 		oauthstore.Principal{Name: "Op Erator", Email: "op@example.test"},
-		"https://rs.example/mcp", "*", time.Now(), 600*time.Millisecond, 600*time.Millisecond)
+		"https://rs.example/mcp", "*", "", time.Now(), 600*time.Millisecond, 600*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}

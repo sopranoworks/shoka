@@ -234,7 +234,7 @@ func TestMoveProject_GrantRewrite(t *testing.T) {
 	if err := us.CreateUser(&userstore.UserRecord{Email: "super@x", Scope: "*:admin"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := oas.NewSeries("c1", oauthstore.Principal{Name: "n"}, "res", "namespace:src/proj:r", now, time.Hour, 24*time.Hour); err != nil {
+	if _, err := oas.NewSeries("c1", oauthstore.Principal{Name: "n"}, "res", "namespace:src/proj:r", "", now, time.Hour, 24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 

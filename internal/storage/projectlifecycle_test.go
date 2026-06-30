@@ -241,10 +241,10 @@ func TestCascadeCleanup_NamespaceDelete(t *testing.T) {
 	if _, _, err := us.CreateInvite("invitee@x", "namespace:foo:rw", "super@x", now, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := oas.NewSeries("c1", oauthstore.Principal{Name: "n"}, "res", "namespace:foo:rw", now, time.Hour, 24*time.Hour); err != nil {
+	if _, err := oas.NewSeries("c1", oauthstore.Principal{Name: "n"}, "res", "namespace:foo:rw", "", now, time.Hour, 24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := oas.NewSeries("c2", oauthstore.Principal{Name: "n"}, "res", "*", now, time.Hour, 24*time.Hour); err != nil {
+	if _, err := oas.NewSeries("c2", oauthstore.Principal{Name: "n"}, "res", "*", "", now, time.Hour, 24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 

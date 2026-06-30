@@ -129,6 +129,7 @@ type CodeRecord struct {
 // hashes — every lookup hashes the incoming handle and compares against the hash.
 type SeriesRecord struct {
 	SeriesID         string    `json:"series_id"`
+	Name             string    `json:"name,omitempty"`
 	AccessToken      string    `json:"-"` // raw; in-memory only (issuance return), never persisted
 	RefreshToken     string    `json:"-"` // raw; in-memory only (issuance return), never persisted
 	AccessTokenHash  string    `json:"access_token_hash"`
@@ -184,6 +185,7 @@ const SelfIssuedClientID = "shoka-cli"
 // surface — never carries the secret token handles.
 type SeriesInfo struct {
 	SeriesID     string
+	Name         string
 	ClientID     string
 	Principal    Principal
 	Resource     string
@@ -312,7 +314,7 @@ func (s *Store) TakeCode(code string, now time.Time) (CodeRecord, error) {
 // persists the series. It returns the new SeriesRecord (carrying the freshly
 // generated handles). Each call is an independent series — multiple concurrent
 // connections produce multiple independent series.
-func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, now time.Time, accessTTL, refreshTTL time.Duration, extraPermissions ...map[string]any) (SeriesRecord, error) {
+func (s *Store) NewSeries(clientID string, p Principal, resource, scope, name string, now time.Time, accessTTL, refreshTTL time.Duration, extraPermissions ...map[string]any) (SeriesRecord, error) {
 	seriesID, err := NewHandle()
 	if err != nil {
 		return SeriesRecord{}, err
@@ -331,6 +333,7 @@ func (s *Store) NewSeries(clientID string, p Principal, resource, scope string, 
 	}
 	rec := SeriesRecord{
 		SeriesID:         seriesID,
+		Name:             name,
 		AccessToken:      access,  // raw, in-memory only — returned to the caller once
 		RefreshToken:     refresh, // raw, in-memory only — returned to the caller once
 		AccessTokenHash:  hashHandle(access),
@@ -497,6 +500,7 @@ func (s *Store) List() ([]SeriesInfo, error) {
 			}
 			out = append(out, SeriesInfo{
 				SeriesID:     rec.SeriesID,
+				Name:         rec.Name,
 				ClientID:     rec.ClientID,
 				Principal:    rec.Principal,
 				Resource:     rec.Resource,

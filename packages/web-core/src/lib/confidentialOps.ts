@@ -28,16 +28,19 @@ export async function listConfidentialClients(): Promise<ConfidentialClientInfo[
 
 export interface ConfidentialIssueInput {
   scope: string
+  name?: string
   validitySeconds: number
 }
 
 export async function issueConfidentialClient(
   input: ConfidentialIssueInput,
 ): Promise<ConfidentialIssuePayload> {
-  const frame = await wsClient().requestFrame('CLIENT_ISSUE', {
+  const payload: Record<string, unknown> = {
     scope: input.scope,
     validity_seconds: input.validitySeconds,
-  })
+  }
+  if (input.name) payload.name = input.name
+  const frame = await wsClient().requestFrame('CLIENT_ISSUE', payload)
   throwIfDenied(frame.type, frame.payload)
   return frame.payload as ConfidentialIssuePayload
 }

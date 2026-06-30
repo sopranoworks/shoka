@@ -179,10 +179,10 @@ func TestRevokeByDomain(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
 	p := Principal{Name: "Op"}
-	a, _ := s.NewSeries("https://connector.example/meta", p, "r", "*", now, time.Hour, time.Hour)     // under connector.example
-	b, _ := s.NewSeries("https://sub.connector.example/meta", p, "r", "*", now, time.Hour, time.Hour) // subdomain, under it
-	other, _ := s.NewSeries("https://elsewhere.example/meta", p, "r", "*", now, time.Hour, time.Hour) // different domain
-	self, _ := s.NewSeries(SelfIssuedClientID, p, "r", "*", now, time.Hour, time.Hour)                // no domain
+	a, _ := s.NewSeries("https://connector.example/meta", p, "r", "*", "", now, time.Hour, time.Hour)     // under connector.example
+	b, _ := s.NewSeries("https://sub.connector.example/meta", p, "r", "*", "", now, time.Hour, time.Hour) // subdomain, under it
+	other, _ := s.NewSeries("https://elsewhere.example/meta", p, "r", "*", "", now, time.Hour, time.Hour) // different domain
+	self, _ := s.NewSeries(SelfIssuedClientID, p, "r", "*", "", now, time.Hour, time.Hour)                // no domain
 	n, err := s.RevokeByDomain("connector.example")
 	if err != nil {
 		t.Fatalf("RevokeByDomain: %v", err)

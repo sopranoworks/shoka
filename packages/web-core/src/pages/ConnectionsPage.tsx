@@ -44,7 +44,6 @@ import styles from './ConnectionsPage.module.css'
 // section. The server-side gate is authoritative; useIsAdmin() governs UI exposure only.
 export function ConnectionsPage() {
   const isAdmin = useIsAdmin()
-  const [issued, setIssued] = useState<OAuthIssueSelfPayload | null>(null)
   const {
     data: connections,
     isLoading: connLoading,
@@ -77,7 +76,6 @@ export function ConnectionsPage() {
           <strong>OAuth connections</strong>
           <span className={styles.sub}> · trusted domains &amp; active authorizations</span>
         </span>
-        <IssueTokenButton disabled={oauthDisabled} onIssued={setIssued} />
         <button
           className={styles.refresh}
           onClick={() => {
@@ -90,10 +88,6 @@ export function ConnectionsPage() {
           {isFetching ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
-
-      {issued && (
-        <IssuedTokenPanel token={issued} onDismiss={() => setIssued(null)} />
-      )}
 
       <div className={styles.body} data-scroll-restoration-id="connections-body">
         {connLoading || domLoading ? (
@@ -109,6 +103,7 @@ export function ConnectionsPage() {
             <DomainManagement
               domains={domains ?? []}
               connections={connections ?? []}
+              oauthDisabled={oauthDisabled}
             />
             <ConfidentialManagement />
           </>
@@ -123,10 +118,13 @@ export function ConnectionsPage() {
 function DomainManagement({
   domains,
   connections,
+  oauthDisabled,
 }: {
   domains: DomainInfo[]
   connections: OAuthConnection[]
+  oauthDisabled: boolean
 }) {
+  const [issued, setIssued] = useState<OAuthIssueSelfPayload | null>(null)
   const grouped = new Map<string, OAuthConnection[]>()
   const orphans: OAuthConnection[] = [] // domain === "" (self-issued/confidential)
   for (const c of connections) {
@@ -157,6 +155,10 @@ function DomainManagement({
 
       <section className={styles.selfSection} data-testid="self-issued-section">
         <h3 className={styles.sectionTitle}>Self-issued &amp; other tokens</h3>
+        <IssueTokenButton disabled={oauthDisabled} onIssued={setIssued} />
+        {issued && (
+          <IssuedTokenPanel token={issued} onDismiss={() => setIssued(null)} />
+        )}
         {orphans.length === 0 ? (
           <p className={styles.hint}>No self-issued tokens.</p>
         ) : (
@@ -197,6 +199,7 @@ function ConfidentialManagement() {
           <thead>
             <tr>
               <th>Client ID</th>
+              <th>Name</th>
               <th>Scope</th>
               <th>Expires</th>
               <th>Issued</th>
@@ -229,6 +232,7 @@ function IssueClientForm({
 }) {
   const queryClient = useQueryClient()
   const { add: addToast } = useToast()
+  const [name, setName] = useState('')
   const [scope, setScope] = useState('')
   const [days, setDays] = useState('30')
 
@@ -239,11 +243,13 @@ function IssueClientForm({
     mutationFn: () =>
       issueConfidentialClient({
         scope: scope.trim(),
+        name: name.trim() || undefined,
         validitySeconds: (validDays ?? 0) * 86400,
       }),
     onSuccess: (p) => {
       void queryClient.invalidateQueries({ queryKey: OAUTH_CLIENTS_KEY })
       onIssued(p)
+      setName('')
       setScope('')
       setDays('30')
     },
@@ -262,23 +268,37 @@ function IssueClientForm({
         if (valid) issue.mutate()
       }}
     >
-      <input
-        className={styles.domainInput}
-        placeholder="scope (e.g. namespace:docs:rw, or * for all access)"
-        value={scope}
-        onChange={(e) => setScope(e.target.value)}
-        data-testid="client-issue-scope"
-        aria-label="Pre-issued scope"
-      />
-      <input
-        className={styles.ttlInput}
-        placeholder="valid days"
-        value={days}
-        onChange={(e) => setDays(e.target.value)}
-        data-testid="client-issue-validity"
-        aria-label="Validity in days"
-        aria-invalid={validDays === null}
-      />
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Name (optional)</span>
+        <input
+          className={styles.domainInput}
+          placeholder="e.g. production connector"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          data-testid="client-issue-name"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Scope</span>
+        <input
+          className={styles.domainInput}
+          placeholder="e.g. test:prtest:rw, or * for all access"
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
+          data-testid="client-issue-scope"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>TTL (days)</span>
+        <input
+          className={styles.ttlInput}
+          placeholder="30"
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          data-testid="client-issue-validity"
+          aria-invalid={validDays === null}
+        />
+      </label>
       <button
         type="submit"
         className={styles.issue}
@@ -306,14 +326,6 @@ function IssuedClientPanel({
   onDismiss: () => void
 }) {
   const { add: addToast } = useToast()
-  const copy = (value: string, label: string) => {
-    void navigator.clipboard
-      ?.writeText(value)
-      .then(() => addToast({ level: 'warn', text: `${label} copied.` }))
-      .catch(() =>
-        addToast({ level: 'warn', text: 'Could not copy — select and copy manually.' }),
-      )
-  }
   return (
     <div className={styles.tokenPanel} role="status" data-testid="client-issued-panel">
       <div className={styles.tokenWarn}>
@@ -324,30 +336,19 @@ function IssuedClientPanel({
         <code className={styles.tokenValue} data-testid="client-issued-id">
           {issued.client_id}
         </code>
-        <button
-          className={styles.copy}
-          onClick={() => copy(issued.client_id, 'Client ID')}
-          aria-label="Copy client id"
-        >
-          Copy ID
-        </button>
+        <CopyButton value={issued.client_id} label="Copy ID" ariaLabel="Copy client id" toast={addToast} />
       </div>
       <div className={styles.tokenRow}>
         <code className={styles.tokenValue} data-testid="client-issued-secret">
           {issued.client_secret}
         </code>
-        <button
-          className={styles.copy}
-          onClick={() => copy(issued.client_secret, 'Client secret')}
-          aria-label="Copy client secret"
-        >
-          Copy secret
-        </button>
+        <CopyButton value={issued.client_secret} label="Copy secret" ariaLabel="Copy client secret" toast={addToast} />
         <button className={styles.dismiss} onClick={onDismiss} aria-label="Dismiss">
           Done
         </button>
       </div>
       <div className={styles.tokenExpiry}>
+        {issued.name && <>{issued.name} · </>}
         Scope {fmtScope(issued.scope)} · expires {fmtTime(issued.expires_at)}
       </div>
     </div>
@@ -380,6 +381,7 @@ function ConfidentialClientRow({ client }: { client: ConfidentialClientInfo }) {
       <td className={styles.client}>
         <code className={styles.series}>{client.client_id}</code>
       </td>
+      <td className={styles.time}>{client.name || '—'}</td>
       <td className={styles.scopeCell}>{fmtScope(client.scope)}</td>
       <td className={styles.time}>{fmtTime(client.expires_at)}</td>
       <td className={styles.time}>{fmtTime(client.created_at)}</td>
@@ -549,12 +551,7 @@ function DomainCard({ domain, tokens }: { domain: DomainInfo; tokens: OAuthConne
   })
 
   const copyConsent = () => {
-    void navigator.clipboard
-      ?.writeText(domain.consent)
-      .then(() => addToast({ level: 'warn', text: 'Consent value copied.' }))
-      .catch(() =>
-        addToast({ level: 'warn', text: 'Could not copy — select and copy manually.' }),
-      )
+    copyToClipboard(domain.consent, addToast, 'Consent value')
   }
 
   return (
@@ -734,6 +731,7 @@ function TokensTable({ tokens }: { tokens: OAuthConnection[] }) {
       <thead>
         <tr>
           <th>Client</th>
+          <th>Name</th>
           <th>Principal</th>
           <th>Scope</th>
           <th>Issued</th>
@@ -810,11 +808,16 @@ function IssueTokenButton({
   onIssued: (t: OAuthIssueSelfPayload) => void
 }) {
   const { add: addToast } = useToast()
+  const [name, setName] = useState('')
   const [days, setDays] = useState('30')
   const validDays = parseValidityDays(days)
   const issue = useMutation({
-    mutationFn: () => issueSelfToken((validDays ?? 0) * 86400),
-    onSuccess: (t) => onIssued(t),
+    mutationFn: () => issueSelfToken((validDays ?? 0) * 86400, name.trim()),
+    onSuccess: (t) => {
+      onIssued(t)
+      setName('')
+      setDays('30')
+    },
     onError: (e) =>
       addToast({
         level: 'warn',
@@ -825,26 +828,45 @@ function IssueTokenButton({
       }),
   })
   return (
-    <span className={styles.selfIssue}>
-      <input
-        className={styles.ttlInput}
-        value={days}
-        onChange={(e) => setDays(e.target.value)}
-        disabled={disabled}
-        data-testid="self-issue-days"
-        aria-label="CLI token validity in days"
-        aria-invalid={validDays === null}
-        title="Token validity in days (no indefinite)"
-      />
+    <form
+      className={styles.domainForm}
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (validDays !== null) issue.mutate()
+      }}
+    >
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Name (optional)</span>
+        <input
+          className={styles.domainInput}
+          placeholder="e.g. laptop CLI"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={disabled}
+          data-testid="self-issue-name"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>TTL (days)</span>
+        <input
+          className={styles.ttlInput}
+          placeholder="30"
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          disabled={disabled}
+          data-testid="self-issue-days"
+          aria-invalid={validDays === null}
+        />
+      </label>
       <button
+        type="submit"
         className={styles.issue}
-        onClick={() => issue.mutate()}
         disabled={disabled || validDays === null || issue.isPending}
         aria-label="Generate a token for the CLI"
       >
-        {issue.isPending ? 'Generating…' : 'Generate CLI token'}
+        {issue.isPending ? 'Generating…' : 'Generate token'}
       </button>
-    </span>
+    </form>
   )
 }
 
@@ -858,18 +880,6 @@ function IssuedTokenPanel({
   onDismiss: () => void
 }) {
   const { add: addToast } = useToast()
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    void navigator.clipboard
-      ?.writeText(token.access_token)
-      .then(() => setCopied(true))
-      .catch(() =>
-        addToast({
-          level: 'warn',
-          text: 'Could not copy — select and copy manually.',
-        }),
-      )
-  }
   return (
     <div className={styles.tokenPanel} role="status">
       <div className={styles.tokenWarn}>
@@ -878,9 +888,7 @@ function IssuedTokenPanel({
       </div>
       <div className={styles.tokenRow}>
         <code className={styles.tokenValue}>{token.access_token}</code>
-        <button className={styles.copy} onClick={copy} aria-label="Copy token">
-          {copied ? 'Copied' : 'Copy'}
-        </button>
+        <CopyButton value={token.access_token} label="Copy" ariaLabel="Copy token" toast={addToast} />
         <button
           className={styles.dismiss}
           onClick={onDismiss}
@@ -889,8 +897,64 @@ function IssuedTokenPanel({
           Done
         </button>
       </div>
-      <div className={styles.tokenExpiry}>Expires {fmtTime(token.access_expiry)}</div>
+      <div className={styles.tokenExpiry}>
+        {token.name && <>{token.name} · </>}
+        Expires {fmtTime(token.access_expiry)}
+      </div>
     </div>
+  )
+}
+
+type ToastFn = (t: { level: 'warn'; text: string }) => void
+
+function copyToClipboard(value: string, toast: ToastFn, successLabel?: string) {
+  if (navigator.clipboard) {
+    void navigator.clipboard
+      .writeText(value)
+      .then(() => toast({ level: 'warn', text: successLabel ? `${successLabel} copied.` : 'Copied.' }))
+      .catch(() => {
+        selectFallback(value)
+        toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+      })
+  } else {
+    selectFallback(value)
+    toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+  }
+}
+
+function selectFallback(text: string) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  document.body.removeChild(ta)
+}
+
+function CopyButton({ value, label, ariaLabel, toast }: { value: string; label: string; ariaLabel?: string; toast: ToastFn }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      className={styles.copy}
+      onClick={() => {
+        if (navigator.clipboard) {
+          void navigator.clipboard
+            .writeText(value)
+            .then(() => setCopied(true))
+            .catch(() => {
+              selectFallback(value)
+              toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+            })
+        } else {
+          selectFallback(value)
+          toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+        }
+      }}
+      aria-label={ariaLabel ?? label}
+    >
+      {copied ? 'Copied' : label}
+    </button>
   )
 }
 
@@ -926,6 +990,7 @@ function ConnectionRow({ conn }: { conn: OAuthConnection }) {
       <td className={styles.client} title={conn.client_id}>
         {clientDomain(conn.client_id)}
       </td>
+      <td className={styles.time}>{conn.name || '—'}</td>
       <td className={styles.principal}>
         <span className={styles.principalName}>
           {conn.principal_name || '—'}

@@ -91,6 +91,7 @@ export interface SearchMatch {
 export interface OAuthConnection {
   series_id: string
   series_id_short: string
+  name?: string
   client_id: string
   principal_name: string
   principal_email: string
@@ -144,6 +145,7 @@ export interface DomainGenerateConsentPayload {
 export interface ConfidentialClientInfo {
   id: string
   client_id: string
+  name?: string
   scope: string
   expires_at: string
   created_at: string
@@ -168,6 +170,7 @@ export interface ConfidentialIssuePayload extends ConfidentialClientInfo {
 export interface OAuthIssueSelfPayload {
   access_token: string
   access_expiry: string
+  name?: string
 }
 
 // The OAUTH_DENIED frame (mirrors Go's ui.OAuthDeniedPayload): a typed refusal of

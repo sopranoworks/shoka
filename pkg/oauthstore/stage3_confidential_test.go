@@ -17,7 +17,7 @@ func TestStage3_IssueConfidentialClient_HashedNotRaw(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 
-	entry, raw, err := s.IssueConfidentialClient("namespace:foo:rw", time.Hour, now)
+	entry, raw, err := s.IssueConfidentialClient("namespace:foo:rw", "", time.Hour, now)
 	if err != nil {
 		t.Fatalf("IssueConfidentialClient: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestStage3_IssueConfidentialClient_HashedNotRaw(t *testing.T) {
 	}
 
 	// validity must be positive (no indefinite).
-	if _, _, err := s.IssueConfidentialClient("namespace:foo:rw", 0, now); err == nil {
+	if _, _, err := s.IssueConfidentialClient("namespace:foo:rw", "", 0, now); err == nil {
 		t.Fatal("a non-positive validity must error (no indefinite)")
 	}
 }
@@ -66,7 +66,7 @@ func TestStage3_ConfidentialClientLookupAndExpiry(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 
-	entry, _, err := s.IssueConfidentialClient("*", time.Hour, now)
+	entry, _, err := s.IssueConfidentialClient("*", "", time.Hour, now)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -93,12 +93,12 @@ func TestStage3_RevokeByClientID_Cascade(t *testing.T) {
 	now := time.Now()
 	p := Principal{Name: "Op"}
 
-	conf, _, err := s.IssueConfidentialClient("namespace:foo:r", time.Hour, now)
+	conf, _, err := s.IssueConfidentialClient("namespace:foo:r", "", time.Hour, now)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	mine, _ := s.NewSeries(conf.Identifier, p, "r", "namespace:foo:r", now, time.Hour, time.Hour)
-	other, _ := s.NewSeries("https://elsewhere.example/meta", p, "r", "*", now, time.Hour, time.Hour)
+	mine, _ := s.NewSeries(conf.Identifier, p, "r", "namespace:foo:r", "", now, time.Hour, time.Hour)
+	other, _ := s.NewSeries("https://elsewhere.example/meta", p, "r", "*", "", now, time.Hour, time.Hour)
 
 	n, err := s.RevokeByClientID(conf.Identifier)
 	if err != nil {

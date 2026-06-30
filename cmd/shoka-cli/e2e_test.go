@@ -91,7 +91,7 @@ func TestEndToEndCredentialPath(t *testing.T) {
 	}
 	m := ui.NewManager(s, dm, nil)
 	m.SetOAuthStore(store) // *oauthstore.Store satisfies OAuthConnectionStore
-	m.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(_ *http.Request, accessTTL time.Duration, _ map[string]any) (string, time.Time, error) {
+	m.SetOAuthSelfIssuer(uiws.OAuthSelfIssuerFunc(func(_ *http.Request, _ string, accessTTL time.Duration, _ map[string]any) (string, time.Time, error) {
 		if accessTTL <= 0 {
 			accessTTL = time.Hour
 		}
@@ -100,6 +100,7 @@ func TestEndToEndCredentialPath(t *testing.T) {
 			oauthstore.Principal{Name: "Osamu Takahashi", Email: "forte.nit@gmail.com"},
 			"https://example.invalid/mcp",
 			"*",
+			"",
 			time.Now(), accessTTL, 24*time.Hour,
 		)
 		if nerr != nil {
@@ -212,6 +213,7 @@ func TestEndToEndFileAdd(t *testing.T) {
 		oauthstore.Principal{Name: "Osamu Takahashi", Email: "forte.nit@gmail.com"},
 		"https://example.invalid/mcp",
 		"*",
+		"",
 		time.Now(), time.Hour, 24*time.Hour,
 	)
 	if err != nil {

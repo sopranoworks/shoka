@@ -48,9 +48,9 @@ func TestRevokeByPrincipalEmail(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	alice := Principal{Name: "Alice", Email: "alice@example.com"}
 	bob := Principal{Name: "Bob", Email: "bob@example.com"}
-	a1, _ := s.NewSeries("https://c/cimd", alice, "https://shoka/mcp", "*", now, accessTTL, refreshTTL)
-	a2, _ := s.NewSeries("https://c/cimd", alice, "https://shoka/mcp", "*", now, accessTTL, refreshTTL)
-	b1, _ := s.NewSeries("https://c/cimd", bob, "https://shoka/mcp", "*", now, accessTTL, refreshTTL)
+	a1, _ := s.NewSeries("https://c/cimd", alice, "https://shoka/mcp", "*", "", now, accessTTL, refreshTTL)
+	a2, _ := s.NewSeries("https://c/cimd", alice, "https://shoka/mcp", "*", "", now, accessTTL, refreshTTL)
+	b1, _ := s.NewSeries("https://c/cimd", bob, "https://shoka/mcp", "*", "", now, accessTTL, refreshTTL)
 	if err := s.PutCode("alice-code", CodeRecord{ClientID: "x", Principal: alice, Expiry: now.Add(time.Minute)}); err != nil {
 		t.Fatalf("PutCode: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestMultipleSeries_EnumerateAndRevokeIndividually(t *testing.T) {
 
 	var recs []SeriesRecord
 	for i := 0; i < 3; i++ {
-		r, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", now, accessTTL, refreshTTL)
+		r, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", "", now, accessTTL, refreshTTL)
 		if err != nil {
 			t.Fatalf("NewSeries: %v", err)
 		}
@@ -210,11 +210,11 @@ func TestRotate_InvalidatesPredecessorOnly(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	p := Principal{Name: "Op", Email: "op@example.test"}
 
-	a, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", now, accessTTL, refreshTTL)
+	a, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries a: %v", err)
 	}
-	b, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", now, accessTTL, refreshTTL)
+	b, err := s.NewSeries("https://client.example/meta", p, "https://rs.example/mcp", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries b: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestRotate_InvalidatesPredecessorOnly(t *testing.T) {
 func TestRotate_ExpiredRefreshRevokesSeries(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
-	r, err := s.NewSeries("c", Principal{}, "res", "*", now, accessTTL, refreshTTL)
+	r, err := s.NewSeries("c", Principal{}, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestRotate_ExpiredRefreshRevokesSeries(t *testing.T) {
 func TestLookup_ExpiredAccess(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
-	r, err := s.NewSeries("c", Principal{}, "res", "*", now, accessTTL, refreshTTL)
+	r, err := s.NewSeries("c", Principal{}, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestLookup_BindingReturned(t *testing.T) {
 	s := openTemp(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
 	p := Principal{Name: "Alice", Email: "alice@example.test"}
-	r, err := s.NewSeries("https://c/meta", p, "https://rs/mcp", "*", now, accessTTL, refreshTTL)
+	r, err := s.NewSeries("https://c/meta", p, "https://rs/mcp", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	r, err := s1.NewSeries("c", Principal{Name: "Op"}, "res", "*", now, accessTTL, refreshTTL)
+	r, err := s1.NewSeries("c", Principal{Name: "Op"}, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestExtraPermissions_RoundTrip(t *testing.T) {
 		"allowed_branches": []any{"task-42/", "fix-99/"},
 		"rate_limit":       float64(100),
 	}
-	rec, err := s.NewSeries("shoka-cli", p, "res", "*", now, accessTTL, refreshTTL, ep)
+	rec, err := s.NewSeries("shoka-cli", p, "res", "*", "", now, accessTTL, refreshTTL, ep)
 	if err != nil {
 		t.Fatalf("NewSeries with extra_permissions: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestExtraPermissions_NilBackwardCompat(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	p := Principal{Name: "Op", Email: "op@example.test"}
 
-	rec, err := s.NewSeries("shoka-cli", p, "res", "*", now, accessTTL, refreshTTL)
+	rec, err := s.NewSeries("shoka-cli", p, "res", "*", "", now, accessTTL, refreshTTL)
 	if err != nil {
 		t.Fatalf("NewSeries without extra_permissions: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestExtraPermissions_SurvivesRotation(t *testing.T) {
 	p := Principal{Name: "Op", Email: "op@example.test"}
 
 	ep := map[string]any{"allowed_branches": []any{"task-42/"}}
-	rec, err := s.NewSeries("shoka-cli", p, "res", "*", now, accessTTL, refreshTTL, ep)
+	rec, err := s.NewSeries("shoka-cli", p, "res", "*", "", now, accessTTL, refreshTTL, ep)
 	if err != nil {
 		t.Fatalf("NewSeries: %v", err)
 	}

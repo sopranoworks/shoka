@@ -46,6 +46,7 @@ type RegistrationEntry struct {
 	ID               string        `json:"id"`
 	RegistrationMode string        `json:"registration_mode"` // "domain" | "confidential"
 	Identifier       string        `json:"identifier"`        // domain mode: the trusted domain; confidential: the issued client_id
+	Name             string        `json:"name,omitempty"`    // optional human-readable label, set at issuance, immutable
 	CreatedAt        time.Time     `json:"created_at"`
 	TTL              *EntryTTL     `json:"ttl,omitempty"`     // B-71 Stage 2b: per-domain access/refresh TTL
 	Consent          *EntryConsent `json:"consent,omitempty"` // per-domain consent (PLAINTEXT since 2026-06-20)
@@ -203,7 +204,7 @@ func (s *Store) CreateRegistration(mode, identifier string, now time.Time) (Regi
 // is never persisted or retrievable again. scope is the pre-issued authorization grant (drives
 // the tools/call gate); validity is the credential's FINITE lifetime (must be > 0 — no
 // indefinite). Persisted in one atomic transaction.
-func (s *Store) IssueConfidentialClient(scope string, validity time.Duration, now time.Time) (entry RegistrationEntry, rawSecret string, err error) {
+func (s *Store) IssueConfidentialClient(scope, name string, validity time.Duration, now time.Time) (entry RegistrationEntry, rawSecret string, err error) {
 	if validity <= 0 {
 		return RegistrationEntry{}, "", fmt.Errorf("oauthstore: confidential client validity must be positive (no indefinite)")
 	}
@@ -223,6 +224,7 @@ func (s *Store) IssueConfidentialClient(scope string, validity time.Duration, no
 		ID:               id,
 		RegistrationMode: RegistrationModeConfidential,
 		Identifier:       clientID,
+		Name:             strings.TrimSpace(name),
 		CreatedAt:        now.UTC(),
 		Scope:            strings.TrimSpace(scope),
 		ExpiresAt:        now.UTC().Add(validity),

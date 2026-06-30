@@ -310,6 +310,7 @@ func (h *CoreHandlers) handleDomainDelete(client *Client, payload json.RawMessag
 type ConfidentialClientInfo struct {
 	ID        string `json:"id"`
 	ClientID  string `json:"client_id"`
+	Name      string `json:"name,omitempty"`
 	Scope     string `json:"scope"`
 	ExpiresAt string `json:"expires_at"` // RFC3339
 	CreatedAt string `json:"created_at"` // RFC3339
@@ -324,6 +325,7 @@ type ConfidentialListPayload struct {
 // in seconds (no indefinite).
 type ConfidentialIssueRequest struct {
 	Scope           string `json:"scope"`
+	Name            string `json:"name,omitempty"`
 	ValiditySeconds int64  `json:"validity_seconds"`
 }
 
@@ -349,6 +351,7 @@ func confidentialInfoOf(e oauthstore.RegistrationEntry) ConfidentialClientInfo {
 	return ConfidentialClientInfo{
 		ID:        e.ID,
 		ClientID:  e.Identifier,
+		Name:      e.Name,
 		Scope:     e.Scope,
 		ExpiresAt: e.ExpiresAt.UTC().Format(time.RFC3339),
 		CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339),
@@ -392,7 +395,7 @@ func (h *CoreHandlers) handleConfidentialIssue(client *Client, payload json.RawM
 		client.SendError("CLIENT_ISSUE requires a finite positive validity (no indefinite)")
 		return
 	}
-	entry, secret, err := h.oauth.IssueConfidentialClient(p.Scope, time.Duration(p.ValiditySeconds)*time.Second, time.Now())
+	entry, secret, err := h.oauth.IssueConfidentialClient(p.Scope, strings.TrimSpace(p.Name), time.Duration(p.ValiditySeconds)*time.Second, time.Now())
 	if err != nil {
 		client.SendError(fmt.Sprintf("Failed to issue confidential client: %v", err))
 		return
@@ -468,7 +471,8 @@ func (h *CoreHandlers) handleOAuthIssueSelf(client *Client, payload json.RawMess
 		client.SendError("OAUTH_ISSUE_SELF validity must not be negative (no indefinite)")
 		return
 	}
-	token, expiry, err := h.selfIssuer.IssueSelf(client.req, time.Duration(p.ValiditySeconds)*time.Second, p.ExtraPermissions)
+	name := strings.TrimSpace(p.Name)
+	token, expiry, err := h.selfIssuer.IssueSelf(client.req, name, time.Duration(p.ValiditySeconds)*time.Second, p.ExtraPermissions)
 	if err != nil {
 		// The error is generic on the wire; the token never appears in it.
 		client.SendError("Failed to issue a token")
@@ -478,6 +482,7 @@ func (h *CoreHandlers) handleOAuthIssueSelf(client *Client, payload json.RawMess
 	client.SendResponse(MsgOAuthIssueSelf, OAuthIssueSelfPayload{
 		AccessToken:  token,
 		AccessExpiry: expiry,
+		Name:         name,
 	})
 }
 
@@ -492,6 +497,7 @@ func toOAuthConnectionInfo(s oauthstore.SeriesInfo) OAuthConnectionInfo {
 	return OAuthConnectionInfo{
 		SeriesID:       s.SeriesID,
 		SeriesIDShort:  short,
+		Name:           s.Name,
 		ClientID:       s.ClientID,
 		PrincipalName:  s.Principal.Name,
 		PrincipalEmail: s.Principal.Email,
