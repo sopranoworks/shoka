@@ -67,6 +67,7 @@ type OAuthIssueSelfPayload struct {
 	AccessToken  string    `json:"access_token"`
 	AccessExpiry time.Time `json:"access_expiry"`
 	Name         string    `json:"name,omitempty"`
+	Scope        string    `json:"scope"`
 }
 
 // OAuthIssueSelfRequest carries the operator's per-issuance FINITE expiry (B-71 Stage 4):
@@ -75,5 +76,6 @@ type OAuthIssueSelfPayload struct {
 type OAuthIssueSelfRequest struct {
 	ValiditySeconds  int64          `json:"validity_seconds"`
 	Name             string         `json:"name,omitempty"`
+	Scope            string         `json:"scope,omitempty"`
 	ExtraPermissions map[string]any `json:"extra_permissions,omitempty"`
 }

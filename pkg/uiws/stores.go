@@ -59,15 +59,15 @@ type OAuthConnectionStore interface {
 // returns the access token and its expiry; the holder never sees how it is minted.
 // nil when OAuth is disabled.
 type OAuthSelfIssuer interface {
-	IssueSelf(r *http.Request, name string, accessTTL time.Duration, extraPermissions map[string]any) (accessToken string, accessExpiry time.Time, err error)
+	IssueSelf(r *http.Request, name, scope string, accessTTL time.Duration, extraPermissions map[string]any) (accessToken string, accessExpiry time.Time, err error)
 }
 
 // OAuthSelfIssuerFunc adapts a function to OAuthSelfIssuer.
-type OAuthSelfIssuerFunc func(r *http.Request, name string, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error)
+type OAuthSelfIssuerFunc func(r *http.Request, name, scope string, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error)
 
 // IssueSelf calls f.
-func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request, name string, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error) {
-	return f(r, name, accessTTL, extraPermissions)
+func (f OAuthSelfIssuerFunc) IssueSelf(r *http.Request, name, scope string, accessTTL time.Duration, extraPermissions map[string]any) (string, time.Time, error) {
+	return f(r, name, scope, accessTTL, extraPermissions)
 }
 
 // UserAdminStore is the narrow capability the super-user-only user-management ops

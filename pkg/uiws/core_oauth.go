@@ -472,7 +472,11 @@ func (h *CoreHandlers) handleOAuthIssueSelf(client *Client, payload json.RawMess
 		return
 	}
 	name := strings.TrimSpace(p.Name)
-	token, expiry, err := h.selfIssuer.IssueSelf(client.req, name, time.Duration(p.ValiditySeconds)*time.Second, p.ExtraPermissions)
+	scope := strings.TrimSpace(p.Scope)
+	if scope == "" {
+		scope = "*"
+	}
+	token, expiry, err := h.selfIssuer.IssueSelf(client.req, name, scope, time.Duration(p.ValiditySeconds)*time.Second, p.ExtraPermissions)
 	if err != nil {
 		// The error is generic on the wire; the token never appears in it.
 		client.SendError("Failed to issue a token")
@@ -483,6 +487,7 @@ func (h *CoreHandlers) handleOAuthIssueSelf(client *Client, payload json.RawMess
 		AccessToken:  token,
 		AccessExpiry: expiry,
 		Name:         name,
+		Scope:        scope,
 	})
 }
 

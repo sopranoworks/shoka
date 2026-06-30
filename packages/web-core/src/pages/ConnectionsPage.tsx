@@ -809,13 +809,15 @@ function IssueTokenButton({
 }) {
   const { add: addToast } = useToast()
   const [name, setName] = useState('')
+  const [scope, setScope] = useState('')
   const [days, setDays] = useState('30')
   const validDays = parseValidityDays(days)
   const issue = useMutation({
-    mutationFn: () => issueSelfToken((validDays ?? 0) * 86400, name.trim()),
+    mutationFn: () => issueSelfToken((validDays ?? 0) * 86400, name.trim(), scope.trim()),
     onSuccess: (t) => {
       onIssued(t)
       setName('')
+      setScope('')
       setDays('30')
     },
     onError: (e) =>
@@ -844,6 +846,17 @@ function IssueTokenButton({
           onChange={(e) => setName(e.target.value)}
           disabled={disabled}
           data-testid="self-issue-name"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Scope</span>
+        <input
+          className={styles.domainInput}
+          placeholder="e.g. test:prtest:rw, or * for all access"
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
+          disabled={disabled}
+          data-testid="self-issue-scope"
         />
       </label>
       <label className={styles.field}>
@@ -899,7 +912,7 @@ function IssuedTokenPanel({
       </div>
       <div className={styles.tokenExpiry}>
         {token.name && <>{token.name} · </>}
-        Expires {fmtTime(token.access_expiry)}
+        Scope {fmtScope(token.scope)} · expires {fmtTime(token.access_expiry)}
       </div>
     </div>
   )

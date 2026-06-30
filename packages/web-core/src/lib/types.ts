@@ -171,6 +171,7 @@ export interface OAuthIssueSelfPayload {
   access_token: string
   access_expiry: string
   name?: string
+  scope: string
 }
 
 // The OAUTH_DENIED frame (mirrors Go's ui.OAuthDeniedPayload): a typed refusal of

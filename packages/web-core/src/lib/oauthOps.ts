@@ -60,9 +60,11 @@ export async function revokeConnection(seriesId: string): Promise<void> {
 export async function issueSelfToken(
   validitySeconds = 0,
   name = '',
+  scope = '',
 ): Promise<OAuthIssueSelfPayload> {
   const payload: Record<string, unknown> = { validity_seconds: validitySeconds }
   if (name) payload.name = name
+  if (scope) payload.scope = scope
   const frame = await wsClient().requestFrame('OAUTH_ISSUE_SELF', payload)
   if (frame.type === 'OAUTH_DENIED') {
     const p = frame.payload as OAuthDenied
