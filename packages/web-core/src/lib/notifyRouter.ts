@@ -242,6 +242,13 @@ export function routeNotify(
     return {}
   }
 
+  if (kind === 'oauth.change') {
+    queryClient.invalidateQueries({ queryKey: ['oauth-connections'] })
+    queryClient.invalidateQueries({ queryKey: ['oauth-domains'] })
+    queryClient.invalidateQueries({ queryKey: ['oauth-confidential-clients'] })
+    return {}
+  }
+
   if (kind === 'catalog.invariant_violation') {
     const where = event.path ? `${event.target} (${event.path})` : event.target
     return { toast: { level: 'warn', text: `Catalog inconsistency in ${where}` } }

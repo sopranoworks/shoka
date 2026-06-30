@@ -32,6 +32,10 @@ type CoreHandlers struct {
 	// self-service My Account ops. nil when no user store is wired (the ADMIN_*/
 	// ACCOUNT_* handlers then report it unavailable).
 	users UserAdminStore
+	// onOAuthChange is called after a successful OAuth mutation (revoke, issue,
+	// domain create/update/delete, client issue/revoke). The Manager wires this
+	// to publish a notify event so other connected browsers auto-refresh.
+	onOAuthChange func()
 }
 
 // SetOAuthStore wires the OAuth connection store for the admin management
@@ -53,4 +57,17 @@ func (h *CoreHandlers) SetOAuthSelfIssuer(i OAuthSelfIssuer) {
 // capability unavailable.
 func (h *CoreHandlers) SetUserStore(u UserAdminStore) {
 	h.users = u
+}
+
+// SetOnOAuthChange registers a callback invoked after every successful OAuth
+// mutation. The Manager uses this to publish a notify event so other connected
+// browsers auto-refresh their OAuth views.
+func (h *CoreHandlers) SetOnOAuthChange(f func()) {
+	h.onOAuthChange = f
+}
+
+func (h *CoreHandlers) notifyOAuthChange() {
+	if h.onOAuthChange != nil {
+		h.onOAuthChange()
+	}
 }

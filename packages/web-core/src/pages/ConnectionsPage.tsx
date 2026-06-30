@@ -47,11 +47,9 @@ export function ConnectionsPage() {
   const {
     data: connections,
     isLoading: connLoading,
-    isFetching,
     error,
-    refetch,
   } = useConnectionsQuery(isAdmin)
-  const { data: domains, isLoading: domLoading, refetch: refetchDomains } =
+  const { data: domains, isLoading: domLoading } =
     useDomainsQuery(isAdmin)
 
   if (!isAdmin) {
@@ -76,17 +74,6 @@ export function ConnectionsPage() {
           <strong>OAuth connections</strong>
           <span className={styles.sub}> · trusted domains &amp; active authorizations</span>
         </span>
-        <button
-          className={styles.refresh}
-          onClick={() => {
-            void refetch()
-            void refetchDomains()
-          }}
-          disabled={isFetching}
-          aria-label="Refresh connections"
-        >
-          {isFetching ? 'Refreshing…' : 'Refresh'}
-        </button>
       </div>
 
       <div className={styles.body} data-scroll-restoration-id="connections-body">
@@ -97,7 +84,7 @@ export function ConnectionsPage() {
             OAuth is not enabled on this server, so there is nothing to manage.
           </p>
         ) : error ? (
-          <p className={styles.error}>Failed to load connections. Try Refresh.</p>
+          <p className={styles.error}>Failed to load connections.</p>
         ) : (
           <>
             <DomainManagement

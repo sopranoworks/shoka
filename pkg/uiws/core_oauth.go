@@ -95,6 +95,7 @@ func (h *CoreHandlers) handleOAuthRevoke(client *Client, payload json.RawMessage
 		return
 	}
 	client.SendResponse(MsgOAuthRevoke, OAuthRevokePayload{SeriesID: p.SeriesID, Status: "ok"})
+	h.notifyOAuthChange()
 }
 
 // --- B-71 Stage 2d: domain-mode management (DOMAIN_* ws ops) ---
@@ -210,6 +211,7 @@ func (h *CoreHandlers) handleDomainCreate(client *Client, payload json.RawMessag
 		}
 	}
 	client.SendResponse(MsgDomainCreate, domainInfoOf(entry))
+	h.notifyOAuthChange()
 }
 
 func (h *CoreHandlers) handleDomainUpdate(client *Client, payload json.RawMessage) {
@@ -248,6 +250,7 @@ func (h *CoreHandlers) handleDomainUpdate(client *Client, payload json.RawMessag
 		return
 	}
 	client.SendResponse(MsgDomainUpdate, domainInfoOf(entry))
+	h.notifyOAuthChange()
 }
 
 // handleDomainGenerateConsent mints (or re-rolls) a domain's per-domain consent value and returns
@@ -272,6 +275,7 @@ func (h *CoreHandlers) handleDomainGenerateConsent(client *Client, payload json.
 		return
 	}
 	client.SendResponse(MsgDomainGenerateConsent, DomainGenerateConsentPayload{ID: p.ID, Consent: value})
+	h.notifyOAuthChange()
 }
 
 func (h *CoreHandlers) handleDomainDelete(client *Client, payload json.RawMessage) {
@@ -300,6 +304,7 @@ func (h *CoreHandlers) handleDomainDelete(client *Client, payload json.RawMessag
 		return
 	}
 	client.SendResponse(MsgDomainDelete, DomainDeletePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
+	h.notifyOAuthChange()
 }
 
 // --- Confidential-client management (B-71 Stage 3) --------------------------
@@ -406,6 +411,7 @@ func (h *CoreHandlers) handleConfidentialIssue(client *Client, payload json.RawM
 		ConfidentialClientInfo: confidentialInfoOf(entry),
 		ClientSecret:           secret,
 	})
+	h.notifyOAuthChange()
 }
 
 func (h *CoreHandlers) handleConfidentialRevoke(client *Client, payload json.RawMessage) {
@@ -437,6 +443,7 @@ func (h *CoreHandlers) handleConfidentialRevoke(client *Client, payload json.Raw
 		return
 	}
 	client.SendResponse(MsgClientRevoke, ConfidentialRevokePayload{ID: p.ID, RevokedTokens: revoked, Status: "ok"})
+	h.notifyOAuthChange()
 }
 
 // handleOAuthIssueSelf mints a fresh access token bound to the current-mode
@@ -489,6 +496,7 @@ func (h *CoreHandlers) handleOAuthIssueSelf(client *Client, payload json.RawMess
 		Name:         name,
 		Scope:        scope,
 	})
+	h.notifyOAuthChange()
 }
 
 // toOAuthConnectionInfo maps a store SeriesInfo to the no-secret wire DTO,

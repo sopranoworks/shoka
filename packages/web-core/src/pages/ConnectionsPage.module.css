@@ -28,23 +28,6 @@
 .sub {
   color: var(--c-text-faint);
 }
-.refresh {
-  flex: none;
-  background: var(--c-bg-inset);
-  border: 1px solid var(--c-border-strong);
-  border-radius: var(--radius-sm);
-  color: var(--c-text);
-  font-size: var(--fs-sm);
-  padding: 4px 10px;
-  cursor: pointer;
-}
-.refresh:hover:not(:disabled) {
-  border-color: var(--c-accent);
-}
-.refresh:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
 
 .body {
   flex: 1;

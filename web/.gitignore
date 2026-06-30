@@ -14,3 +14,4 @@ test-results/
 # Editor / OS
 .DS_Store
 playwright-failures/
+tests/e2e/screenshots/

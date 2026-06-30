@@ -288,12 +288,16 @@ type Manager struct {
 // NewManager builds the /ws/ui manager. notifyCenter may be nil (e.g. in tests);
 // when nil, no NOTIFY events are pushed but every other message works unchanged.
 func NewManager(s storage.StorageService, d *drafts.Manager, notifyCenter *notify.Center) *Manager {
+	core := &uiws.CoreHandlers{}
 	m := &Manager{
-		CoreHandlers: &uiws.CoreHandlers{},
+		CoreHandlers: core,
 		storage:      s,
 		drafts:       d,
 		notify:       notifyCenter,
 	}
+	core.SetOnOAuthChange(func() {
+		notifyCenter.Notify("oauth.change", "oauth", "")
+	})
 	// Merge the core rows (pkg/uiws) with the document rows into the single gate table,
 	// exactly reproducing the pre-extraction wsLevels (see the equivalence test).
 	m.levels = make(map[MessageType]uiws.Op, len(uiws.CoreLevels)+len(wsLevels))

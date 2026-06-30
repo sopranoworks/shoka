@@ -141,9 +141,9 @@ test('Settings rail mode: gear present, user-management visible, no tree collaps
   await expect(page.getByRole('link', { name: 'OAuth connections' })).toBeVisible()
   await page.getByRole('link', { name: 'User management' }).click()
   await expect(page.getByRole('heading', { name: 'User management' })).toBeVisible()
-  // Selecting the OAuth item renders the existing Connections screen in the right pane.
+  // Selecting the OAuth item renders the Connections screen in the right pane.
   await page.getByRole('link', { name: 'OAuth connections' }).click()
-  await expect(page.getByRole('button', { name: 'Refresh connections' })).toBeVisible()
+  await expect(page.getByText('trusted domains')).toBeVisible()
 
   // The third item — Namespace / project management (B-28 part 2) — is visible to the
   // super-user admin and renders the managed namespace→projects listing (the real
