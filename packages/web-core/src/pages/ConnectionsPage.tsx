@@ -5,6 +5,7 @@ import {
   useConnectionsQuery,
   useDomainsQuery,
   useConfidentialClientsQuery,
+  useProjectsQuery,
   OAUTH_CONNECTIONS_KEY,
   OAUTH_DOMAINS_KEY,
   OAUTH_CLIENTS_KEY,
@@ -33,6 +34,7 @@ import type {
   ConfidentialClientInfo,
   ConfidentialIssuePayload,
 } from '../lib/types'
+import { ScopeInput, validateScopeExistence, ScopeConfirmDialog, type ScopeIssue } from '../components/ScopeInput'
 import styles from './ConnectionsPage.module.css'
 
 // The administrator-only OAuth management view. Per the B-71 binding principle the screen is
@@ -219,9 +221,11 @@ function IssueClientForm({
 }) {
   const queryClient = useQueryClient()
   const { add: addToast } = useToast()
+  const { data: projects = [] } = useProjectsQuery()
   const [name, setName] = useState('')
   const [scope, setScope] = useState('')
   const [days, setDays] = useState('30')
+  const [scopeIssues, setScopeIssues] = useState<ScopeIssue[] | null>(null)
 
   const validDays = parseValidityDays(days)
   const valid = scope.trim() !== '' && validDays !== null
@@ -248,58 +252,69 @@ function IssueClientForm({
   })
 
   return (
-    <form
-      className={styles.domainForm}
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (valid) issue.mutate()
-      }}
-    >
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Name (optional)</span>
-        <input
-          className={styles.domainInput}
-          placeholder="e.g. production connector"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          data-testid="client-issue-name"
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Scope</span>
-        <input
-          className={styles.domainInput}
-          placeholder="e.g. test:prtest:rw, or * for all access"
-          value={scope}
-          onChange={(e) => setScope(e.target.value)}
-          data-testid="client-issue-scope"
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>TTL (days)</span>
-        <input
-          className={styles.ttlInput}
-          placeholder="30"
-          value={days}
-          onChange={(e) => setDays(e.target.value)}
-          data-testid="client-issue-validity"
-          aria-invalid={validDays === null}
-        />
-      </label>
-      <button
-        type="submit"
-        className={styles.issue}
-        disabled={!valid || issue.isPending}
-        data-testid="client-issue-submit"
+    <>
+      <form
+        className={styles.domainForm}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (!valid) return
+          const issues = validateScopeExistence(scope.trim(), projects)
+          if (issues.length > 0) { setScopeIssues(issues); return }
+          issue.mutate()
+        }}
       >
-        {issue.isPending ? 'Issuing…' : 'Issue client'}
-      </button>
-      {!valid && (scope !== '' || days !== '30') && (
-        <span className={styles.invalid}>
-          A scope is required; validity must be a whole positive number of days (no indefinite).
-        </span>
-      )}
-    </form>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Name (optional)</span>
+          <input
+            className={styles.domainInput}
+            placeholder="e.g. production connector"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            data-testid="client-issue-name"
+          />
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Scope</span>
+          <ScopeInput
+            className={styles.domainInput}
+            placeholder="e.g. test:prtest:rw, or * for all access"
+            value={scope}
+            onChange={setScope}
+            data-testid="client-issue-scope"
+          />
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>TTL (days)</span>
+          <input
+            className={styles.ttlInput}
+            placeholder="30"
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            data-testid="client-issue-validity"
+            aria-invalid={validDays === null}
+          />
+        </label>
+        <button
+          type="submit"
+          className={styles.issue}
+          disabled={!valid || issue.isPending}
+          data-testid="client-issue-submit"
+        >
+          {issue.isPending ? 'Issuing…' : 'Issue client'}
+        </button>
+        {!valid && (scope !== '' || days !== '30') && (
+          <span className={styles.invalid}>
+            A scope is required; validity must be a whole positive number of days (no indefinite).
+          </span>
+        )}
+      </form>
+      <ScopeConfirmDialog
+        open={scopeIssues !== null && scopeIssues.length > 0}
+        issues={scopeIssues ?? []}
+        onConfirm={() => { setScopeIssues(null); issue.mutate() }}
+        onCancel={() => setScopeIssues(null)}
+      />
+    </>
   )
 }
 
@@ -795,9 +810,11 @@ function IssueTokenButton({
   onIssued: (t: OAuthIssueSelfPayload) => void
 }) {
   const { add: addToast } = useToast()
+  const { data: projects = [] } = useProjectsQuery()
   const [name, setName] = useState('')
   const [scope, setScope] = useState('')
   const [days, setDays] = useState('30')
+  const [scopeIssues, setScopeIssues] = useState<ScopeIssue[] | null>(null)
   const validDays = parseValidityDays(days)
   const issue = useMutation({
     mutationFn: () => issueSelfToken((validDays ?? 0) * 86400, name.trim(), scope.trim()),
@@ -817,56 +834,67 @@ function IssueTokenButton({
       }),
   })
   return (
-    <form
-      className={styles.domainForm}
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (validDays !== null) issue.mutate()
-      }}
-    >
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Name (optional)</span>
-        <input
-          className={styles.domainInput}
-          placeholder="e.g. laptop CLI"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={disabled}
-          data-testid="self-issue-name"
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Scope</span>
-        <input
-          className={styles.domainInput}
-          placeholder="e.g. test:prtest:rw, or * for all access"
-          value={scope}
-          onChange={(e) => setScope(e.target.value)}
-          disabled={disabled}
-          data-testid="self-issue-scope"
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>TTL (days)</span>
-        <input
-          className={styles.ttlInput}
-          placeholder="30"
-          value={days}
-          onChange={(e) => setDays(e.target.value)}
-          disabled={disabled}
-          data-testid="self-issue-days"
-          aria-invalid={validDays === null}
-        />
-      </label>
-      <button
-        type="submit"
-        className={styles.issue}
-        disabled={disabled || validDays === null || issue.isPending}
-        aria-label="Generate a token for the CLI"
+    <>
+      <form
+        className={styles.domainForm}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (validDays === null) return
+          const issues = validateScopeExistence(scope.trim(), projects)
+          if (issues.length > 0) { setScopeIssues(issues); return }
+          issue.mutate()
+        }}
       >
-        {issue.isPending ? 'Generating…' : 'Generate token'}
-      </button>
-    </form>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Name (optional)</span>
+          <input
+            className={styles.domainInput}
+            placeholder="e.g. laptop CLI"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={disabled}
+            data-testid="self-issue-name"
+          />
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Scope</span>
+          <ScopeInput
+            className={styles.domainInput}
+            placeholder="e.g. test:prtest:rw, or * for all access"
+            value={scope}
+            onChange={setScope}
+            disabled={disabled}
+            data-testid="self-issue-scope"
+          />
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>TTL (days)</span>
+          <input
+            className={styles.ttlInput}
+            placeholder="30"
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            disabled={disabled}
+            data-testid="self-issue-days"
+            aria-invalid={validDays === null}
+          />
+        </label>
+        <button
+          type="submit"
+          className={styles.issue}
+          disabled={disabled || validDays === null || issue.isPending}
+          aria-label="Generate a token for the CLI"
+        >
+          {issue.isPending ? 'Generating…' : 'Generate token'}
+        </button>
+      </form>
+      <ScopeConfirmDialog
+        open={scopeIssues !== null && scopeIssues.length > 0}
+        issues={scopeIssues ?? []}
+        onConfirm={() => { setScopeIssues(null); issue.mutate() }}
+        onCancel={() => setScopeIssues(null)}
+      />
+    </>
   )
 }
 
