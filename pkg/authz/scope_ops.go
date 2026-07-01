@@ -58,7 +58,7 @@ func AdminNamespaces(scope string) (namespaces []string, superUser bool) {
 // VERBATIM. Used by the cascade cleanup when a namespace is deleted.
 func PruneNamespaceGrants(scope, ns string) (newScope string, removed int) {
 	return pruneScope(scope, func(g Grant) bool {
-		return g.Zone == "" && !g.Wildcard && g.Namespace == ns
+		return !g.Wildcard && g.Namespace == ns
 	})
 }
 
@@ -68,7 +68,7 @@ func PruneNamespaceGrants(scope, ns string) (newScope string, removed int) {
 // the count removed. Used by the cascade cleanup when a single project is deleted.
 func PruneProjectGrants(scope, ns, proj string) (newScope string, removed int) {
 	return pruneScope(scope, func(g Grant) bool {
-		return g.Zone == "" && !g.Wildcard && g.Namespace == ns && g.Project == proj
+		return !g.Wildcard && g.Namespace == ns && g.Project == proj
 	})
 }
 
@@ -87,8 +87,12 @@ func RewriteProjectGrants(scope, oldNs, oldProj, newNs, newProj string) (newScop
 		if tok == "" {
 			continue
 		}
-		if g := parseGrant(tok); g.Zone == "" && !g.Wildcard && g.Namespace == oldNs && g.Project == oldProj {
-			out = append(out, "namespace:"+newNs+"/"+newProj+projectGrantSuffix(tok))
+		if g := parseGrant(tok); !g.Wildcard && g.Namespace == oldNs && g.Project == oldProj {
+			prefix := ""
+			if g.Zone != "" {
+				prefix = g.Zone + "/"
+			}
+			out = append(out, prefix+"namespace:"+newNs+"/"+newProj+projectGrantSuffix(tok))
 			rewritten++
 			continue
 		}
@@ -115,8 +119,12 @@ func RewriteNamespaceGrants(scope, old, new string) (newScope string, rewritten 
 		if tok == "" {
 			continue
 		}
-		if g := parseGrant(tok); g.Zone == "" && !g.Wildcard && g.Namespace == old {
-			rebuilt := "namespace:" + new
+		if g := parseGrant(tok); !g.Wildcard && g.Namespace == old {
+			prefix := ""
+			if g.Zone != "" {
+				prefix = g.Zone + "/"
+			}
+			rebuilt := prefix + "namespace:" + new
 			if g.Project != "" {
 				rebuilt += "/" + g.Project
 			}
