@@ -74,6 +74,16 @@ export {
   type SortMode,
 } from './lib/tree'
 export { classifyFile, isHighlightableCode, type FileKind } from './lib/fileKind'
+export {
+  needsConversion,
+  convertedName,
+  validateUtf8,
+  csvToMarkdownTable,
+  prepareConversions,
+  convertCandidate,
+  type ConversionCandidate,
+  type ConvertibleExt,
+} from './lib/fileConvert'
 export { searchFiles, useSearchQuery } from './lib/search'
 export { fuzzyScore, fuzzyFilter, type FuzzyResult } from './lib/fuzzy'
 export { deriveViewContext } from './lib/viewContext'
@@ -85,6 +95,7 @@ export { languageForPath } from './lib/cmLanguages'
 export { SettingsItemList } from './components/SettingsItemList'
 
 // --- reusable dialogs (used by the management screen; also consumed by the app) ---
+export { ConversionConfirmDialog } from './components/ConversionConfirmDialog'
 export { PromptDialog } from './components/PromptDialog'
 export { RenameDialog } from './components/RenameDialog'
 export { MoveProjectDialog } from './components/MoveProjectDialog'
@@ -112,6 +123,12 @@ export * from './lib/types'
 // --- auth hooks ------------------------------------------------------------
 export * from './lib/authClient'
 export * from './lib/authStatus'
+
+// --- auth components -------------------------------------------------------
+export { AuthGate } from './components/AuthGate'
+export { LoginScreen } from './components/LoginScreen'
+export { FirstRunWizard } from './components/FirstRunWizard'
+export { RedeemInvite } from './components/RedeemInvite'
 export * from './lib/admin'
 
 // --- toast / notify --------------------------------------------------------
