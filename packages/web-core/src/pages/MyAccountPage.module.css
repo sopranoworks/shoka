@@ -99,3 +99,75 @@
   border-color: transparent;
   color: #fff;
 }
+
+.danger {
+  background: #c0392b;
+  border-color: transparent;
+  color: #fff;
+}
+
+.totpRow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.totpStatus {
+  min-width: 6rem;
+}
+
+.totpEnroll {
+  border: 1px solid var(--color-border, #3a3a3a);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 0.75rem;
+  max-width: 24rem;
+}
+
+.totpSecret {
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+  background: var(--color-bg, #1c1c1c);
+  padding: 0.4rem 0.5rem;
+  border-radius: 5px;
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+}
+
+.confirmOverlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+}
+
+.confirmDialog {
+  background: var(--color-surface, #2a2a2a);
+  border: 1px solid var(--color-border, #3a3a3a);
+  border-radius: 10px;
+  padding: 1.5rem;
+  max-width: 26rem;
+  width: 90%;
+}
+
+.confirmDialog h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+  font-weight: 620;
+}
+
+.confirmDialog p {
+  margin: 0 0 1.25rem;
+  font-size: 0.9rem;
+  color: var(--color-text-muted, #9a9a9a);
+  line-height: 1.4;
+}
+
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}

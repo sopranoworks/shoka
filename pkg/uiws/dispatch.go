@@ -40,6 +40,12 @@ func (h *CoreHandlers) Dispatch(client *Client, msgType MessageType, payload jso
 		h.handleAccountSetName(client, payload)
 	case MsgAccountSetPassword:
 		h.handleAccountSetPassword(client, payload)
+	case MsgAccountTOTPEnroll:
+		h.handleAccountTOTPEnroll(client)
+	case MsgAccountTOTPVerify:
+		h.handleAccountTOTPVerify(client, payload)
+	case MsgAccountTOTPDisable:
+		h.handleAccountTOTPDisable(client)
 	case MsgAdminListUsers:
 		h.handleAdminListUsers(client)
 	case MsgAdminSetUserScope:

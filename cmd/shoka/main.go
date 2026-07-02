@@ -582,6 +582,7 @@ func main() {
 	// The super-user-only user-management ops (B-28 stage 3) ride /ws/ui, gated at
 	// admin level by the stage-2 dispatch gate. Wiring the store enables them.
 	uim.SetUserStore(userStore)
+	uim.SetRPName(cfg.Server.Auth.WebAuthn.RPDisplayName)
 
 	// Cascade cleanup (B-28 ns/proj management part 1): when a namespace/project is
 	// deleted, every grant referencing it by name is purged from user + invite + token

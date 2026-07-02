@@ -82,9 +82,12 @@ const (
 	// THEIR OWN account (read-level, global — NOT admin-gated). Self-access is
 	// STRUCTURAL: these act on the connection's session identity only and carry NO
 	// target-id field. Email is the account id and has no setter.
-	MsgAccountGet         MessageType = "ACCOUNT_GET"
-	MsgAccountSetName     MessageType = "ACCOUNT_SET_NAME"
-	MsgAccountSetPassword MessageType = "ACCOUNT_SET_PASSWORD"
+	MsgAccountGet          MessageType = "ACCOUNT_GET"
+	MsgAccountSetName      MessageType = "ACCOUNT_SET_NAME"
+	MsgAccountSetPassword  MessageType = "ACCOUNT_SET_PASSWORD"
+	MsgAccountTOTPEnroll   MessageType = "ACCOUNT_TOTP_ENROLL"
+	MsgAccountTOTPVerify   MessageType = "ACCOUNT_TOTP_VERIFY"
+	MsgAccountTOTPDisable  MessageType = "ACCOUNT_TOTP_DISABLE"
 )
 
 // PermissionDeniedPayload is the body of a PERMISSION_DENIED frame: which operation
@@ -127,9 +130,12 @@ var CoreLevels = map[MessageType]Op{
 	// Self-service account ops: read-level, GLOBAL — reachable by ANY authenticated
 	// user (a global read check passes for any principal with read access anywhere).
 	// NOT admin: self-access is structural (no target id), enforced in the handlers.
-	MsgAccountGet:         {authz.LevelRead, true},
-	MsgAccountSetName:     {authz.LevelRead, true},
-	MsgAccountSetPassword: {authz.LevelRead, true},
+	MsgAccountGet:          {authz.LevelRead, true},
+	MsgAccountSetName:      {authz.LevelRead, true},
+	MsgAccountSetPassword:  {authz.LevelRead, true},
+	MsgAccountTOTPEnroll:   {authz.LevelRead, true},
+	MsgAccountTOTPVerify:   {authz.LevelRead, true},
+	MsgAccountTOTPDisable:  {authz.LevelRead, true},
 
 	MsgAdminListUsers:       {authz.LevelAdmin, true},
 	MsgAdminSetUserScope:    {authz.LevelAdmin, true},

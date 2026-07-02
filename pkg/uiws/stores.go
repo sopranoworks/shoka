@@ -90,4 +90,8 @@ type UserAdminStore interface {
 	// SetUserPassword resets a target's password hash and drops their sessions in one
 	// tx (the admin reset, case 1). *userstore.Store already satisfies it.
 	SetUserPassword(email, passwordHash string) error
+	// SealTOTPSecret / VerifyTOTP back the self-service TOTP enroll/verify ops (My
+	// Account enable 2FA). *userstore.Store already satisfies them.
+	SealTOTPSecret(secret string) ([]byte, error)
+	VerifyTOTP(rec *userstore.UserRecord, code string, now time.Time) (bool, error)
 }

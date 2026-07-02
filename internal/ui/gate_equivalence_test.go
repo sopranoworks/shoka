@@ -65,9 +65,12 @@ func TestGateTables_MatchPreExtraction(t *testing.T) {
 		uiws.MsgClientList:            {Level: authz.LevelAdmin, Global: true},
 		uiws.MsgClientRevoke:          {Level: authz.LevelAdmin, Global: true},
 
-		uiws.MsgAccountGet:         {Level: authz.LevelRead, Global: true},
-		uiws.MsgAccountSetName:     {Level: authz.LevelRead, Global: true},
-		uiws.MsgAccountSetPassword: {Level: authz.LevelRead, Global: true},
+		uiws.MsgAccountGet:          {Level: authz.LevelRead, Global: true},
+		uiws.MsgAccountSetName:      {Level: authz.LevelRead, Global: true},
+		uiws.MsgAccountSetPassword:  {Level: authz.LevelRead, Global: true},
+		uiws.MsgAccountTOTPEnroll:   {Level: authz.LevelRead, Global: true},
+		uiws.MsgAccountTOTPVerify:   {Level: authz.LevelRead, Global: true},
+		uiws.MsgAccountTOTPDisable:  {Level: authz.LevelRead, Global: true},
 
 		uiws.MsgAdminListUsers:       {Level: authz.LevelAdmin, Global: true},
 		uiws.MsgAdminSetUserScope:    {Level: authz.LevelAdmin, Global: true},

@@ -108,6 +108,88 @@ func (h *CoreHandlers) handleAccountSetName(client *Client, payload json.RawMess
 	client.SendResponse(MsgAccountSetName, accountInfo(rec))
 }
 
+// --- TOTP self-service ---
+
+// AccountTOTPEnrollResponse carries the secret + otpauth URI the client renders.
+type AccountTOTPEnrollResponse struct {
+	Secret     string `json:"secret"`
+	OtpauthURL string `json:"otpauth_url"`
+}
+
+// AccountTOTPVerifyRequest proves the user's authenticator has the secret enrolled.
+type AccountTOTPVerifyRequest struct {
+	TOTPSecret string `json:"totp_secret"`
+	TOTPCode   string `json:"totp_code"`
+}
+
+// handleAccountTOTPEnroll generates a fresh TOTP secret + otpauth URI for the acting
+// user. Side-effect-free: the secret is only persisted after ACCOUNT_TOTP_VERIFY proves
+// a current code against it.
+func (h *CoreHandlers) handleAccountTOTPEnroll(client *Client) {
+	rec, ok := h.selfRecord(client)
+	if !ok {
+		return
+	}
+	key, err := userstore.GenerateTOTP(h.rpName, rec.Email)
+	if err != nil {
+		client.SendError("could not generate TOTP secret")
+		return
+	}
+	client.SendResponse(MsgAccountTOTPEnroll, AccountTOTPEnrollResponse{
+		Secret:     key.Secret(),
+		OtpauthURL: key.String(),
+	})
+}
+
+// handleAccountTOTPVerify enrolls TOTP on the acting user's account: it seals the
+// provided secret, verifies the code against it, and persists the encrypted secret.
+func (h *CoreHandlers) handleAccountTOTPVerify(client *Client, payload json.RawMessage) {
+	rec, ok := h.selfRecord(client)
+	if !ok {
+		return
+	}
+	var p AccountTOTPVerifyRequest
+	if err := json.Unmarshal(payload, &p); err != nil {
+		client.SendError("invalid payload for ACCOUNT_TOTP_VERIFY")
+		return
+	}
+	if p.TOTPSecret == "" || p.TOTPCode == "" {
+		client.SendError("secret and code are required")
+		return
+	}
+	enc, err := h.users.SealTOTPSecret(p.TOTPSecret)
+	if err != nil {
+		client.SendError("could not process TOTP secret")
+		return
+	}
+	probe := &userstore.UserRecord{TOTPSecretEnc: enc}
+	valid, err := h.users.VerifyTOTP(probe, p.TOTPCode, time.Now())
+	if err != nil || !valid {
+		client.SendError("invalid TOTP code")
+		return
+	}
+	rec.TOTPSecretEnc = enc
+	if err := h.users.PutUser(rec); err != nil {
+		client.SendError("could not save TOTP enrollment")
+		return
+	}
+	client.SendResponse(MsgAccountTOTPVerify, accountInfo(rec))
+}
+
+// handleAccountTOTPDisable removes TOTP from the acting user's account.
+func (h *CoreHandlers) handleAccountTOTPDisable(client *Client) {
+	rec, ok := h.selfRecord(client)
+	if !ok {
+		return
+	}
+	rec.TOTPSecretEnc = nil
+	if err := h.users.PutUser(rec); err != nil {
+		client.SendError("could not disable TOTP")
+		return
+	}
+	client.SendResponse(MsgAccountTOTPDisable, accountInfo(rec))
+}
+
 // handleAccountSetPassword resets the acting user's password: it verifies the CURRENT
 // password, enforces the password policy on the new one, re-hashes with argon2id and
 // persists. It acts on the session identity only (no target email). The current

@@ -33,3 +33,23 @@ export function setAccountPassword(
     new_password: newPassword,
   })
 }
+
+export interface TOTPEnrollResponse {
+  secret: string
+  otpauth_url: string
+}
+
+export function enrollTOTP(): Promise<TOTPEnrollResponse> {
+  return wsClient().request('ACCOUNT_TOTP_ENROLL', {})
+}
+
+export function verifyTOTP(secret: string, code: string): Promise<AccountInfo> {
+  return wsClient().request('ACCOUNT_TOTP_VERIFY', {
+    totp_secret: secret,
+    totp_code: code,
+  })
+}
+
+export function disableTOTP(): Promise<AccountInfo> {
+  return wsClient().request('ACCOUNT_TOTP_DISABLE', {})
+}

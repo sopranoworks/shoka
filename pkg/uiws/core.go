@@ -32,6 +32,9 @@ type CoreHandlers struct {
 	// self-service My Account ops. nil when no user store is wired (the ADMIN_*/
 	// ACCOUNT_* handlers then report it unavailable).
 	users UserAdminStore
+	// rpName is the TOTP issuer label (the RP display name from config) used when
+	// generating a new TOTP secret for the self-service My Account enroll flow.
+	rpName string
 	// onOAuthChange is called after a successful OAuth mutation (revoke, issue,
 	// domain create/update/delete, client issue/revoke). The Manager wires this
 	// to publish a notify event so other connected browsers auto-refresh.
@@ -57,6 +60,12 @@ func (h *CoreHandlers) SetOAuthSelfIssuer(i OAuthSelfIssuer) {
 // capability unavailable.
 func (h *CoreHandlers) SetUserStore(u UserAdminStore) {
 	h.users = u
+}
+
+// SetRPName sets the TOTP issuer label (the RP display name) for the self-service
+// TOTP enrollment flow. Called alongside SetUserStore in startup.
+func (h *CoreHandlers) SetRPName(name string) {
+	h.rpName = name
 }
 
 // SetOnOAuthChange registers a callback invoked after every successful OAuth

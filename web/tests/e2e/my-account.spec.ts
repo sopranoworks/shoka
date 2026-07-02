@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { mkdtempSync, writeFileSync, rmSync, openSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -209,6 +210,51 @@ test('a normal non-admin user: view → change name (persists) → reset passwor
   expect(failStatus.authenticated).toBe(false)
 })
 
+test('enable TOTP from My Account, then disable it', async ({ page }) => {
+  await ensureAdmin(page)
+  await openMyAccount(page)
+
+  // The TOTP section lives under its own heading.
+  const totpSection = page.getByRole('heading', { name: 'Two-factor authentication (TOTP)' }).locator('..')
+
+  // Initially not enrolled.
+  await expect(totpSection.getByText('Not enrolled')).toBeVisible()
+  await expect(totpSection.getByRole('button', { name: 'Enable' })).toBeVisible()
+
+  // Click Enable → enrollment UI with secret appears.
+  await totpSection.getByRole('button', { name: 'Enable' }).click()
+  const secretEl = page.getByTestId('totp-secret')
+  await expect(secretEl).toBeVisible({ timeout: 10000 })
+  const secret = (await secretEl.textContent())!.trim()
+  expect(secret.length).toBeGreaterThan(0)
+
+  // Enter a wrong code first.
+  await page.getByLabel('6-digit code').fill('000000')
+  await page.getByRole('button', { name: 'Verify' }).click()
+  await expect(totpSection.getByText(/invalid/i)).toBeVisible({ timeout: 5000 })
+
+  // Generate a valid TOTP code and verify.
+  const validCode = generateTOTP(secret)
+  await page.getByLabel('6-digit code').fill(validCode)
+  await page.getByRole('button', { name: 'Verify' }).click()
+  await expect(totpSection.getByText('Enrolled')).toBeVisible({ timeout: 10000 })
+  await expect(totpSection.getByRole('button', { name: 'Disable' })).toBeVisible()
+
+  // Disable flow: click Disable → confirmation dialog → cancel first.
+  await totpSection.getByRole('button', { name: 'Disable' }).click()
+  await expect(page.getByText('Disable Two-Factor Authentication')).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByText('Disable Two-Factor Authentication')).toBeHidden()
+  await expect(totpSection.getByText('Enrolled')).toBeVisible()
+
+  // Actually disable.
+  await totpSection.getByRole('button', { name: 'Disable' }).click()
+  await expect(page.getByText('Disable Two-Factor Authentication')).toBeVisible()
+  await page.getByRole('button', { name: 'Disable 2FA' }).click()
+  await expect(totpSection.getByText('Not enrolled')).toBeVisible({ timeout: 10000 })
+  await expect(totpSection.getByRole('button', { name: 'Enable' })).toBeVisible()
+})
+
 test('visibility: a non-admin sees My Account but NOT the admin-only pages; an admin sees all', async ({ page }) => {
   // Non-admin (created in the first test; sign in with the NEW password).
   await signIn(page, USER_EMAIL, USER_NEW_PW)
@@ -229,3 +275,40 @@ test('visibility: a non-admin sees My Account but NOT the admin-only pages; an a
   await expect(page.getByRole('link', { name: 'User management' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'OAuth connections' })).toBeVisible()
 })
+
+// --- TOTP helpers ---
+
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+function base32Decode(input: string): Buffer {
+  const cleaned = input.replace(/[= ]/g, '').toUpperCase()
+  let bits = ''
+  for (const c of cleaned) {
+    const val = BASE32_ALPHABET.indexOf(c)
+    if (val < 0) throw new Error(`invalid base32 char: ${c}`)
+    bits += val.toString(2).padStart(5, '0')
+  }
+  const bytes = []
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2))
+  }
+  return Buffer.from(bytes)
+}
+
+function generateTOTP(secret: string): string {
+  const key = base32Decode(secret)
+  const counter = Math.floor(Date.now() / 1000 / 30)
+  const buf = Buffer.alloc(8)
+  buf.writeBigUInt64BE(BigInt(counter))
+  const hmac = createHmac('sha1', key)
+  hmac.update(buf)
+  const hash = hmac.digest()
+  const offset = hash[hash.length - 1] & 0x0f
+  const code =
+    (((hash[offset] & 0x7f) << 24) |
+      (hash[offset + 1] << 16) |
+      (hash[offset + 2] << 8) |
+      hash[offset + 3]) %
+    1000000
+  return String(code).padStart(6, '0')
+}

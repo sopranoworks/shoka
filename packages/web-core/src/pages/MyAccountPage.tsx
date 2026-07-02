@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getAccount, setAccountName, setAccountPassword, type AccountInfo } from '../lib/accountOps'
+import {
+  getAccount,
+  setAccountName,
+  setAccountPassword,
+  enrollTOTP,
+  verifyTOTP,
+  disableTOTP,
+  type AccountInfo,
+} from '../lib/accountOps'
+import { TotpEnrollment } from '../components/TotpEnrollment'
 import { useToast } from '../lib/toast'
 import styles from './MyAccountPage.module.css'
 
@@ -41,6 +50,11 @@ export function MyAccountPage() {
     <div className={styles.page}>
       <h1 className={styles.title}>My Account</h1>
       <AccountInfoView info={account.data} />
+      <TOTPSection
+        info={account.data}
+        onChanged={() => void qc.invalidateQueries({ queryKey: ['account'] })}
+        toast={toast}
+      />
       <NameSection
         info={account.data}
         onSaved={() => {
@@ -70,9 +84,151 @@ function AccountInfoView({ info }: { info: AccountInfo }) {
         <dd>{info.is_admin ? 'Administrator' : 'Standard user'}</dd>
         <dt>Permissions</dt>
         <dd className={styles.mono}>{info.scope || '—'}</dd>
-        <dt>Two-factor (TOTP)</dt>
-        <dd>{info.has_totp ? 'Enabled' : 'Not enrolled'}</dd>
       </dl>
+    </section>
+  )
+}
+
+function TOTPSection({
+  info,
+  onChanged,
+  toast,
+}: {
+  info: AccountInfo
+  onChanged: () => void
+  toast: (t: { level: 'warn'; text: string }) => void
+}) {
+  const [enrolling, setEnrolling] = useState(false)
+  const [secret, setSecret] = useState('')
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [confirmDisable, setConfirmDisable] = useState(false)
+
+  async function startEnroll() {
+    setError(null)
+    setBusy(true)
+    try {
+      const resp = await enrollTOTP()
+      setSecret(resp.secret)
+      setEnrolling(true)
+    } catch (e) {
+      setError(msg(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitVerify(e: React.FormEvent) {
+    e.preventDefault()
+    if (!secret || !code.trim()) return
+    setError(null)
+    setBusy(true)
+    try {
+      await verifyTOTP(secret, code.trim())
+      toast({ level: 'warn', text: 'Two-factor authentication has been enabled.' })
+      setEnrolling(false)
+      setSecret('')
+      setCode('')
+      onChanged()
+    } catch (e) {
+      setError(msg(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doDisable() {
+    setBusy(true)
+    try {
+      await disableTOTP()
+      toast({ level: 'warn', text: 'Two-factor authentication has been disabled.' })
+      setConfirmDisable(false)
+      onChanged()
+    } catch (e) {
+      setError(msg(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section>
+      <h2 className={styles.h2}>Two-factor authentication (TOTP)</h2>
+      <div className={styles.totpRow}>
+        <span className={styles.totpStatus}>{info.has_totp ? 'Enrolled' : 'Not enrolled'}</span>
+        {info.has_totp ? (
+          <button
+            className={`${styles.btn} ${styles.danger}`}
+            onClick={() => setConfirmDisable(true)}
+            disabled={busy}
+          >
+            Disable
+          </button>
+        ) : (
+          <button
+            className={`${styles.btn} ${styles.primary}`}
+            onClick={startEnroll}
+            disabled={busy || enrolling}
+          >
+            Enable
+          </button>
+        )}
+      </div>
+      {error && <p className={styles.err}>{error}</p>}
+      {enrolling && secret && (
+        <form className={styles.totpEnroll} onSubmit={submitVerify}>
+          <TotpEnrollment
+            secret={secret}
+            code={code}
+            onCodeChange={setCode}
+            idPrefix="acct-totp"
+          />
+          <button
+            type="submit"
+            className={`${styles.btn} ${styles.primary}`}
+            disabled={busy || code.trim() === ''}
+            style={{ marginTop: '0.5rem' }}
+          >
+            Verify
+          </button>
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={() => { setEnrolling(false); setSecret(''); setCode(''); setError(null) }}
+            style={{ marginTop: '0.5rem', marginLeft: '0.5rem' }}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
+      {confirmDisable && (
+        <div className={styles.confirmOverlay}>
+          <div className={styles.confirmDialog} role="dialog" aria-label="Disable Two-Factor Authentication">
+            <h3>Disable Two-Factor Authentication</h3>
+            <p>
+              This will remove TOTP from your account. You will no longer
+              need a verification code to sign in.
+            </p>
+            <div className={styles.confirmActions}>
+              <button
+                className={styles.btn}
+                onClick={() => setConfirmDisable(false)}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+              <button
+                className={`${styles.btn} ${styles.danger}`}
+                onClick={doDisable}
+                disabled={busy}
+              >
+                Disable 2FA
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
