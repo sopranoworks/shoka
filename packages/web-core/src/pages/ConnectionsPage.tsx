@@ -1059,23 +1059,25 @@ function copyToClipboard(value: string, toast: ToastFn, successLabel?: string) {
       .writeText(value)
       .then(() => toast({ level: 'warn', text: successLabel ? `${successLabel} copied.` : 'Copied.' }))
       .catch(() => {
-        selectFallback(value)
-        toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+        const ok = selectFallback(value)
+        toast({ level: 'warn', text: ok ? 'Copied.' : 'Selected — press Ctrl+C to copy.' })
       })
   } else {
-    selectFallback(value)
-    toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+    const ok = selectFallback(value)
+    toast({ level: 'warn', text: ok ? 'Copied.' : 'Selected — press Ctrl+C to copy.' })
   }
 }
 
-function selectFallback(text: string) {
+function selectFallback(text: string): boolean {
   const ta = document.createElement('textarea')
   ta.value = text
   ta.style.position = 'fixed'
   ta.style.opacity = '0'
   document.body.appendChild(ta)
   ta.select()
+  const ok = document.execCommand('copy')
   document.body.removeChild(ta)
+  return ok
 }
 
 function CopyButton({ value, label, ariaLabel, toast }: { value: string; label: string; ariaLabel?: string; toast: ToastFn }) {
@@ -1089,12 +1091,14 @@ function CopyButton({ value, label, ariaLabel, toast }: { value: string; label: 
             .writeText(value)
             .then(() => setCopied(true))
             .catch(() => {
-              selectFallback(value)
-              toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+              const ok = selectFallback(value)
+              if (ok) setCopied(true)
+              else toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
             })
         } else {
-          selectFallback(value)
-          toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
+          const ok = selectFallback(value)
+          if (ok) setCopied(true)
+          else toast({ level: 'warn', text: 'Selected — press Ctrl+C to copy.' })
         }
       }}
       aria-label={ariaLabel ?? label}
