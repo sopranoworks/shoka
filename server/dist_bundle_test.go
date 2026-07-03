@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+// TestDistBundleHasIndexHTML verifies that the embedded server/dist contains an
+// index.html — the SPA entry point. Without it the Go binary serves a bare
+// directory listing ("assets/") instead of the application. This catches a build
+// pipeline failure (vite build not run, dist/ cleared but not rebuilt, root-owned
+// files blocking emptyOutDir) before the binary ships.
+func TestDistBundleHasIndexHTML(t *testing.T) {
+	data, err := fs.ReadFile(DistFS, "dist/index.html")
+	if err != nil {
+		t.Fatal("embedded dist is missing index.html — run `npm run build` in web/ before building the Go binary")
+	}
+	if len(data) == 0 {
+		t.Fatal("embedded dist/index.html is empty")
+	}
+	if !bytes.Contains(data, []byte("<script")) {
+		t.Error("dist/index.html does not contain a <script tag — the Vite build may be incomplete")
+	}
+}
+
 // TestDistBundleHasNoStrayKanji guards B-31: a prior Web-UI session's Coder added
 // a decorative literal kanji 蕉 (U+8549) to the brand. It was never in the design
 // spec and the operator wants it gone. This walks the ACTUAL embedded server/dist
