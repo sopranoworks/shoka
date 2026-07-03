@@ -239,6 +239,37 @@ func TestMiddleware_AttachesPrincipalFromSession(t *testing.T) {
 	}
 }
 
+func TestMiddleware_SlidesSession(t *testing.T) {
+	h, us := newTestHandler(t, true)
+	ph, _ := userstore.HashPassword("pw")
+	_ = us.CreateFirstAdmin(&userstore.UserRecord{Email: "op@example.com", DisplayName: "Op", PasswordHash: ph})
+	sess, _ := us.CreateSession("op@example.com", time.Now(), time.Hour)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/whatever", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	rec := httptest.NewRecorder()
+	h.Middleware(inner).ServeHTTP(rec, req)
+
+	cookies := rec.Result().Cookies()
+	var found *http.Cookie
+	for _, c := range cookies {
+		if c.Name == sessionCookieName {
+			found = c
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("middleware should refresh the session cookie (sliding session)")
+	}
+	if found.Value != sess.ID {
+		t.Fatalf("cookie value changed: got %q, want %q", found.Value, sess.ID)
+	}
+	if found.Expires.Before(time.Now().Add(59 * time.Minute)) {
+		t.Fatalf("cookie expiry not extended: %v", found.Expires)
+	}
+}
+
 // TestMiddleware_IgnoresOAuthBearer is the surface-separation proof: the WebUI login
 // path is driven ONLY by the session cookie. An OAuth-style bearer token (the MCP
 // credential) with NO session cookie yields NO principal — the Web path never

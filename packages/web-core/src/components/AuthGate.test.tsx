@@ -4,7 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthGate } from './AuthGate'
 import * as authClientMod from '../lib/authClient'
 
-vi.mock('../lib/wsClient', () => ({ wsClient: () => ({ connect: vi.fn() }) }))
+vi.mock('../lib/wsClient', () => ({
+  wsClient: () => ({ connect: vi.fn(), close: vi.fn(), subscribeState: vi.fn(() => vi.fn()) }),
+}))
 
 function mockStatus(s: Partial<authClientMod.AuthStatus>) {
   vi.spyOn(authClientMod, 'getStatus').mockResolvedValue({

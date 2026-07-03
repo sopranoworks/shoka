@@ -412,8 +412,31 @@ func (h *Handler) Middleware(next http.Handler) http.Handler {
 		if u := h.currentUser(r); u != nil {
 			p := auth.Principal{Name: u.DisplayName, Email: u.Email, Scope: u.Scope}
 			r = r.WithContext(auth.WithPrincipal(r.Context(), p))
+			h.slideSession(w, r)
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// slideSession extends the session expiry on each authenticated request so active
+// use keeps the session alive (sliding window).
+func (h *Handler) slideSession(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
+		return
+	}
+	now := time.Now()
+	if err := h.users.TouchSession(c.Value, now, h.sessionTTL); err != nil {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    c.Value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+		Expires:  now.Add(h.sessionTTL),
 	})
 }
 

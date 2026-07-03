@@ -344,6 +344,33 @@ func (s *Store) LookupSession(id string, now time.Time) (SessionRecord, error) {
 	return rec, nil
 }
 
+// TouchSession extends a live session's expiry to now+ttl (sliding window). It
+// is a no-op if the session does not exist or already expires past the new window,
+// so callers may call it on every authenticated request without waste.
+func (s *Store) TouchSession(id string, now time.Time, ttl time.Duration) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(sessionsBucket))
+		v := b.Get([]byte(id))
+		if v == nil {
+			return nil
+		}
+		var rec SessionRecord
+		if err := json.Unmarshal(v, &rec); err != nil {
+			return nil
+		}
+		newExpiry := now.Add(ttl)
+		if !newExpiry.After(rec.Expiry) {
+			return nil
+		}
+		rec.Expiry = newExpiry
+		val, err := json.Marshal(rec)
+		if err != nil {
+			return nil
+		}
+		return b.Put([]byte(id), val)
+	})
+}
+
 // DeleteSession removes one session (logout). Idempotent.
 func (s *Store) DeleteSession(id string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {

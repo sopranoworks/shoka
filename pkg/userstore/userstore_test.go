@@ -276,6 +276,40 @@ func TestSessions_MintResolveLogoutExpire(t *testing.T) {
 	}
 }
 
+func TestTouchSession_SlidesExpiry(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now()
+	sess, _ := s.CreateSession("a@x.com", now, time.Hour)
+
+	// Touch 30 minutes later with the same TTL: expiry should extend.
+	later := now.Add(30 * time.Minute)
+	if err := s.TouchSession(sess.ID, later, time.Hour); err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+	got, err := s.LookupSession(sess.ID, later)
+	if err != nil {
+		t.Fatalf("LookupSession after touch: %v", err)
+	}
+	wantExpiry := later.Add(time.Hour)
+	if got.Expiry.Before(wantExpiry.Add(-time.Second)) || got.Expiry.After(wantExpiry.Add(time.Second)) {
+		t.Fatalf("expiry = %v, want ~%v", got.Expiry, wantExpiry)
+	}
+
+	// Touch with a shorter window than current expiry: no-op.
+	if err := s.TouchSession(sess.ID, later, 10*time.Minute); err != nil {
+		t.Fatalf("TouchSession (no-op): %v", err)
+	}
+	got2, _ := s.LookupSession(sess.ID, later)
+	if !got2.Expiry.Equal(got.Expiry) {
+		t.Fatalf("expiry changed on no-op touch: %v -> %v", got.Expiry, got2.Expiry)
+	}
+
+	// Touch on a nonexistent session: no error.
+	if err := s.TouchSession("bogus", later, time.Hour); err != nil {
+		t.Fatalf("TouchSession on missing id: %v", err)
+	}
+}
+
 func TestDeleteExpiredSessions(t *testing.T) {
 	s := openTestStore(t)
 	now := time.Now()
