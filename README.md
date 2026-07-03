@@ -39,7 +39,7 @@ Beyond basic file CRUD, Shoka provides — see the linked docs for the detail:
 
 ## Install
 
-Three ways to install Shoka, in order of preference for a server:
+Four ways to install Shoka, in order of preference for a server:
 
 - **Debian/Ubuntu `.deb` — recommended for Linux servers.** Download the package
   for your architecture (`amd64` or `arm64`) from the
@@ -66,6 +66,20 @@ Three ways to install Shoka, in order of preference for a server:
   They land in `~/go/bin` (`$(go env GOBIN)` — put it on your `PATH`). `@latest`
   takes the newest tagged release; pin an exact one with `@vX.Y.Z`. See
   [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (*Installation*).
+
+- **`fuigo` — any platform with a Go toolchain.** `fuigo` is a
+  `go install` wrapper that runs Shoka's pre-build steps (frontend asset
+  compilation) automatically before installing the binary:
+
+  ```sh
+  go install github.com/sopranoworks/fuigo/cmd/fuigo@latest
+  fuigo github.com/sopranoworks/shoka/cmd/shoka@latest
+  ```
+
+  `fuigo` reads the project's `fuigo.yaml` to discover the required pre-build
+  steps, shows them for confirmation, then builds and installs in one shot.
+  Pass `--dry-run` to build without installing, or `--list` to inspect the
+  steps. See [`fuigo.yaml`](fuigo.yaml) for the current step definition.
 
 - **Homebrew (macOS) — planned.** A source formula for `brew install` /
   `brew services` is planned; none is published yet. On macOS today, use
