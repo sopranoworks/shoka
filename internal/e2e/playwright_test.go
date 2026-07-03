@@ -111,7 +111,7 @@ func TestPlaywrightE2E(t *testing.T) {
 
 func copyTree(t *testing.T, src, dst string) {
 	t.Helper()
-	cmd := exec.Command("rsync", "-a", "--exclude=.git", src+"/", dst+"/")
+	cmd := exec.Command("rsync", "-a", "--exclude=.git", "--exclude=playwright-failures", src+"/", dst+"/")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rsync source tree to temp: %v\n%s", err, out)
 	}

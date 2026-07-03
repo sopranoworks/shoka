@@ -8,5 +8,5 @@
 package version
 
 // Version is the current Shoka release, in semver with an optional pre-release
-// suffix (e.g. "1.0.0-rc1"). Exported so the server/CLI can print it.
-const Version = "1.0.0-rc1"
+// suffix (e.g. "1.0.0-rc2"). Exported so the server/CLI can print it.
+const Version = "1.0.0-rc2"

@@ -185,7 +185,7 @@ Google Cloud Translation v3 (optional). See `docs/ARCHITECTURE.md` for why.
 
 ## Version
 
-This is **1.0.0-rc1**. The running binary reports it via `shoka --version` (and
+This is **1.0.0-rc2**. The running binary reports it via `shoka --version` (and
 `shoka-cli --version`), and the MCP server advertises it in `get_server_info`.
 
 ## License
