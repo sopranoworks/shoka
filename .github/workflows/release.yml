@@ -6,9 +6,8 @@ name: release
 # NOTE: this fires only when the operator pushes a `v*` tag to a reachable origin.
 # `main` is local-only today, so committing this file does not start any CI.
 #
-# The build relies on the COMMITTED server/dist (the web UI is embedded via
-# //go:embed) — there is no Vite step. Rebuild + commit server/dist before tagging
-# if the web UI changed.
+# The frontend is built from source (go run ./build/frontend) — server/dist/
+# is gitignored and generated in CI.
 
 on:
   push:
@@ -30,6 +29,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.2'   # keep in sync with go.mod
+
+      - name: Build frontend (produces server/dist/)
+        run: go run ./build/frontend
 
       - name: Cross-build binaries (cgo-free, one runner, no QEMU)
         env:

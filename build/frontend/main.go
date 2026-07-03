@@ -13,7 +13,8 @@ import (
 )
 
 func main() {
-	if err := os.Chdir("../.."); err != nil {
+	root := repoRoot()
+	if err := os.Chdir(root); err != nil {
 		fmt.Fprintf(os.Stderr, "chdir to repo root: %v\n", err)
 		os.Exit(1)
 	}
@@ -172,4 +173,19 @@ func writeIndexHTML(metaJSON string) error {
 `, jsPath, cssTag)
 
 	return os.WriteFile("server/dist/index.html", []byte(html), 0o644)
+}
+
+func repoRoot() string {
+	dir, _ := os.Getwd()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return filepath.Join("..", "..")
 }
