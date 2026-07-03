@@ -111,6 +111,8 @@ type DomainInfo struct {
 	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
 	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
 	Consent           string `json:"consent"`
+	Scope             string `json:"scope"`
+	RevokedTokens     int    `json:"revoked_tokens,omitempty"`
 }
 
 // DomainListPayload is the DOMAIN_LIST response (sorted by identifier).
@@ -124,13 +126,17 @@ type DomainCreateRequest struct {
 	Domain            string `json:"domain"`
 	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
 	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
+	Scope             string `json:"scope"`
 }
 
-// DomainUpdateRequest edits a domain's TTL. Consent is managed by DOMAIN_GENERATE_CONSENT, not here.
+// DomainUpdateRequest edits a domain's TTL and/or scope. Consent is managed by
+// DOMAIN_GENERATE_CONSENT, not here. A scope change triggers batch revocation of all
+// active tokens issued to the domain (the client confirmed via a modal before sending).
 type DomainUpdateRequest struct {
 	ID                string `json:"id"`
 	AccessTTLSeconds  int64  `json:"access_ttl_seconds"`
 	RefreshTTLSeconds int64  `json:"refresh_ttl_seconds"`
+	Scope             string `json:"scope"`
 }
 
 // DomainGenerateConsentRequest / DomainGenerateConsentPayload — mint (or re-roll) a domain's
@@ -154,7 +160,11 @@ type DomainDeletePayload struct {
 }
 
 func domainInfoOf(e oauthstore.RegistrationEntry) DomainInfo {
-	di := DomainInfo{ID: e.ID, Domain: e.Identifier, Consent: e.ConsentValue()}
+	scope := e.Scope
+	if scope == "" {
+		scope = "*"
+	}
+	di := DomainInfo{ID: e.ID, Domain: e.Identifier, Consent: e.ConsentValue(), Scope: scope}
 	if e.TTL != nil {
 		di.AccessTTLSeconds = e.TTL.AccessSeconds
 		di.RefreshTTLSeconds = e.TTL.RefreshSeconds
@@ -203,10 +213,19 @@ func (h *CoreHandlers) handleDomainCreate(client *Client, payload json.RawMessag
 		client.SendError(fmt.Sprintf("Failed to create domain: %v", err))
 		return
 	}
+	needUpdate := false
 	if p.AccessTTLSeconds > 0 || p.RefreshTTLSeconds > 0 {
 		entry.TTL = &oauthstore.EntryTTL{AccessSeconds: p.AccessTTLSeconds, RefreshSeconds: p.RefreshTTLSeconds}
+		needUpdate = true
+	}
+	scope := strings.TrimSpace(p.Scope)
+	if scope != "" && scope != "*" {
+		entry.Scope = scope
+		needUpdate = true
+	}
+	if needUpdate {
 		if err := h.oauth.UpdateRegistration(entry); err != nil {
-			client.SendError(fmt.Sprintf("Failed to set domain TTL: %v", err))
+			client.SendError(fmt.Sprintf("Failed to set domain fields: %v", err))
 			return
 		}
 	}
@@ -245,11 +264,32 @@ func (h *CoreHandlers) handleDomainUpdate(client *Client, payload json.RawMessag
 	} else {
 		entry.TTL = nil // both 0 ⇒ unset → the finite global default
 	}
+	// Scope change detection: normalize both sides (empty/"*" ⇒ "*") before comparing.
+	oldScope := entry.Scope
+	if oldScope == "" {
+		oldScope = "*"
+	}
+	newScope := strings.TrimSpace(p.Scope)
+	if newScope == "" {
+		newScope = "*"
+	}
+	scopeChanged := oldScope != newScope
+	var revoked int
+	if scopeChanged {
+		revoked, _ = h.oauth.RevokeByDomain(entry.Identifier)
+		if newScope == "*" {
+			entry.Scope = ""
+		} else {
+			entry.Scope = newScope
+		}
+	}
 	if err := h.oauth.UpdateRegistration(entry); err != nil {
 		client.SendError(fmt.Sprintf("Failed to update domain: %v", err))
 		return
 	}
-	client.SendResponse(MsgDomainUpdate, domainInfoOf(entry))
+	di := domainInfoOf(entry)
+	di.RevokedTokens = revoked
+	client.SendResponse(MsgDomainUpdate, di)
 	h.notifyOAuthChange()
 }
 

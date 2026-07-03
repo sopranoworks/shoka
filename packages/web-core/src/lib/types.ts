@@ -125,6 +125,8 @@ export interface DomainInfo {
   // The per-domain consent VALUE (PLAINTEXT, operator-readable — the 2026-06-20 model). "" means no
   // consent is set, so the domain cannot authorize connections until the operator generates one.
   consent: string
+  scope: string
+  revoked_tokens?: number
 }
 
 // The DOMAIN_LIST response payload (mirrors Go's ui.DomainListPayload).

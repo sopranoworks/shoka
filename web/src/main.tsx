@@ -12,7 +12,7 @@ import {
   ToastProvider,
   AdminProvider,
 } from '@shoka/web-core'
-import { AuthGate } from './components/AuthGate'
+import { AuthGate } from '@shoka/web-core'
 import { shokaShellConfig } from './shokaShellConfig'
 import './styles/global.css'
 
@@ -32,7 +32,7 @@ createRoot(document.getElementById('root')!).render(
               <AdminProvider>
                 <PaletteProvider>
                   <ShellProvider value={shokaShellConfig}>
-                    <AuthGate>
+                    <AuthGate appName="Shoka">
                       <RouterProvider router={router} />
                     </AuthGate>
                   </ShellProvider>

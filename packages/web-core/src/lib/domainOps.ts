@@ -30,6 +30,7 @@ export interface DomainCreateInput {
   domain: string
   accessTtlSeconds?: number
   refreshTtlSeconds?: number
+  scope?: string
 }
 
 export async function createDomain(input: DomainCreateInput): Promise<DomainInfo> {
@@ -37,6 +38,7 @@ export async function createDomain(input: DomainCreateInput): Promise<DomainInfo
     domain: input.domain,
     access_ttl_seconds: input.accessTtlSeconds ?? 0,
     refresh_ttl_seconds: input.refreshTtlSeconds ?? 0,
+    scope: input.scope ?? '*',
   })
   throwIfDenied(frame.type, frame.payload)
   return frame.payload as DomainInfo
@@ -46,6 +48,7 @@ export interface DomainUpdateInput {
   id: string
   accessTtlSeconds: number
   refreshTtlSeconds: number
+  scope: string
 }
 
 export async function updateDomain(input: DomainUpdateInput): Promise<DomainInfo> {
@@ -53,6 +56,7 @@ export async function updateDomain(input: DomainUpdateInput): Promise<DomainInfo
     id: input.id,
     access_ttl_seconds: input.accessTtlSeconds,
     refresh_ttl_seconds: input.refreshTtlSeconds,
+    scope: input.scope,
   })
   throwIfDenied(frame.type, frame.payload)
   return frame.payload as DomainInfo

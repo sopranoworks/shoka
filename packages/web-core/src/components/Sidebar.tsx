@@ -2,7 +2,10 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate as useNav, useRouterState } from '@tanstack/react-router'
 import { FileTree, type TreeOpenMode } from './FileTree'
 import { SettingsItemList } from './SettingsItemList'
+import { UploadDialog } from './UploadDialog'
 import { useTreeQuery } from '../lib/queries'
+import { useSearchQuery } from '../lib/search'
+import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { filterTree, sortTree, dirOf, type SortMode } from '../lib/tree'
 import { useContentConfig } from '../lib/contentConfig'
 import styles from './Sidebar.module.css'
@@ -76,6 +79,7 @@ function ProjectTree({
   )
   const { renderNewFileButton, renderDropZone } = useContentConfig()
   const launchDir = activePath ? dirOf(activePath) : ''
+  const [uploadOpen, setUploadOpen] = useState(false)
 
   const treeContent = (
     <>
@@ -133,22 +137,43 @@ function ProjectTree({
   )
 
   return (
-    <div className={styles.pane}>
-      <SectionHeader>
-        <span className={styles.projTitle}>
-          <span className={styles.projNs}>{ns}/</span>
-          {proj}
-        </span>
-        {openMode !== 'history' && renderNewFileButton && (
-          renderNewFileButton(ns, proj, launchDir)
-        )}
-      </SectionHeader>
-      <div className={styles.treeWrap}>
-        {renderDropZone
-          ? renderDropZone(ns, proj, treeContent)
-          : treeContent}
+    <>
+      <div className={styles.pane}>
+        <SectionHeader>
+          <span className={styles.projTitle}>
+            <span className={styles.projNs}>{ns}/</span>
+            {proj}
+          </span>
+          {openMode !== 'history' && renderNewFileButton && (
+            <span className={styles.headerActions}>
+              {renderNewFileButton(ns, proj, launchDir)}
+              <button
+                type="button"
+                className={styles.newFileBtn}
+                title="Upload files"
+                aria-label="Upload files"
+                onClick={() => setUploadOpen(true)}
+                data-testid="upload-btn"
+              >
+                Upload
+              </button>
+            </span>
+          )}
+        </SectionHeader>
+        <div className={styles.treeWrap}>
+          {renderDropZone
+            ? renderDropZone(ns, proj, treeContent)
+            : treeContent}
+        </div>
       </div>
-    </div>
+      <UploadDialog
+        open={uploadOpen}
+        namespace={ns}
+        project={proj}
+        tree={tree ?? []}
+        onClose={() => setUploadOpen(false)}
+      />
+    </>
   )
 }
 
@@ -159,6 +184,17 @@ function SectionHeader({ children }: { children: ReactNode }) {
 function SearchView({ projectRef }: { projectRef: { ns: string; proj: string } | null }) {
   const navigate = useNav()
   const [term, setTerm] = useState('')
+  const debounced = useDebouncedValue(term, 250)
+
+  const {
+    data: matches,
+    isFetching,
+    isError,
+  } = useSearchQuery(
+    projectRef?.ns ?? '',
+    projectRef?.proj ?? '',
+    debounced,
+  )
 
   if (!projectRef) {
     return (
@@ -175,33 +211,86 @@ function SearchView({ projectRef }: { projectRef: { ns: string; proj: string } |
     )
   }
 
+  const hasQuery = debounced.trim() !== ''
+
   return (
     <div className={styles.pane}>
       <SectionHeader>Search</SectionHeader>
-      <form
-        className={styles.searchForm}
-        onSubmit={(e) => {
-          e.preventDefault()
-          void navigate({
-            to: '/p/$namespace/$project/search',
-            params: { namespace: projectRef.ns, project: projectRef.proj },
-            search: term.trim() ? { q: term.trim() } : {},
-          })
-        }}
-      >
-        <input
-          className={styles.searchInput}
-          type="search"
-          value={term}
-          onChange={(e) => setTerm(e.target.value)}
-          placeholder={`Search ${projectRef.proj}…`}
-          aria-label="Search files"
-        />
-      </form>
-      <div className={styles.empty}>
-        Searches file names and contents in{' '}
-        <code>{projectRef.ns}/{projectRef.proj}</code>. Press <kbd>⌘⇧F</kbd> from
-        anywhere.
+      <div className={styles.searchForm}>
+        <div className={styles.searchInputWrap}>
+          <input
+            className={styles.searchInput}
+            type="search"
+            value={term}
+            onChange={(e) => setTerm(e.target.value)}
+            placeholder={`Search ${projectRef.proj}…`}
+            aria-label="Search files"
+          />
+          {term && (
+            <button
+              className={styles.searchClear}
+              onClick={() => setTerm('')}
+              aria-label="Clear search"
+              type="button"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className={styles.searchBody}>
+        {!hasQuery ? (
+          <div className={styles.empty}>
+            Searches file names and contents in{' '}
+            <code>
+              {projectRef.ns}/{projectRef.proj}
+            </code>
+            . Press <kbd>⌘⇧F</kbd> from anywhere.
+          </div>
+        ) : isError ? (
+          <div className={styles.empty}>Search failed. Try again.</div>
+        ) : !matches && isFetching ? (
+          <div className={styles.empty}>Searching…</div>
+        ) : matches && matches.length === 0 ? (
+          <div className={styles.empty}>
+            No results for <code>{debounced}</code>.
+          </div>
+        ) : matches ? (
+          <>
+            <div className={styles.searchCount}>
+              {matches.length} {matches.length === 1 ? 'result' : 'results'}
+              {isFetching && ' · updating…'}
+            </div>
+            <ul className={styles.searchResultList} data-testid="sidebar-search-results">
+              {matches.map((m) => (
+                <li key={m.path}>
+                  <button
+                    className={styles.searchResult}
+                    onClick={() =>
+                      void navigate({
+                        to: '/p/$namespace/$project/blob/$',
+                        params: {
+                          namespace: projectRef.ns,
+                          project: projectRef.proj,
+                          _splat: m.path,
+                        },
+                        search: m.snippet ? { highlight: debounced } : {},
+                      })
+                    }
+                  >
+                    <span className={styles.searchResultPath}>{m.path}</span>
+                    {m.snippet && (
+                      <span className={styles.searchResultSnippet}>
+                        {m.snippet}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
       </div>
     </div>
   )

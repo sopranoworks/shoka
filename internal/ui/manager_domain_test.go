@@ -54,6 +54,9 @@ func TestWSUI_DomainCRUD(t *testing.T) {
 	if created.Domain != "connector.example" || created.AccessTTLSeconds != 3600 || created.RefreshTTLSeconds != 86400 || created.Consent != "" {
 		t.Fatalf("created (should have no consent yet): %+v", created)
 	}
+	if created.Scope != "*" {
+		t.Fatalf("created scope must default to *; got %q", created.Scope)
+	}
 	id := created.ID
 
 	// GENERATE CONSENT — returns a plaintext value (operator-readable).
@@ -82,9 +85,9 @@ func TestWSUI_DomainCRUD(t *testing.T) {
 		t.Fatalf("list must carry the plaintext consent value: %+v", list.Domains)
 	}
 
-	// UPDATE: change the access TTL, leave refresh unset (0 ⇒ global default); consent untouched.
+	// UPDATE: change the access TTL, leave refresh unset (0 ⇒ global default); consent + scope untouched.
 	resp = roundTrip(t, conn, uiws.MsgDomainUpdate,
-		fmt.Sprintf(`{"id":%q,"access_ttl_seconds":7200,"refresh_ttl_seconds":0}`, id))
+		fmt.Sprintf(`{"id":%q,"access_ttl_seconds":7200,"refresh_ttl_seconds":0,"scope":"*"}`, id))
 	if resp.Type != uiws.MsgDomainUpdate {
 		t.Fatalf("update type = %s (%s)", resp.Type, resp.Payload)
 	}
@@ -92,6 +95,12 @@ func TestWSUI_DomainCRUD(t *testing.T) {
 	_ = json.Unmarshal(resp.Payload, &updated)
 	if updated.AccessTTLSeconds != 7200 || updated.RefreshTTLSeconds != 0 || updated.Consent != gen2.Consent {
 		t.Fatalf("updated (consent must survive a TTL edit): %+v", updated)
+	}
+	if updated.Scope != "*" {
+		t.Fatalf("scope must stay * after TTL-only edit; got %q", updated.Scope)
+	}
+	if updated.RevokedTokens != 0 {
+		t.Fatalf("no scope change → no revoked tokens; got %d", updated.RevokedTokens)
 	}
 
 	// DELETE.
@@ -163,6 +172,83 @@ func TestWSUI_OAuthListGroupsByDomain(t *testing.T) {
 				t.Fatalf("self-issued connection must have an empty domain; got %q", c.Domain)
 			}
 		}
+	}
+}
+
+// TestWSUI_DomainCreateWithScope: creating a domain with a custom scope stores it.
+func TestWSUI_DomainCreateWithScope(t *testing.T) {
+	conn := newOAuthManager(t, "", realOAuthStore(t))
+	resp := roundTrip(t, conn, uiws.MsgDomainCreate,
+		`{"domain":"scoped.example","scope":"myns:myproj:rw"}`)
+	if resp.Type != uiws.MsgDomainCreate {
+		t.Fatalf("create type = %s (%s)", resp.Type, resp.Payload)
+	}
+	var created uiws.DomainInfo
+	_ = json.Unmarshal(resp.Payload, &created)
+	if created.Scope != "myns:myproj:rw" {
+		t.Fatalf("created scope = %q, want myns:myproj:rw", created.Scope)
+	}
+	list := decodeDomainList(t, roundTrip(t, conn, uiws.MsgDomainList, `{}`))
+	if len(list.Domains) != 1 || list.Domains[0].Scope != "myns:myproj:rw" {
+		t.Fatalf("listed scope mismatch: %+v", list.Domains)
+	}
+}
+
+// TestWSUI_DomainScopeChangeRevokesTokens: changing the scope on a domain revokes its live tokens.
+func TestWSUI_DomainScopeChangeRevokesTokens(t *testing.T) {
+	store := realOAuthStore(t)
+	now := time.Now()
+	p := oauthstore.Principal{Name: "Op", Email: "op@example.test"}
+	dom, err := store.CreateRegistration(oauthstore.RegistrationModeDomain, "connector.example", now)
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	under, _ := store.NewSeries("https://connector.example/meta", p, "res", "*", "", now, time.Hour, 24*time.Hour)
+	self, _ := store.NewSeries(oauthstore.SelfIssuedClientID, p, "res", "*", "", now, time.Hour, 24*time.Hour)
+
+	conn := newOAuthManager(t, "", store)
+	resp := roundTrip(t, conn, uiws.MsgDomainUpdate,
+		fmt.Sprintf(`{"id":%q,"access_ttl_seconds":0,"refresh_ttl_seconds":0,"scope":"myns:myproj:rw"}`, dom.ID))
+	if resp.Type != uiws.MsgDomainUpdate {
+		t.Fatalf("update type = %s (%s)", resp.Type, resp.Payload)
+	}
+	var updated uiws.DomainInfo
+	_ = json.Unmarshal(resp.Payload, &updated)
+	if updated.Scope != "myns:myproj:rw" {
+		t.Fatalf("updated scope = %q, want myns:myproj:rw", updated.Scope)
+	}
+	if updated.RevokedTokens != 1 {
+		t.Fatalf("scope change must revoke the 1 domain token; got %d", updated.RevokedTokens)
+	}
+	if _, err := store.Lookup(under.AccessToken, now); err == nil {
+		t.Fatal("the domain token must be revoked on scope change")
+	}
+	if _, err := store.Lookup(self.AccessToken, now); err != nil {
+		t.Fatalf("the self-issued token must survive a scope change: %v", err)
+	}
+}
+
+// TestWSUI_DomainScopeUnchangedNoRevocation: updating with the same scope does not revoke tokens.
+func TestWSUI_DomainScopeUnchangedNoRevocation(t *testing.T) {
+	store := realOAuthStore(t)
+	now := time.Now()
+	p := oauthstore.Principal{Name: "Op", Email: "op@example.test"}
+	dom, err := store.CreateRegistration(oauthstore.RegistrationModeDomain, "connector.example", now)
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	under, _ := store.NewSeries("https://connector.example/meta", p, "res", "*", "", now, time.Hour, 24*time.Hour)
+
+	conn := newOAuthManager(t, "", store)
+	resp := roundTrip(t, conn, uiws.MsgDomainUpdate,
+		fmt.Sprintf(`{"id":%q,"access_ttl_seconds":7200,"refresh_ttl_seconds":0,"scope":"*"}`, dom.ID))
+	var updated uiws.DomainInfo
+	_ = json.Unmarshal(resp.Payload, &updated)
+	if updated.RevokedTokens != 0 {
+		t.Fatalf("same scope (both *) must not revoke; got %d", updated.RevokedTokens)
+	}
+	if _, err := store.Lookup(under.AccessToken, now); err != nil {
+		t.Fatalf("the domain token must survive when scope is unchanged: %v", err)
 	}
 }
 

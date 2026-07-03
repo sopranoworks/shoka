@@ -1,17 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { getStatus, seedAuthStatus, type AuthStatus } from '@shoka/web-core'
-import { wsClient } from '@shoka/web-core'
+import { getStatus, type AuthStatus } from '../lib/authClient'
+import { seedAuthStatus } from '../lib/authStatus'
+import { wsClient } from '../lib/wsClient'
 import { FirstRunWizard } from './FirstRunWizard'
 import { LoginScreen } from './LoginScreen'
 
-// AuthGate is the WebUI boot gate (B-28 stage 1). It fetches /auth/status and:
-//   - no users + first-run allowed  -> the first-run wizard (create the admin);
-//   - users exist + not logged in   -> the login screen;
-//   - otherwise (authenticated, or the no-lockout empty/first-run-disabled case)
-//     -> the app, opening the /ws/ui socket only then (the login screen never
-//        opens /ws/ui, which would 401 once a user exists).
-export function AuthGate({ children }: { children: ReactNode }) {
+export function AuthGate({ appName, children }: { appName: string; children: ReactNode }) {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState<AuthStatus | null>(null)
   const [failed, setFailed] = useState(false)
@@ -39,16 +34,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
       </div>
     )
   }
-  if (status == null) return null // brief boot flash before /auth/status resolves
+  if (status == null) return null
 
   if (!status.users_exist) {
     if (status.first_run_allowed) {
-      return <FirstRunWizard passkeyEnabled={status.passkey_enabled} onDone={refresh} />
+      return <FirstRunWizard appName={appName} passkeyEnabled={status.passkey_enabled} onDone={refresh} />
     }
-    return <>{children}</> // no users + first-run disabled: no-lockout single-operator
+    return <>{children}</>
   }
   if (!status.authenticated) {
-    return <LoginScreen passkeyEnabled={status.passkey_enabled} onDone={refresh} />
+    return <LoginScreen appName={appName} passkeyEnabled={status.passkey_enabled} onDone={refresh} />
   }
   return <>{children}</>
 }

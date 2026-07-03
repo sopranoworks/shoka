@@ -96,6 +96,7 @@ export { SettingsItemList } from './components/SettingsItemList'
 
 // --- reusable dialogs (used by the management screen; also consumed by the app) ---
 export { ConversionConfirmDialog } from './components/ConversionConfirmDialog'
+export { UploadDialog, validateDirPath, type UploadDialogProps } from './components/UploadDialog'
 export { PromptDialog } from './components/PromptDialog'
 export { RenameDialog } from './components/RenameDialog'
 export { MoveProjectDialog } from './components/MoveProjectDialog'

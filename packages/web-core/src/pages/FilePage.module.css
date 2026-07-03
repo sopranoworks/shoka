@@ -16,6 +16,21 @@
   background: var(--c-bg-elev);
   border-bottom: 1px solid var(--c-border);
 }
+
+.toolbarLeft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.toolbarRight {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
 .filePath {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
@@ -32,6 +47,50 @@
   color: var(--c-text-faint);
   white-space: nowrap;
 }
+
+.copyBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--c-text-faint);
+  cursor: pointer;
+  padding: 0;
+}
+.copyBtn:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+
+.searchToggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--c-text-dim);
+  cursor: pointer;
+  padding: 0;
+}
+.searchToggle:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+.searchToggle[data-active='true'] {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+  border-color: var(--c-accent);
+}
+
 .editBtn {
   flex: none;
   display: inline-flex;

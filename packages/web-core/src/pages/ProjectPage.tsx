@@ -12,7 +12,7 @@ export function ProjectPage() {
   }
   const { data: tree = [], isError } = useTreeQuery(namespace, project)
   const { openPalette } = usePalette()
-  const { renderNewFileLink } = useContentConfig()
+  const { renderNewFileLink, renderProjectExtra } = useContentConfig()
 
   if (isError) {
     return (
@@ -58,6 +58,8 @@ export function ProjectPage() {
             Command Palette <kbd>⌘K</kbd>
           </button>
         </div>
+
+        {renderProjectExtra?.(namespace, project)}
 
         {suggestions.length > 0 && (
           <div className={styles.suggest}>

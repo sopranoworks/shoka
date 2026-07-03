@@ -633,6 +633,9 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 	// credential, is invalid_client (401). The token then carries the entry's pre-issued SCOPE
 	// (which the tools/call namespace gate enforces). The public/PKCE-only path is unchanged.
 	scope := "*"
+	if domEntry, ok := s.store.DomainEntryForClient(rec.ClientID); ok && domEntry.Scope != "" {
+		scope = domEntry.Scope
+	}
 	if isConfidential {
 		if confEntry.CredentialExpired(s.now()) {
 			lg.Warn("oauth token rejected",
@@ -658,8 +661,8 @@ func (s *AuthServer) grantAuthorizationCode(w http.ResponseWriter, r *http.Reque
 		}
 		scope = confEntry.Scope
 	}
-	// DCR/CIMD/self tokens stay all-access (Scope "*"); a confidential token carries its pre-issued
-	// scope. The tools/call authz gate reads this scope; "*" allows every namespace.
+	// A domain-mode token carries its domain entry's configured scope (default "*"); a confidential
+	// token carries its pre-issued scope. The tools/call authz gate reads this scope.
 	access, refresh := s.issuanceTTL(rec.ClientID) // per-domain TTL else the global finite default
 	series, err := s.store.NewSeries(rec.ClientID, rec.Principal, rec.Resource, scope, "", s.now(), access, refresh)
 	if err != nil {

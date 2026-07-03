@@ -16,6 +16,9 @@ export interface CoreScreensConfig {
   // extraSettingsItems are merged after the built-in Settings items (each with its own
   // `component` and `visible` predicate).
   extraSettingsItems?: SettingsItem[]
+  // hiddenSettingsItemIds suppresses built-in items by id (e.g. a consumer that does not
+  // have a librarian can hide it with ['librarian']). Applied before the visible filter.
+  hiddenSettingsItemIds?: string[]
   // renderNamespaceSections injects extra content into each namespace block of the
   // namespace/project management screen (e.g. an SSH-key management section).
   renderNamespaceSections?: (namespace: string) => ReactNode

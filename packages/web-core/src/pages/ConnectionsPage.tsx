@@ -35,6 +35,7 @@ import type {
   ConfidentialIssuePayload,
 } from '../lib/types'
 import { ScopeInput, validateScopeExistence, ScopeConfirmDialog, type ScopeIssue } from '../components/ScopeInput'
+import dialogStyles from '../components/ConfirmDialog.module.css'
 import styles from './ConnectionsPage.module.css'
 
 // The administrator-only OAuth management view. Per the B-71 binding principle the screen is
@@ -431,10 +432,11 @@ function AddDomainForm() {
   const [domain, setDomain] = useState('')
   const [accessTtl, setAccessTtl] = useState('')
   const [refreshTtl, setRefreshTtl] = useState('')
+  const [scope, setScope] = useState('*')
 
   const access = parseTtl(accessTtl)
   const refresh = parseTtl(refreshTtl)
-  const valid = domain.trim() !== '' && access !== null && refresh !== null
+  const valid = domain.trim() !== '' && access !== null && refresh !== null && scope.trim() !== ''
 
   const create = useMutation({
     mutationFn: () =>
@@ -442,6 +444,7 @@ function AddDomainForm() {
         domain: domain.trim(),
         accessTtlSeconds: access ?? 0,
         refreshTtlSeconds: refresh ?? 0,
+        scope: scope.trim(),
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
@@ -449,6 +452,7 @@ function AddDomainForm() {
       setDomain('')
       setAccessTtl('')
       setRefreshTtl('')
+      setScope('*')
     },
     onError: (e) => {
       addToast({
@@ -458,8 +462,6 @@ function AddDomainForm() {
     },
   })
 
-  // Consent is no longer typed here — after adding, the operator generates a consent value on the
-  // domain card (the 2026-06-20 plaintext/generate model).
   return (
     <form
       className={styles.domainForm}
@@ -476,6 +478,16 @@ function AddDomainForm() {
           value={domain}
           onChange={(e) => setDomain(e.target.value)}
           data-testid="domain-add-identifier"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Scope</span>
+        <ScopeInput
+          className={styles.domainInput}
+          value={scope}
+          onChange={setScope}
+          placeholder="* (all access)"
+          data-testid="domain-add-scope"
         />
       </label>
       <label className={styles.field}>
@@ -561,7 +573,9 @@ function DomainCard({ domain, tokens }: { domain: DomainInfo; tokens: OAuthConne
       <div className={styles.domainHeader}>
         <span className={styles.domainName}>{domain.domain}</span>
         <span className={styles.domainTtl}>
-          access {fmtTtl(domain.access_ttl_seconds)} · refresh {fmtTtl(domain.refresh_ttl_seconds)}
+          access {fmtTtl(domain.access_ttl_seconds)} · refresh{' '}
+          {fmtTtl(domain.refresh_ttl_seconds)} · scope{' '}
+          <code data-testid={`domain-scope-${domain.domain}`}>{domain.scope || '*'}</code>
         </span>
         <span className={styles.domainActions}>
           <button
@@ -656,18 +670,18 @@ function DomainCard({ domain, tokens }: { domain: DomainInfo; tokens: OAuthConne
   )
 }
 
-// EditDomainForm edits a domain's per-domain TTLs only — consent is managed on the card (Generate
-// / Regenerate), not here. The TTL fields carry visible labels (the 2026-06-20 fix for the
-// previously-unlabeled Edit fields).
 function EditDomainForm({ domain, onDone }: { domain: DomainInfo; onDone: () => void }) {
   const queryClient = useQueryClient()
   const { add: addToast } = useToast()
   const [accessTtl, setAccessTtl] = useState(String(domain.access_ttl_seconds || ''))
   const [refreshTtl, setRefreshTtl] = useState(String(domain.refresh_ttl_seconds || ''))
+  const [scope, setScope] = useState(domain.scope || '*')
+  const [showScopeModal, setShowScopeModal] = useState(false)
 
   const access = parseTtl(accessTtl)
   const refresh = parseTtl(refreshTtl)
-  const valid = access !== null && refresh !== null
+  const valid = access !== null && refresh !== null && scope.trim() !== ''
+  const scopeChanged = scope.trim() !== (domain.scope || '*')
 
   const save = useMutation({
     mutationFn: () =>
@@ -675,55 +689,159 @@ function EditDomainForm({ domain, onDone }: { domain: DomainInfo; onDone: () => 
         id: domain.id,
         accessTtlSeconds: access ?? 0,
         refreshTtlSeconds: refresh ?? 0,
+        scope: scope.trim(),
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: OAUTH_DOMAINS_KEY })
-      addToast({ level: 'warn', text: `Updated ${domain.domain}.` })
+      void queryClient.invalidateQueries({ queryKey: OAUTH_CONNECTIONS_KEY })
+      const msg =
+        result.revoked_tokens && result.revoked_tokens > 0
+          ? `Updated ${domain.domain} — ${result.revoked_tokens} token(s) revoked.`
+          : `Updated ${domain.domain}.`
+      addToast({ level: 'warn', text: msg })
       onDone()
     },
     onError: (e) =>
       addToast({ level: 'warn', text: e instanceof Error ? e.message : 'Update failed.' }),
   })
 
+  const handleSubmit = () => {
+    if (!valid) return
+    if (scopeChanged) {
+      setShowScopeModal(true)
+    } else {
+      save.mutate()
+    }
+  }
+
   return (
-    <form
-      className={styles.domainForm}
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (valid) save.mutate()
-      }}
-    >
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Access TTL (s)</span>
-        <input
-          className={styles.ttlInput}
-          value={accessTtl}
-          placeholder="0 = default"
-          onChange={(e) => setAccessTtl(e.target.value)}
-          data-testid={`domain-edit-access-ttl-${domain.domain}`}
-          aria-invalid={access === null}
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Refresh TTL (s)</span>
-        <input
-          className={styles.ttlInput}
-          value={refreshTtl}
-          placeholder="0 = default"
-          onChange={(e) => setRefreshTtl(e.target.value)}
-          data-testid={`domain-edit-refresh-ttl-${domain.domain}`}
-          aria-invalid={refresh === null}
-        />
-      </label>
-      <button
-        type="submit"
-        className={styles.issue}
-        disabled={!valid || save.isPending}
-        data-testid={`domain-edit-save-${domain.domain}`}
+    <>
+      <form
+        className={styles.domainForm}
+        onSubmit={(e) => {
+          e.preventDefault()
+          handleSubmit()
+        }}
       >
-        {save.isPending ? 'Saving…' : 'Save'}
-      </button>
-    </form>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Scope</span>
+          <ScopeInput
+            className={styles.domainInput}
+            value={scope}
+            onChange={setScope}
+            placeholder="* (all access)"
+            data-testid={`domain-edit-scope-${domain.domain}`}
+          />
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Access TTL (s)</span>
+          <input
+            className={styles.ttlInput}
+            value={accessTtl}
+            placeholder="0 = default"
+            onChange={(e) => setAccessTtl(e.target.value)}
+            data-testid={`domain-edit-access-ttl-${domain.domain}`}
+            aria-invalid={access === null}
+          />
+        </label>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Refresh TTL (s)</span>
+          <input
+            className={styles.ttlInput}
+            value={refreshTtl}
+            placeholder="0 = default"
+            onChange={(e) => setRefreshTtl(e.target.value)}
+            data-testid={`domain-edit-refresh-ttl-${domain.domain}`}
+            aria-invalid={refresh === null}
+          />
+        </label>
+        <button
+          type="submit"
+          className={styles.issue}
+          disabled={!valid || save.isPending}
+          data-testid={`domain-edit-save-${domain.domain}`}
+        >
+          {save.isPending ? 'Saving…' : 'Save'}
+        </button>
+      </form>
+      <ScopeChangeModal
+        open={showScopeModal}
+        domain={domain.domain}
+        oldScope={domain.scope || '*'}
+        newScope={scope.trim()}
+        pending={save.isPending}
+        onCancel={() => {
+          setShowScopeModal(false)
+          setScope(domain.scope || '*')
+        }}
+        onConfirm={() => {
+          setShowScopeModal(false)
+          save.mutate()
+        }}
+      />
+    </>
+  )
+}
+
+function ScopeChangeModal({
+  open,
+  domain,
+  oldScope,
+  newScope,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean
+  domain: string
+  oldScope: string
+  newScope: string
+  pending: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  if (!open) return null
+  return (
+    <div className={dialogStyles.overlay} onClick={onCancel}>
+      <div
+        className={dialogStyles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Scope change confirmation"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="scope-change-modal"
+      >
+        <h2 className={dialogStyles.title}>
+          Scope Change &mdash; Token Revocation Required
+        </h2>
+        <div className={dialogStyles.message}>
+          Changing the scope for <strong>{domain}</strong> from{' '}
+          <code>{oldScope}</code> to <code>{newScope}</code> will revoke all
+          currently active tokens issued to this domain.
+          <br />
+          <br />
+          Clients connecting from this domain will need to re-authenticate to
+          receive new tokens with the updated scope.
+        </div>
+        <div className={dialogStyles.actions}>
+          <button
+            className={dialogStyles.cancel}
+            onClick={onCancel}
+            data-testid="scope-change-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            className={dialogStyles.danger}
+            onClick={onConfirm}
+            disabled={pending}
+            data-testid="scope-change-confirm"
+          >
+            {pending ? 'Revoking…' : 'Revoke and Update'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

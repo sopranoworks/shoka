@@ -14,11 +14,16 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
-  // 'list' for the live log + the failure-evidence archiver (directive §2.5): on ANY
-  // failure it copies the complete failing moment (trace/video/screenshot + replay inputs)
-  // OUT to a non-wiped per-run archive before the next run clears test-results — so a flake
-  // that fires on run 7 or run 700 is always fully reconstructable afterward.
-  reporter: [['list'], ['./tests/e2e/failure-archiver.ts']],
+  reporter: (() => {
+    const r: import('@playwright/test').ReporterDescription[] = [
+      ['list'],
+      ['./tests/e2e/failure-archiver.ts'],
+    ]
+    if (process.env.PLAYWRIGHT_JSON_OUTPUT_FILE) {
+      r.push(['json', { outputFile: process.env.PLAYWRIGHT_JSON_OUTPUT_FILE }])
+    }
+    return r
+  })(),
   globalSetup: './tests/e2e/global-setup.ts',
   use: {
     baseURL: `http://localhost:${PORT}`,

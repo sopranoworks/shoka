@@ -12,12 +12,12 @@ import styles from './SettingsItemList.module.css'
 export function SettingsItemList() {
   const isSuperUser = useIsSuperUser()
   const managesAnyNamespace = useManagesAnyNamespace()
-  const { extraSettingsItems } = useCoreScreens()
+  const { extraSettingsItems, hiddenSettingsItemIds } = useCoreScreens()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const selected = useRouterState({
     select: (s) => (s.location.search as { item?: string }).item,
   })
-  const items = visibleSettingsItems({ isSuperUser, managesAnyNamespace }, extraSettingsItems)
+  const items = visibleSettingsItems({ isSuperUser, managesAnyNamespace }, extraSettingsItems, hiddenSettingsItemIds)
   const proj = pathname.match(/^\/p\/([^/]+)\/([^/]+)/)
 
   return (

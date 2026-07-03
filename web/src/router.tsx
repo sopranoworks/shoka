@@ -86,9 +86,19 @@ const projectRoute = createRoute({
 
 // "/p/$namespace/$project/blob/$" file view (splat captures the rest as path).
 // Viewing is the primary surface; the edit route below is the session-3 editor.
+// The optional ?highlight= search triggers the in-view find bar with the given
+// query (used by the sidebar search → click-to-view flow).
+interface BlobSearch {
+  highlight?: string
+}
+
 const blobRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/p/$namespace/$project/blob/$',
+  validateSearch: (search: Record<string, unknown>): BlobSearch => {
+    const h = typeof search.highlight === 'string' && search.highlight ? search.highlight : undefined
+    return h ? { highlight: h } : {}
+  },
   component: BlobPage,
 })
 
@@ -255,6 +265,7 @@ export {
   searchRoute,
   newFileRoute,
   connectionsRoute,
+  type BlobSearch,
   type IndexSearch,
   type SearchSearch,
   type HistorySearch,

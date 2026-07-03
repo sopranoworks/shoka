@@ -188,7 +188,7 @@ test('context menu → Rename… enters inline edit and commits a move', async (
   await row.click({ button: 'right' })
   await page.getByRole('menu').getByRole('button', { name: 'Rename…' }).click()
 
-  const input = sidebar.locator('input')
+  const input = sidebar.locator('input:not([type="search"])')
   await expect(input).toBeVisible()
   await input.fill('inline-renamed.md')
   await input.press('Enter')

@@ -1,8 +1,9 @@
-import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
-import { useParams, useElementScrollRestoration } from '@tanstack/react-router'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useParams, useSearch, useElementScrollRestoration } from '@tanstack/react-router'
 import { useFileQuery, useTreeQuery } from '../lib/queries'
 import { classifyFile, isHighlightableCode } from '../lib/fileKind'
 import { Markdown } from '../components/Markdown'
+import { FileSearchBar } from '../components/FileSearchBar'
 import { useContentConfig } from '../lib/contentConfig'
 import type { FileNode } from '../lib/types'
 import styles from './FilePage.module.css'
@@ -26,6 +27,53 @@ function formatDate(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+function CopyPathButton({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const handleCopy = () => {
+    navigator.clipboard?.writeText(path).catch(() => {})
+    setCopied(true)
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setCopied(false), 1500)
+  }
+
+  useEffect(() => () => clearTimeout(timerRef.current), [])
+
+  return (
+    <button
+      className={styles.copyBtn}
+      onClick={handleCopy}
+      title={copied ? 'Copied!' : 'Copy file path'}
+      aria-label="Copy file path"
+      data-testid="copy-path-button"
+    >
+      {copied ? (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path
+            d="M3 8.5l3 3 7-7"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect
+            x="5" y="5" width="8" height="8" rx="1"
+            stroke="currentColor" strokeWidth="1.3"
+          />
+          <path
+            d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5"
+            stroke="currentColor" strokeWidth="1.3"
+          />
+        </svg>
+      )}
+    </button>
+  )
+}
+
 export function BlobPage() {
   const { namespace, project, _splat } = useParams({ strict: false }) as {
     namespace: string
@@ -33,6 +81,10 @@ export function BlobPage() {
     _splat?: string
   }
   const path = _splat ?? ''
+  const search = useSearch({ strict: false }) as Record<string, unknown>
+  const highlight =
+    typeof search.highlight === 'string' ? search.highlight : undefined
+
   const { data, isError } = useFileQuery(namespace, project, path)
   const { data: tree } = useTreeQuery(namespace, project)
   const { renderEditButton } = useContentConfig()
@@ -52,21 +104,77 @@ export function BlobPage() {
     }
   }, [data, scrollEntry])
 
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+
+  useEffect(() => {
+    if (highlight) {
+      setSearchOpen(true)
+      setSearchQuery(highlight)
+    }
+  }, [highlight])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [])
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    if (highlight) {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('highlight')
+      window.history.replaceState({}, '', url.toString())
+    }
+  }, [highlight])
+
   const kind = data ? classifyFile(path, data.content) : null
 
   return (
     <div className={styles.page}>
       <div className={styles.toolbar}>
-        <span className={styles.filePath} title={path}>
-          {path}
-        </span>
-        {modifiedAt && (
-          <span className={styles.fileDate} title={modifiedAt}>
-            {formatDate(modifiedAt)}
+        <div className={styles.toolbarLeft}>
+          <span className={styles.filePath} title={path}>
+            {path}
           </span>
-        )}
-        {!isError && renderEditButton && renderEditButton(namespace, project, path, styles)}
+          <CopyPathButton path={path} />
+        </div>
+        <div className={styles.toolbarRight}>
+          {modifiedAt && (
+            <span className={styles.fileDate} title={modifiedAt}>
+              {formatDate(modifiedAt)}
+            </span>
+          )}
+          <button
+            className={styles.searchToggle}
+            onClick={() => setSearchOpen((v) => !v)}
+            title="Find in file (Ctrl+F)"
+            aria-label="Toggle file search"
+            data-active={searchOpen}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M10.5 10.5l3 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            </svg>
+          </button>
+          {!isError && renderEditButton && renderEditButton(namespace, project, path, styles)}
+        </div>
       </div>
+
+      {searchOpen && data && (
+        <FileSearchBar
+          containerRef={bodyRef}
+          initialQuery={searchQuery}
+          contentKey={data.content}
+          onClose={closeSearch}
+        />
+      )}
 
       <div
         ref={bodyRef}

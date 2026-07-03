@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 test.describe('OAuth scope autocomplete and validation', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/settings?item=oauth')
-    await expect(page.getByText('connector.example.com')).toBeVisible()
+    await expect(page.getByText('OAuth connections')).toBeVisible()
   })
 
   test('autocomplete: type namespace prefix, select namespace, project, then level', async ({ page }) => {

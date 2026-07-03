@@ -2,6 +2,7 @@ import { createContext, useContext, type ReactNode } from 'react'
 import type { TreeNode } from './types'
 
 export interface ContentConfig {
+  renderProjectExtra?: (ns: string, proj: string) => ReactNode
   renderEditButton?: (ns: string, proj: string, path: string, styles: Record<string, string>) => ReactNode
   renderNewFileLink?: (ns: string, proj: string, styles: Record<string, string>) => ReactNode
   renderNewFileButton?: (ns: string, proj: string, launchDir: string) => ReactNode

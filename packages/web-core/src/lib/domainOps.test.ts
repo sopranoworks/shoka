@@ -54,29 +54,31 @@ describe('listDomains', () => {
 })
 
 describe('createDomain', () => {
-  it('sends the domain + TTLs (defaulting omitted TTLs to 0); no consent is sent', async () => {
+  it('sends the domain + TTLs + scope (defaulting omitted TTLs to 0, scope to *)', async () => {
     requestFrame.mockResolvedValue({
       type: 'DOMAIN_CREATE',
-      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 0, refresh_ttl_seconds: 0, consent: '' },
+      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 0, refresh_ttl_seconds: 0, consent: '', scope: '*' },
     })
     await createDomain({ domain: 'partner.test' })
     expect(requestFrame).toHaveBeenCalledWith('DOMAIN_CREATE', {
       domain: 'partner.test',
       access_ttl_seconds: 0,
       refresh_ttl_seconds: 0,
+      scope: '*',
     })
   })
 
-  it('forwards explicit TTLs', async () => {
+  it('forwards explicit TTLs and scope', async () => {
     requestFrame.mockResolvedValue({
       type: 'DOMAIN_CREATE',
-      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 60, refresh_ttl_seconds: 120, consent: '' },
+      payload: { id: 'd1', domain: 'partner.test', access_ttl_seconds: 60, refresh_ttl_seconds: 120, consent: '', scope: 'myns:myproj:rw' },
     })
-    await createDomain({ domain: 'partner.test', accessTtlSeconds: 60, refreshTtlSeconds: 120 })
+    await createDomain({ domain: 'partner.test', accessTtlSeconds: 60, refreshTtlSeconds: 120, scope: 'myns:myproj:rw' })
     expect(requestFrame).toHaveBeenCalledWith('DOMAIN_CREATE', {
       domain: 'partner.test',
       access_ttl_seconds: 60,
       refresh_ttl_seconds: 120,
+      scope: 'myns:myproj:rw',
     })
   })
 
@@ -89,14 +91,15 @@ describe('createDomain', () => {
   })
 })
 
-describe('updateDomain — TTL only (consent is managed by generate)', () => {
-  it('sends only the TTLs', async () => {
+describe('updateDomain — TTL + scope (consent is managed by generate)', () => {
+  it('sends TTLs and scope', async () => {
     requestFrame.mockResolvedValue({ type: 'DOMAIN_UPDATE', payload: { id: 'd1' } })
-    await updateDomain({ id: 'd1', accessTtlSeconds: 7200, refreshTtlSeconds: 86400 })
+    await updateDomain({ id: 'd1', accessTtlSeconds: 7200, refreshTtlSeconds: 86400, scope: '*' })
     expect(requestFrame).toHaveBeenCalledWith('DOMAIN_UPDATE', {
       id: 'd1',
       access_ttl_seconds: 7200,
       refresh_ttl_seconds: 86400,
+      scope: '*',
     })
   })
 
@@ -106,7 +109,7 @@ describe('updateDomain — TTL only (consent is managed by generate)', () => {
       payload: { reason: 'forbidden', message: 'admin only' },
     })
     await expect(
-      updateDomain({ id: 'd1', accessTtlSeconds: 0, refreshTtlSeconds: 0 }),
+      updateDomain({ id: 'd1', accessTtlSeconds: 0, refreshTtlSeconds: 0, scope: '*' }),
     ).rejects.toBeInstanceOf(OAuthDeniedError)
   })
 })

@@ -1,16 +1,14 @@
 import { useState } from 'react'
-import { login, loginPasskey, isPasskeyCapable } from '@shoka/web-core'
+import { login, loginPasskey, isPasskeyCapable } from '../lib/authClient'
 import { RedeemInvite } from './RedeemInvite'
 import styles from './AuthScreen.module.css'
 
-// LoginScreen authenticates an existing user (B-28 stage 1). A passkey is offered
-// as the primary, passwordless factor where the origin supports WebAuthn; password
-// (+ TOTP when enrolled) is the universal floor that works on every origin —
-// including a bare internal IP where passkeys cannot run.
 export function LoginScreen({
+  appName,
   passkeyEnabled,
   onDone,
 }: {
+  appName: string
   passkeyEnabled: boolean
   onDone: () => void
 }) {
@@ -63,7 +61,7 @@ export function LoginScreen({
   return (
     <div className={styles.backdrop}>
       <form className={styles.card} onSubmit={submitPassword} aria-label="Sign in">
-        <h1 className={styles.title}>Sign in to Shoka</h1>
+        <h1 className={styles.title}>Sign in to {appName}</h1>
         <p className={styles.subtitle}>Authenticate to continue to your projects.</p>
         {error && <div className={styles.error}>{error}</div>}
         <div className={styles.field}>
