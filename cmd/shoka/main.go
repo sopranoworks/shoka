@@ -871,6 +871,11 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 	}, tools.LoggedTool(logger, "move_file", tools.MoveFileHandler(s)))
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "copy_file",
+		Description: "Copy a file from one namespace/project to another (or within the same project). Useful for using templates or correcting misplaced writes. Does NOT overwrite — fails if the destination path already exists. Does NOT delete the source (this is copy, not move). No destructive side effects.",
+	}, tools.LoggedTool(logger, "copy_file", tools.CopyFileHandler(s)))
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_files",
 		Description: "List files in a project path; each response includes a modified_at map giving every entry's working-tree modification time (RFC3339 nanosecond UTC)",
 	}, tools.LoggedTool(logger, "list_files", tools.ListFilesHandler(s)))

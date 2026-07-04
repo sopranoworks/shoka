@@ -91,6 +91,7 @@ var toolLevels = map[string]authz.Level{
 	"patch_file":     authz.LevelWrite,
 	"append_to_file": authz.LevelWrite,
 	"move_file":      authz.LevelWrite,
+	"copy_file":      authz.LevelWrite,
 	"delete_file":    authz.LevelWrite,
 	// admin
 	"recover_project": authz.LevelAdmin,
