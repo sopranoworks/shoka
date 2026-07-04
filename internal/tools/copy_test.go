@@ -299,6 +299,58 @@ func TestCopyFileHandler_InsufficientDestinationPermission(t *testing.T) {
 	}
 }
 
+// Concurrency: racing a write_file and copy_file to the same destination must not
+// result in silent overwrite — one succeeds and one fails.
+func TestCopyFileHandler_ConcurrentDestinationRace(t *testing.T) {
+	s := newCopyStorage(t)
+	if err := s.CreateProject("ns", "src"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateProject("ns", "dst"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(context.Background(), "", "ns", "src", "race.md", "source content\n", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.WaitForWAL(10 * time.Second)
+
+	h := CopyFileHandler(s)
+
+	// Simulate: a concurrent writer creates the destination AFTER the handler's
+	// fast-path check passes. We do this by writing directly before calling the
+	// handler (the handler's Write will still try with ifMatch=etagAbsent and
+	// detect the file now exists).
+	if _, err := s.Write(context.Background(), "", "ns", "dst", "race.md", "concurrent writer\n", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.WaitForWAL(10 * time.Second)
+
+	// The handler should detect the conflict and refuse the copy.
+	res, _, err := h(context.Background(), nil, CopyFileInput{
+		SourceNamespace:   "ns",
+		SourceProjectName: "src",
+		SourcePath:        "race.md",
+		Namespace:         "ns",
+		ProjectName:       "dst",
+		Path:              "race.md",
+	})
+	if err != nil {
+		t.Fatalf("handler err: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatal("expected error when destination was concurrently created")
+	}
+
+	// Verify the concurrent writer's content is preserved (not overwritten).
+	content, _, rerr := s.ReadFileWithETag("ns", "dst", "race.md")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if content != "concurrent writer\n" {
+		t.Errorf("concurrent writer's content was overwritten: got %q", content)
+	}
+}
+
 // 9. Copy preserves content exactly (byte-identical)
 func TestCopyFileHandler_PreservesContentExactly(t *testing.T) {
 	s := newCopyStorage(t)

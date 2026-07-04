@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -13,6 +16,14 @@ import (
 	"github.com/sopranoworks/shoka/pkg/auth"
 	"github.com/sopranoworks/shoka/pkg/authz"
 )
+
+// etagAbsent is the SHA-256 of nil/empty bytes — the etag that writeTransformed
+// computes when os.ReadFile returns os.ErrNotExist (current = nil). Passing it as
+// ifMatch atomically asserts the destination does not exist inside the per-file lock.
+var etagAbsent = func() string {
+	sum := sha256.Sum256(nil)
+	return hex.EncodeToString(sum[:])
+}()
 
 type CopyFileInput struct {
 	SourceNamespace   string `json:"source_namespace" jsonschema:"required, the source namespace"`
@@ -76,26 +87,38 @@ func CopyFileHandler(s storage.StorageService) func(context.Context, *mcp.CallTo
 			destPath = path.Base(input.SourcePath)
 		}
 
-		// Check destination does not already exist.
+		// Fast-path existence check (outside the lock — cheap rejection when
+		// the destination already exists without needing to read the source first
+		// on the slow path). The authoritative guard is the ifMatch=etagAbsent
+		// passed to Write below, which atomically asserts absence inside the
+		// per-file lock, closing the TOCTOU window.
 		if _, _, rerr := s.ReadFileWithETag(input.Namespace, input.ProjectName, destPath); rerr == nil {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("destination file already exists: %s", destPath)}},
 				IsError: true,
 			}, CopyFileOutput{}, nil
 		} else if !strings.Contains(rerr.Error(), "no such file") && !strings.Contains(rerr.Error(), "not exist") {
-			// If the error is something other than "not found", it's a real problem
-			// (e.g. project not found, dangerous state). Surface it.
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to check destination: %v", rerr)}},
 				IsError: true,
 			}, CopyFileOutput{}, nil
 		}
 
-		// Write to destination.
+		// Write to destination with ifMatch=etagAbsent: inside the per-file lock
+		// this asserts the file still does not exist (sha256 of nil bytes). A
+		// concurrent writer that lands between our check above and the lock
+		// acquisition triggers a VersionConflictError — no silent overwrite.
 		ctx = withWriteIdentity(ctx, req)
 		ctx = notify.WithSender(ctx, mcpSender(req))
-		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, destPath, content, nil)
+		etag, err := s.Write(ctx, "", input.Namespace, input.ProjectName, destPath, content, &etagAbsent)
 		if err != nil {
+			var conflict *storage.VersionConflictError
+			if errors.As(err, &conflict) {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("destination file already exists: %s", destPath)}},
+					IsError: true,
+				}, CopyFileOutput{}, nil
+			}
 			if text, _, reason, ok := classifyWriteErr(err); ok {
 				return &mcp.CallToolResult{
 					Content: []mcp.Content{&mcp.TextContent{Text: text}},
