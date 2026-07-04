@@ -41,12 +41,11 @@ RestartSec=5
 # DO NOT lower this below ~40s.
 TimeoutStopSec=45
 
-# --- Optional hardening: uncomment after confirming paths/permissions ---
-# NoNewPrivileges=true
-# ProtectSystem=strict
-# ProtectHome=true
-# PrivateTmp=true
-# ReadWritePaths=/var/lib/shoka
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/shoka
 
 [Install]
 WantedBy=multi-user.target

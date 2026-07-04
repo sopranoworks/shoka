@@ -50,7 +50,8 @@ RestartSec=5
 # DO NOT lower this below ~40s.
 TimeoutStopSec=45
 
-# --- Optional hardening: uncomment after confirming paths/permissions ---
+# Hardening — safe for Shoka (single-process, writes only to /var/lib/shoka).
+# Uncomment after confirming paths/permissions for your deployment.
 # NoNewPrivileges=true
 # ProtectSystem=strict
 # ProtectHome=true

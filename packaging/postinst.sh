@@ -21,6 +21,13 @@ case "$1" in
       chmod 0750 /var/lib/shoka || true
     fi
 
+    # Config may contain bearer tokens, webhook secrets, TOTP encryption
+    # keys — restrict to root (write) + service account (read).
+    if [ -f /etc/shoka/shoka.yaml ]; then
+      chown root:shoka /etc/shoka/shoka.yaml || true
+      chmod 0640 /etc/shoka/shoka.yaml || true
+    fi
+
     if [ -d /run/systemd/system ]; then
       systemctl daemon-reload || true
     fi
