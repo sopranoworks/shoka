@@ -32,3 +32,13 @@ test('Librarian status renders and Refresh re-checks (unconfigured server)', asy
   await reload.click()
   await expect(page.getByTestId('librarian-kind')).toHaveText('Not configured')
 })
+
+test('Classifier section shows "Not configured" when classifier is disabled', async ({ page }) => {
+  await page.goto('/settings?item=librarian')
+  await expect(page.getByRole('heading', { name: 'Librarian' })).toBeVisible()
+
+  // The classifier section should be present and show "Not configured".
+  const section = page.getByTestId('classifier-section')
+  await expect(section).toBeVisible()
+  await expect(page.getByTestId('classifier-status')).toHaveText('Not configured')
+})

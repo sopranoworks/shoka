@@ -1,5 +1,16 @@
 import { wsClient } from './wsClient'
 
+// ClassifierStatus is the vector index / embedding classifier health.
+export interface ClassifierStatus {
+  enabled: boolean
+  provider?: string
+  model?: string
+  baseUrl?: string
+  dbPath?: string
+  projectCount: number
+  error?: string
+}
+
 // LibrarianStatus is the ask_the_librarian health snapshot (B-73). It carries
 // only config validity — provider, model, a kind/detail — NEVER the API key.
 export interface LibrarianStatus {
@@ -11,6 +22,7 @@ export interface LibrarianStatus {
   kind: string
   detail?: string
   checkedAt?: string
+  classifier?: ClassifierStatus
 }
 
 // librarianStatus reads the cached snapshot (a cheap read; does NOT make an LLM

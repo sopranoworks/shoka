@@ -92,6 +92,58 @@ export function LibrarianStatusPage() {
         </div>
       )}
 
+      {s?.classifier && (
+        <>
+          <h2 className={styles.title} style={{ marginTop: '1.5rem' }}>Classifier</h2>
+          <div className={styles.card} data-testid="classifier-section">
+            <div className={styles.row}>
+              <span className={styles.label}>Status</span>
+              <span className={s.classifier.enabled ? styles.ok : styles.bad} data-testid="classifier-status">
+                {s.classifier.enabled
+                  ? (s.classifier.error ? 'Error ✗' : 'Active ✓')
+                  : 'Not configured'}
+              </span>
+            </div>
+            {s.classifier.enabled && s.classifier.provider && (
+              <div className={styles.row}>
+                <span className={styles.label}>Provider</span>
+                <span>{s.classifier.provider}</span>
+              </div>
+            )}
+            {s.classifier.enabled && s.classifier.model && (
+              <div className={styles.row}>
+                <span className={styles.label}>Embedding Model</span>
+                <span data-testid="classifier-model">{s.classifier.model}</span>
+              </div>
+            )}
+            {s.classifier.enabled && s.classifier.baseUrl && (
+              <div className={styles.row}>
+                <span className={styles.label}>Base URL</span>
+                <span>{s.classifier.baseUrl}</span>
+              </div>
+            )}
+            {s.classifier.enabled && s.classifier.dbPath && (
+              <div className={styles.row}>
+                <span className={styles.label}>DB Path</span>
+                <span>{s.classifier.dbPath}</span>
+              </div>
+            )}
+            {s.classifier.enabled && !s.classifier.error && (
+              <div className={styles.row}>
+                <span className={styles.label}>Vector Indices</span>
+                <span>{s.classifier.projectCount} project{s.classifier.projectCount !== 1 ? 's' : ''} indexed</span>
+              </div>
+            )}
+            {s.classifier.error && (
+              <div className={styles.row}>
+                <span className={styles.label}>Error</span>
+                <span className={styles.bad}>{s.classifier.error}</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       <div className={styles.actions}>
         <button
           className={styles.refresh}

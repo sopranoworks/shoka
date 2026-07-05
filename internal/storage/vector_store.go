@@ -210,6 +210,15 @@ func (s *FSGitStorage) VectorCounters() (enqueued, dropped, embedded, failedEmbe
 // VectorSweepRuns returns the number of vector reconcile passes.
 func (s *FSGitStorage) VectorSweepRuns() int64 { return s.vecSweepRuns.Load() }
 
+// VectorProjectCount returns the number of projects that currently have an open
+// or openable vector index (used by the UI status display).
+func (s *FSGitStorage) VectorProjectCount() int {
+	s.vecStoreMu.Lock()
+	n := len(s.vecStores)
+	s.vecStoreMu.Unlock()
+	return n
+}
+
 // vectorEmbed calls the configured embedder and stores the result. Called by
 // the background worker. Returns the dimensions (for lazy resolution).
 func (s *FSGitStorage) vectorEmbed(ctx context.Context, namespace, projectName, rel string, content []byte) (int, error) {

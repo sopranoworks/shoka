@@ -20,6 +20,20 @@ type Snapshot struct {
 	Kind       string `json:"kind"`                // "ready"/"model_not_found"/… or "unconfigured" / "unknown"
 	Detail     string `json:"detail,omitempty"`    // short, secret-free explanation
 	CheckedAt  string `json:"checkedAt,omitempty"` // RFC3339 UTC of the last check, "" if never run
+
+	// Classifier fields — populated when the classifier is wired.
+	Classifier *ClassifierStatus `json:"classifier,omitempty"`
+}
+
+// ClassifierStatus is the JSON-safe view of classifier health for the WebUI.
+type ClassifierStatus struct {
+	Enabled      bool   `json:"enabled"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	BaseURL      string `json:"baseUrl,omitempty"`
+	DBPath       string `json:"dbPath,omitempty"`
+	ProjectCount int    `json:"projectCount"` // projects with vector indices
+	Error        string `json:"error,omitempty"`
 }
 
 // Checker runs and caches the librarian health-check. It is safe for concurrent

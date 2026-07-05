@@ -590,6 +590,24 @@ func main() {
 		}))
 	}
 
+	// Classifier status for the Settings → Librarian UI. Reads config and counts
+	// projects with open vector stores. The closure captures cfg (read-only after
+	// startup) and s (thread-safe).
+	uim.SetClassifierStatus(func() *libstatus.ClassifierStatus {
+		cc := cfg.Librarian.Classifier
+		if !cc.Enabled {
+			return &libstatus.ClassifierStatus{Enabled: false}
+		}
+		return &libstatus.ClassifierStatus{
+			Enabled:      true,
+			Provider:     cc.ResolvedProvider(cfg.Librarian.Provider),
+			Model:        cc.EmbeddingModel,
+			BaseURL:      cc.ResolvedBaseURL(cfg.Librarian.BaseURL),
+			DBPath:       cc.DBPath,
+			ProjectCount: s.VectorProjectCount(),
+		}
+	})
+
 	// WebUI multi-user login (B-28 stage 1): a server-level user/session store
 	// (go-git-free bbolt sibling of oauth.db) backing the /auth/* login surface. It
 	// is INDEPENDENT of the OAuth MCP transport — login works whether or not OAuth is

@@ -268,6 +268,9 @@ type Manager struct {
 	// cannot be added live, so a reload cannot enable a never-configured librarian).
 	// Wired at cmd/shoka so internal/config never crosses into internal/ui.
 	librarianReload  func(context.Context) libstatus.Snapshot
+	// classifierStatusFn returns the current classifier status for the UI. nil when
+	// the classifier was never configured. Wired at cmd/shoka.
+	classifierStatusFn func() *libstatus.ClassifierStatus
 	networkInfoProvider func() []NetworkElement
 	originChecker    func(*http.Request) bool
 	upgrader        websocket.Upgrader
@@ -839,6 +842,11 @@ func (m *Manager) SetLibrarianReloader(f func(context.Context) libstatus.Snapsho
 	m.librarianReload = f
 }
 
+// SetClassifierStatus wires the classifier status provider for the Settings UI.
+func (m *Manager) SetClassifierStatus(f func() *libstatus.ClassifierStatus) {
+	m.classifierStatusFn = f
+}
+
 // SetNetworkInfoProvider wires the server network endpoint provider. Called once
 // at startup from cmd/shoka with a closure that returns the server's listener
 // entries. Consumers (GitYard) supply their own provider that includes SSH/git entries.
@@ -865,25 +873,40 @@ func (m *Manager) handleServerNetworkInfo(client *uiws.Client) {
 // (tiny) API call per invocation — never the API key.
 func (m *Manager) handleReloadLibrarianConfig(client *uiws.Client) {
 	if m.librarianReload == nil {
-		client.SendResponse(MsgLibrarianStatus, libstatus.Snapshot{
+		snap := libstatus.Snapshot{
 			Kind:   "unconfigured",
 			Detail: "the librarian was not configured at startup; add an llm block and restart to enable it",
-		})
+		}
+		snap.Classifier = m.classifierStatus()
+		client.SendResponse(MsgLibrarianStatus, snap)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	client.SendResponse(MsgLibrarianStatus, m.librarianReload(ctx))
+	snap := m.librarianReload(ctx)
+	snap.Classifier = m.classifierStatus()
+	client.SendResponse(MsgLibrarianStatus, snap)
 }
 
 // handleLibrarianStatus returns the cached librarian health snapshot — a cheap
 // read, NOT a fresh API call (the WebUI shows the last cached result on load).
 func (m *Manager) handleLibrarianStatus(client *uiws.Client) {
 	if m.librarianStatus == nil {
-		client.SendResponse(MsgLibrarianStatus, libstatus.Snapshot{Kind: "unconfigured"})
+		snap := libstatus.Snapshot{Kind: "unconfigured"}
+		snap.Classifier = m.classifierStatus()
+		client.SendResponse(MsgLibrarianStatus, snap)
 		return
 	}
-	client.SendResponse(MsgLibrarianStatus, m.librarianStatus.Get())
+	snap := m.librarianStatus.Get()
+	snap.Classifier = m.classifierStatus()
+	client.SendResponse(MsgLibrarianStatus, snap)
+}
+
+func (m *Manager) classifierStatus() *libstatus.ClassifierStatus {
+	if m.classifierStatusFn == nil {
+		return nil
+	}
+	return m.classifierStatusFn()
 }
 
 // handleRefreshLibrarianStatus re-runs the one-call health-check on demand (the
@@ -891,12 +914,16 @@ func (m *Manager) handleLibrarianStatus(client *uiws.Client) {
 // call per click — never the API key.
 func (m *Manager) handleRefreshLibrarianStatus(client *uiws.Client) {
 	if m.librarianStatus == nil {
-		client.SendResponse(MsgLibrarianStatus, libstatus.Snapshot{Kind: "unconfigured"})
+		snap := libstatus.Snapshot{Kind: "unconfigured"}
+		snap.Classifier = m.classifierStatus()
+		client.SendResponse(MsgLibrarianStatus, snap)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	client.SendResponse(MsgLibrarianStatus, m.librarianStatus.Refresh(ctx))
+	snap := m.librarianStatus.Refresh(ctx)
+	snap.Classifier = m.classifierStatus()
+	client.SendResponse(MsgLibrarianStatus, snap)
 }
 
 // filterHealthByAdminScope narrows a health report to what the principal may see: a
