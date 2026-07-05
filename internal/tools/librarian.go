@@ -12,6 +12,21 @@ import (
 	"github.com/sopranoworks/shoka/pkg/librarian"
 )
 
+// classifierEmbedAdapter adapts librarian.Classifier to librariansrc.ChunkEmbedder.
+type classifierEmbedAdapter struct {
+	c librarian.Classifier
+}
+
+func (a classifierEmbedAdapter) EmbedText(ctx context.Context, text string) ([]float64, error) {
+	vec, err := a.c.Embed(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	return vec.Values, nil
+}
+
+var _ librariansrc.ChunkEmbedder = classifierEmbedAdapter{}
+
 // librarianIgnore is the visible-surface ignore set the librarian is given for a
 // Shoka project, on top of the guard's always-on ".git/". It hides Shoka's own
 // dotfiles (e.g. ".shoka.disposable") so the librarian's view matches Shoka's
@@ -77,6 +92,9 @@ func AskTheLibrarianHandler(s *storage.FSGitStorage, lib *librarian.Librarian) f
 			WithLogger(s.Logger())
 		if s.VectorConfigured() {
 			corpus.WithVectorSearch(s)
+		}
+		if cl := lib.Classifier(); cl != nil {
+			corpus.WithChunkFilter(classifierEmbedAdapter{cl}, question)
 		}
 		res, err := lib.Ask(ctx, librarian.Request{
 			Question:       question,

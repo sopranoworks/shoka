@@ -37,6 +37,8 @@ type VectorSearcher interface {
 type Corpus struct {
 	store     Store
 	vec       VectorSearcher // nil when classifier not configured
+	embedder  ChunkEmbedder  // nil when chunk filtering not available
+	query     string         // question for chunk similarity filtering
 	namespace string
 	project   string
 	logger    *slog.Logger
@@ -51,6 +53,15 @@ func NewCorpus(store Store, namespace, project string) *Corpus {
 // Search runs fulltext and vector in parallel, merging results.
 func (c *Corpus) WithVectorSearch(v VectorSearcher) *Corpus {
 	c.vec = v
+	return c
+}
+
+// WithChunkFilter attaches a chunk embedder and query for post-read
+// similarity filtering. When set, full-file reads split into chunks, embed
+// each against the query, and pass only relevant chunks to the LLM.
+func (c *Corpus) WithChunkFilter(embedder ChunkEmbedder, query string) *Corpus {
+	c.embedder = embedder
+	c.query = query
 	return c
 }
 
@@ -189,11 +200,28 @@ func (c *Corpus) fulltextSearch(query string, limit int) ([]librarian.Hit, error
 // file is loaded by storage (as any read does), but ONLY the bounded span is
 // returned, so a huge file never enters the librarian's context — the B-73
 // guarantee (design report §1.3). limit <= 0 means to end.
-func (c *Corpus) Read(_ context.Context, path string, offset, limit int) ([]byte, error) {
+//
+// When a ChunkEmbedder is configured and this is a full-file read (offset <= 0,
+// limit <= 0), the content is split into chunks, each embedded against the
+// query, and only chunks above the similarity threshold are returned. Ranged
+// reads skip chunk filtering — the LLM already targeted a specific section.
+func (c *Corpus) Read(ctx context.Context, path string, offset, limit int) ([]byte, error) {
 	content, err := c.store.ReadFile(c.namespace, c.project, path)
 	if err != nil {
 		return nil, err
 	}
+
+	if c.embedder != nil && c.query != "" && offset <= 0 && limit <= 0 {
+		filtered, ferr := chunkFilter(ctx, c.embedder, c.query, content, c.log())
+		if ferr != nil {
+			c.log().Debug("chunk filter failed, using full content",
+				slog.String("path", path),
+				slog.String("error", ferr.Error()))
+		} else {
+			return []byte(filtered), nil
+		}
+	}
+
 	return []byte(librarian.SliceLines(content, offset, limit)), nil
 }
 
