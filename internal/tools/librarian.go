@@ -73,11 +73,15 @@ func AskTheLibrarianHandler(s *storage.FSGitStorage, lib *librarian.Librarian) f
 			question = fmt.Sprintf("Focus on: %s\n\n%s", h, question)
 		}
 
+		corpus := librariansrc.NewCorpus(s, input.Namespace, input.ProjectName)
+		if lib.Classifier() != nil {
+			corpus.WithVectorSearch(s)
+		}
 		res, err := lib.Ask(ctx, librarian.Request{
 			Question:       question,
 			Root:           root,
 			IgnorePatterns: librarianIgnore,
-			Corpus:         librariansrc.NewCorpus(s, input.Namespace, input.ProjectName),
+			Corpus:         corpus,
 		})
 		if err != nil {
 			return errResult(fmt.Sprintf("librarian failed: %v", err))

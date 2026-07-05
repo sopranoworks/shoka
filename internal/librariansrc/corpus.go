@@ -11,6 +11,7 @@ package librariansrc
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sopranoworks/shoka/internal/storage"
@@ -25,9 +26,16 @@ type Store interface {
 	ListFiles(namespace, projectName, path string) ([]string, map[string]time.Time, error)
 }
 
+// VectorSearcher performs vector similarity search for a project.
+// *storage.FSGitStorage satisfies it via VectorSearch.
+type VectorSearcher interface {
+	VectorSearch(ctx context.Context, namespace, projectName, query string, limit int) ([]storage.VectorSearchResult, error)
+}
+
 // Corpus adapts one Shoka project to librarian.Corpus.
 type Corpus struct {
 	store     Store
+	vec       VectorSearcher // nil when classifier not configured
 	namespace string
 	project   string
 }
@@ -37,13 +45,89 @@ func NewCorpus(store Store, namespace, project string) *Corpus {
 	return &Corpus{store: store, namespace: namespace, project: project}
 }
 
+// WithVectorSearch attaches a vector searcher for hybrid search. When set,
+// Search runs fulltext and vector in parallel, merging results.
+func (c *Corpus) WithVectorSearch(v VectorSearcher) *Corpus {
+	c.vec = v
+	return c
+}
+
 var _ librarian.Corpus = (*Corpus)(nil)
 
-// Search runs Shoka's content search (the B-34 bigram index fast-path in
-// SearchFiles) and carries each hit's passage line offset through to the
-// librarian, so the next read can be ranged to the hit instead of pulling the
-// whole file — the granularity fix for the ~368k single-file backlog.
-func (c *Corpus) Search(_ context.Context, query string, limit int) ([]librarian.Hit, error) {
+// Search runs fulltext content search and, when a vector searcher is configured,
+// also runs vector similarity search in parallel. Results are merged (union,
+// deduplicated by path). Vector search failure is non-fatal — falls back to
+// fulltext only.
+func (c *Corpus) Search(ctx context.Context, query string, limit int) ([]librarian.Hit, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	if c.vec == nil {
+		return c.fulltextSearch(query, limit)
+	}
+
+	// Run fulltext and vector search in parallel.
+	type ftResult struct {
+		hits []librarian.Hit
+		err  error
+	}
+	type vecResult struct {
+		results []storage.VectorSearchResult
+		err     error
+	}
+
+	var wg sync.WaitGroup
+	var ft ftResult
+	var vr vecResult
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ft.hits, ft.err = c.fulltextSearch(query, limit)
+	}()
+	go func() {
+		defer wg.Done()
+		vr.results, vr.err = c.vec.VectorSearch(ctx, c.namespace, c.project, query, limit)
+	}()
+	wg.Wait()
+
+	// Fulltext error is fatal (same as before).
+	if ft.err != nil {
+		return nil, ft.err
+	}
+
+	// Vector error is non-fatal — just use fulltext results.
+	if vr.err != nil || len(vr.results) == 0 {
+		return ft.hits, nil
+	}
+
+	// Merge: fulltext hits first (they have snippets/offsets), then add
+	// vector-only hits that weren't in fulltext.
+	seen := make(map[string]bool, len(ft.hits))
+	merged := make([]librarian.Hit, 0, len(ft.hits)+len(vr.results))
+	for _, h := range ft.hits {
+		seen[h.Path] = true
+		merged = append(merged, h)
+	}
+	for _, r := range vr.results {
+		if seen[r.Path] {
+			continue
+		}
+		seen[r.Path] = true
+		merged = append(merged, librarian.Hit{
+			Path:    r.Path,
+			Snippet: "(semantic match)",
+			Offset:  0,
+		})
+	}
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+func (c *Corpus) fulltextSearch(query string, limit int) ([]librarian.Hit, error) {
 	matches, err := c.store.SearchFiles(c.namespace, c.project, query, "content")
 	if err != nil {
 		return nil, err

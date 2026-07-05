@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/sopranoworks/shoka/internal/storage/vectorindex"
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
@@ -244,4 +246,82 @@ func (s *FSGitStorage) vectorEmbed(ctx context.Context, namespace, projectName, 
 	}
 	s.vecEmbedded.Add(1)
 	return vec.Dimensions, nil
+}
+
+// VectorSearchResult is one result from a vector similarity search.
+type VectorSearchResult struct {
+	Path       string
+	Similarity float64
+}
+
+// VectorSearch embeds the query and searches the per-project vector index for
+// the top N most similar files by cosine similarity. Returns nil (not error)
+// when the vector index is not configured or the project has no vector store.
+func (s *FSGitStorage) VectorSearch(ctx context.Context, namespace, projectName, query string, limit int) ([]VectorSearchResult, error) {
+	cfg := s.currentVecConfig()
+	if cfg == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	st := s.vectorForRead(namespace, projectName)
+	if st == nil {
+		return nil, nil
+	}
+
+	queryVec, err := cfg.Embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("vector search embed query: %w", err)
+	}
+
+	keys, kerr := st.Keys()
+	if kerr != nil {
+		return nil, fmt.Errorf("vector search keys: %w", kerr)
+	}
+
+	type scored struct {
+		path string
+		sim  float64
+	}
+	var results []scored
+	for _, k := range keys {
+		vec, found, gerr := st.Get(k)
+		if gerr != nil || !found {
+			continue
+		}
+		sim := cosineSimilarity(queryVec.Values, vec)
+		results = append(results, scored{path: k, sim: sim})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].sim > results[j].sim
+	})
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	out := make([]VectorSearchResult, len(results))
+	for i, r := range results {
+		out[i] = VectorSearchResult{Path: r.path, Similarity: r.sim}
+	}
+	return out, nil
+}
+
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	denom := math.Sqrt(normA) * math.Sqrt(normB)
+	if denom == 0 {
+		return 0
+	}
+	return dot / denom
 }
