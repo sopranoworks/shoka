@@ -73,7 +73,8 @@ func AskTheLibrarianHandler(s *storage.FSGitStorage, lib *librarian.Librarian) f
 			question = fmt.Sprintf("Focus on: %s\n\n%s", h, question)
 		}
 
-		corpus := librariansrc.NewCorpus(s, input.Namespace, input.ProjectName)
+		corpus := librariansrc.NewCorpus(s, input.Namespace, input.ProjectName).
+			WithLogger(s.Logger())
 		if s.VectorConfigured() {
 			corpus.WithVectorSearch(s)
 		}

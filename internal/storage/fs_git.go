@@ -368,12 +368,15 @@ func (s *FSGitStorage) SetChangeHandler(h ChangeHandler) { s.changeHandler = h }
 // SetLogger attaches a structured logger.
 func (s *FSGitStorage) SetLogger(l *slog.Logger) { s.logger = l }
 
-func (s *FSGitStorage) log() *slog.Logger {
+// Logger returns the configured logger, or a discard logger if none is set.
+func (s *FSGitStorage) Logger() *slog.Logger {
 	if s.logger == nil {
 		return slog.New(slog.DiscardHandler)
 	}
 	return s.logger
 }
+
+func (s *FSGitStorage) log() *slog.Logger { return s.Logger() }
 
 func (s *FSGitStorage) emit(ev ChangeEvent) {
 	s.log().Info("git change committed",

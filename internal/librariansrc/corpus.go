@@ -10,6 +10,7 @@ package librariansrc
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ type Corpus struct {
 	vec       VectorSearcher // nil when classifier not configured
 	namespace string
 	project   string
+	logger    *slog.Logger
 }
 
 // NewCorpus binds the adapter to a single namespace/project on the given store.
@@ -52,6 +54,19 @@ func (c *Corpus) WithVectorSearch(v VectorSearcher) *Corpus {
 	return c
 }
 
+// WithLogger attaches a structured logger for search diagnostics.
+func (c *Corpus) WithLogger(l *slog.Logger) *Corpus {
+	c.logger = l
+	return c
+}
+
+func (c *Corpus) log() *slog.Logger {
+	if c.logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return c.logger
+}
+
 var _ librarian.Corpus = (*Corpus)(nil)
 
 // Search runs fulltext content search and, when a vector searcher is configured,
@@ -59,22 +74,33 @@ var _ librarian.Corpus = (*Corpus)(nil)
 // deduplicated by path). Vector search failure is non-fatal — falls back to
 // fulltext only.
 func (c *Corpus) Search(ctx context.Context, query string, limit int) ([]librarian.Hit, error) {
+	log := c.log()
 	if limit <= 0 {
 		limit = 20
 	}
 
 	if c.vec == nil {
-		return c.fulltextSearch(query, limit)
+		log.Debug("corpus search", slog.String("methods", "fulltext"))
+		ftStart := time.Now()
+		hits, err := c.fulltextSearch(query, limit)
+		log.Debug("corpus search",
+			slog.Int("fulltext_hits", len(hits)),
+			slog.Int64("fulltext_ms", time.Since(ftStart).Milliseconds()))
+		return hits, err
 	}
+
+	log.Debug("corpus search", slog.String("methods", "fulltext+vector"))
 
 	// Run fulltext and vector search in parallel.
 	type ftResult struct {
 		hits []librarian.Hit
 		err  error
+		ms   int64
 	}
 	type vecResult struct {
 		results []storage.VectorSearchResult
 		err     error
+		ms      int64
 	}
 
 	var wg sync.WaitGroup
@@ -84,21 +110,30 @@ func (c *Corpus) Search(ctx context.Context, query string, limit int) ([]librari
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		start := time.Now()
 		ft.hits, ft.err = c.fulltextSearch(query, limit)
+		ft.ms = time.Since(start).Milliseconds()
 	}()
 	go func() {
 		defer wg.Done()
+		start := time.Now()
 		vr.results, vr.err = c.vec.VectorSearch(ctx, c.namespace, c.project, query, limit)
+		vr.ms = time.Since(start).Milliseconds()
 	}()
 	wg.Wait()
 
 	// Fulltext error is fatal (same as before).
 	if ft.err != nil {
+		log.Debug("corpus search: fulltext failed", slog.String("error", ft.err.Error()))
 		return nil, ft.err
 	}
 
 	// Vector error is non-fatal — just use fulltext results.
-	if vr.err != nil || len(vr.results) == 0 {
+	if vr.err != nil {
+		log.Debug("corpus search: vector failed, falling back to fulltext",
+			slog.String("error", vr.err.Error()),
+			slog.Int("fulltext_hits", len(ft.hits)),
+			slog.Int64("fulltext_ms", ft.ms))
 		return ft.hits, nil
 	}
 
@@ -124,6 +159,14 @@ func (c *Corpus) Search(ctx context.Context, query string, limit int) ([]librari
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
+
+	log.Debug("corpus search",
+		slog.Int("fulltext_hits", len(ft.hits)),
+		slog.Int64("fulltext_ms", ft.ms),
+		slog.Int("vector_hits", len(vr.results)),
+		slog.Int64("vector_ms", vr.ms),
+		slog.Int("merged", len(merged)))
+
 	return merged, nil
 }
 

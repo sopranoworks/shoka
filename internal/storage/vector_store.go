@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/sopranoworks/shoka/internal/storage/vectorindex"
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
@@ -257,6 +259,11 @@ func (s *FSGitStorage) vectorEmbed(ctx context.Context, namespace, projectName, 
 	return vec.Dimensions, nil
 }
 
+// VectorSearchMinSimilarity is the floor below which results are discarded.
+// Without this, every file in the index is returned (top-N by score) even when
+// none are semantically related, causing the librarian LLM to loop fruitlessly.
+const VectorSearchMinSimilarity = 0.3
+
 // VectorSearchResult is one result from a vector similarity search.
 type VectorSearchResult struct {
 	Path       string
@@ -267,23 +274,43 @@ type VectorSearchResult struct {
 // the top N most similar files by cosine similarity. Returns nil (not error)
 // when the vector index is not configured or the project has no vector store.
 func (s *FSGitStorage) VectorSearch(ctx context.Context, namespace, projectName, query string, limit int) ([]VectorSearchResult, error) {
+	log := s.log()
 	cfg := s.currentVecConfig()
 	if cfg == nil {
+		log.Debug("vector search: not configured")
 		return nil, nil
 	}
 	if limit <= 0 {
 		limit = 10
 	}
 
+	truncQ := query
+	if len(truncQ) > 80 {
+		truncQ = truncQ[:80] + "…"
+	}
+	log.Debug("vector search: query received",
+		slog.String("query", truncQ),
+		slog.String("namespace", namespace),
+		slog.String("project", projectName))
+
 	st := s.vectorForRead(namespace, projectName)
 	if st == nil {
+		log.Debug("vector search: no index for project",
+			slog.String("namespace", namespace),
+			slog.String("project", projectName))
 		return nil, nil
 	}
 
+	embedStart := time.Now()
 	queryVec, err := cfg.Embedder.Embed(ctx, query)
+	embedMs := time.Since(embedStart).Milliseconds()
 	if err != nil {
+		log.Debug("vector search: embed failed",
+			slog.Int64("embed_ms", embedMs),
+			slog.String("error", err.Error()))
 		return nil, fmt.Errorf("vector search embed query: %w", err)
 	}
+	log.Debug("vector search: embed complete", slog.Int64("embed_ms", embedMs))
 
 	keys, kerr := st.Keys()
 	if kerr != nil {
@@ -295,12 +322,17 @@ func (s *FSGitStorage) VectorSearch(ctx context.Context, namespace, projectName,
 		sim  float64
 	}
 	var results []scored
+	belowThreshold := 0
 	for _, k := range keys {
 		vec, found, gerr := st.Get(k)
 		if gerr != nil || !found {
 			continue
 		}
 		sim := cosineSimilarity(queryVec.Values, vec)
+		if sim < VectorSearchMinSimilarity {
+			belowThreshold++
+			continue
+		}
 		results = append(results, scored{path: k, sim: sim})
 	}
 
@@ -315,6 +347,18 @@ func (s *FSGitStorage) VectorSearch(ctx context.Context, namespace, projectName,
 	for i, r := range results {
 		out[i] = VectorSearchResult{Path: r.path, Similarity: r.sim}
 	}
+
+	topSim := 0.0
+	if len(out) > 0 {
+		topSim = out[0].Similarity
+	}
+	log.Debug("vector search: results",
+		slog.Int("index_entries", len(keys)),
+		slog.Int("above_threshold", len(out)),
+		slog.Int("below_threshold", belowThreshold),
+		slog.Float64("min_similarity", VectorSearchMinSimilarity),
+		slog.Float64("top_similarity", topSim))
+
 	return out, nil
 }
 
