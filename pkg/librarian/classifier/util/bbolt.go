@@ -104,6 +104,34 @@ func (it *BboltIterator) Read() (*KeyedVector, error) {
 	return kv, nil
 }
 
+// BboltStore combines Writer and Iterator factory backed by a single bbolt DB
+// and model/dimensions pair. Analogous to MemoryStore but persistent.
+type BboltStore struct {
+	db         *bolt.DB
+	model      string
+	dimensions int
+}
+
+func NewBboltStore(db *bolt.DB, model string, dimensions int) *BboltStore {
+	return &BboltStore{db: db, model: model, dimensions: dimensions}
+}
+
+func (s *BboltStore) Model() string   { return s.model }
+func (s *BboltStore) Dimensions() int { return s.dimensions }
+
+func (s *BboltStore) Write(key string, vector []float64) error {
+	w := NewBboltWriter(s.db, s.model, s.dimensions)
+	return w.Write(key, vector)
+}
+
+func (s *BboltStore) Iterator() Iterator {
+	return NewBboltIterator(s.db, s.model, s.dimensions)
+}
+
+func (s *BboltStore) Close() error {
+	return s.db.Close()
+}
+
 // ParseBucketName extracts model and dimensions from a bucket name.
 func ParseBucketName(name string) (model string, dimensions int, ok bool) {
 	const prefix = "vectors:"

@@ -43,6 +43,8 @@ import (
 	"github.com/sopranoworks/shoka/pkg/authapi"
 	"github.com/sopranoworks/shoka/pkg/librarian"
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
+
+	bolt "go.etcd.io/bbolt"
 	"github.com/sopranoworks/shoka/pkg/oauth"
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
 	"github.com/sopranoworks/shoka/pkg/reqtrace"
@@ -789,6 +791,27 @@ func llmConfig(cfg *config.Config) llm.LLMConfig {
 	}
 }
 
+func initClassifier(cfg *config.Config, logger *slog.Logger) (librarian.Classifier, error) {
+	cc := cfg.Librarian.Classifier
+	embedCfg := llm.LLMConfig{
+		Provider: cc.ResolvedProvider(cfg.Librarian.Provider),
+		BaseURL:  cc.ResolvedBaseURL(cfg.Librarian.BaseURL),
+		Model:    cc.EmbeddingModel,
+	}
+
+	embedder, err := llm.NewEmbedder(embedCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create embedder: %w", err)
+	}
+
+	db, err := bolt.Open(cc.DBPath, 0600, nil)
+	if err != nil {
+		return nil, fmt.Errorf("open classifier db %q: %w", cc.DBPath, err)
+	}
+
+	return librarian.NewClassifier(embedder, db, cc.EmbeddingModel), nil
+}
+
 // setupMCPServer builds the MCP server and returns it together with the
 // ask_the_librarian Librarian (nil when the LLM is not configured at startup).
 // The caller uses the Librarian to wire the live config-reload swap; the MCP tool
@@ -991,6 +1014,20 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 			logger.Error("ask_the_librarian: cannot build LLM client; tool not registered", "error", err)
 		} else {
 			lib = librarian.New(llmClient, cfg.Librarian.MaxSteps)
+
+			if cfg.Librarian.Classifier.Enabled {
+				cl, clErr := initClassifier(cfg, logger)
+				if clErr != nil {
+					logger.Error("classifier: init failed; continuing without classifier", "error", clErr)
+				} else {
+					lib.WithClassifier(cl)
+					logger.Info("classifier: initialized",
+						"provider", cfg.Librarian.Classifier.ResolvedProvider(cfg.Librarian.Provider),
+						"model", cfg.Librarian.Classifier.EmbeddingModel,
+						"db_path", cfg.Librarian.Classifier.DBPath)
+				}
+			}
+
 			mcp.AddTool(mcpServer, &mcp.Tool{
 				Name:        "ask_the_librarian",
 				Description: "Ask a natural-language question about a project's documents and get back just the answer. An internal LLM reads the project's files (read-only) and synthesizes the answer, so your own context is not filled by the corpus — ideal for consulting a large body of docs (specs, backlog, reports). Requires read access to the namespace/project.",

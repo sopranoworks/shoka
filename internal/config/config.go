@@ -477,10 +477,23 @@ type IdentityConfig struct {
 // error — the intended guardrail against putting a secret in the config file.
 // When unset (IsConfigured false), the ask_the_librarian tool is not registered.
 type LLMConfig struct {
-	Provider string `yaml:"provider"`
-	BaseURL  string `yaml:"base_url"`
-	Model    string `yaml:"model"`
-	MaxSteps int    `yaml:"max_steps"`
+	Provider   string           `yaml:"provider"`
+	BaseURL    string           `yaml:"base_url"`
+	Model      string           `yaml:"model"`
+	MaxSteps   int              `yaml:"max_steps"`
+	Classifier ClassifierConfig `yaml:"classifier"`
+}
+
+// ClassifierConfig configures the optional classifier (vector embedding +
+// similarity search). When Enabled is false or the section is absent, the
+// librarian exposes no classifier. Provider and BaseURL default to the parent
+// librarian's values when omitted.
+type ClassifierConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	Provider        string `yaml:"provider"`
+	EmbeddingModel  string `yaml:"embedding_model"`
+	EmbeddingBaseURL string `yaml:"embedding_base_url"`
+	DBPath          string `yaml:"db_path"`
 }
 
 // IsConfigured reports whether the librarian tool should be registered: a
@@ -501,7 +514,50 @@ func (c LLMConfig) Validate() error {
 	if c.Model == "" {
 		return fmt.Errorf("librarian.model is required (the provider has no model environment variable)")
 	}
+	if c.Classifier.Enabled {
+		if err := c.Classifier.validate(c.Provider); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (c ClassifierConfig) validate(parentProvider string) error {
+	if c.EmbeddingModel == "" {
+		return fmt.Errorf("librarian.classifier.embedding_model is required when classifier is enabled")
+	}
+	if c.DBPath == "" {
+		return fmt.Errorf("librarian.classifier.db_path is required when classifier is enabled")
+	}
+	prov := c.Provider
+	if prov == "" {
+		prov = parentProvider
+	}
+	if prov == llmProviderAnthropic {
+		return fmt.Errorf("librarian.classifier: provider %q does not support embeddings", llmProviderAnthropic)
+	}
+	if prov != llmProviderOpenAI && prov != llmProviderGemini {
+		return fmt.Errorf("librarian.classifier.provider must be %q or %q, got %q", llmProviderOpenAI, llmProviderGemini, prov)
+	}
+	return nil
+}
+
+// ResolvedProvider returns the classifier's provider, falling back to the
+// parent librarian's provider when omitted.
+func (c ClassifierConfig) ResolvedProvider(parentProvider string) string {
+	if c.Provider != "" {
+		return c.Provider
+	}
+	return parentProvider
+}
+
+// ResolvedBaseURL returns the classifier's embedding base URL, falling back
+// to the parent librarian's base URL when omitted.
+func (c ClassifierConfig) ResolvedBaseURL(parentBaseURL string) string {
+	if c.EmbeddingBaseURL != "" {
+		return c.EmbeddingBaseURL
+	}
+	return parentBaseURL
 }
 
 // llm provider names, kept in sync with pkg/librarian/llm. They are duplicated

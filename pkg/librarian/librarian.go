@@ -62,15 +62,28 @@ type Result struct {
 // before the tool-call loop, so no lock ever spans an LLM round-trip and an
 // in-flight Ask completes on the client it started with.
 type Librarian struct {
-	mu       sync.RWMutex
-	client   llm.Client
-	maxSteps int
+	mu         sync.RWMutex
+	client     llm.Client
+	maxSteps   int
+	classifier Classifier // nil when not configured
 }
 
 // New builds a Librarian over an LLM client. maxSteps caps the tool-call loop's
 // model round-trips (<= 0 falls back to a sensible default).
 func New(client llm.Client, maxSteps int) *Librarian {
 	return &Librarian{client: client, maxSteps: maxSteps}
+}
+
+// WithClassifier returns the Librarian with the given classifier attached.
+// Pass nil to leave the classifier unconfigured.
+func (l *Librarian) WithClassifier(c Classifier) *Librarian {
+	l.classifier = c
+	return l
+}
+
+// Classifier returns the attached classifier, or nil if not configured.
+func (l *Librarian) Classifier() Classifier {
+	return l.classifier
 }
 
 // SetClient atomically swaps the live LLM client (e.g. after a config reload to a
