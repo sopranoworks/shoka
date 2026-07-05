@@ -489,11 +489,10 @@ type LLMConfig struct {
 // librarian exposes no classifier. Provider and BaseURL default to the parent
 // librarian's values when omitted.
 type ClassifierConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	Provider        string `yaml:"provider"`
-	EmbeddingModel  string `yaml:"embedding_model"`
+	Enabled          bool   `yaml:"enabled"`
+	Provider         string `yaml:"provider"`
+	EmbeddingModel   string `yaml:"embedding_model"`
 	EmbeddingBaseURL string `yaml:"embedding_base_url"`
-	DBPath          string `yaml:"db_path"`
 }
 
 // IsConfigured reports whether the librarian tool should be registered: a
@@ -525,9 +524,6 @@ func (c LLMConfig) Validate() error {
 func (c ClassifierConfig) validate(parentProvider string) error {
 	if c.EmbeddingModel == "" {
 		return fmt.Errorf("librarian.classifier.embedding_model is required when classifier is enabled")
-	}
-	if c.DBPath == "" {
-		return fmt.Errorf("librarian.classifier.db_path is required when classifier is enabled")
 	}
 	prov := c.Provider
 	if prov == "" {

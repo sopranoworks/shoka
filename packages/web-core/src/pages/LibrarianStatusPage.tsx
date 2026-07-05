@@ -122,12 +122,6 @@ export function LibrarianStatusPage() {
                 <span>{s.classifier.baseUrl}</span>
               </div>
             )}
-            {s.classifier.enabled && s.classifier.dbPath && (
-              <div className={styles.row}>
-                <span className={styles.label}>DB Path</span>
-                <span>{s.classifier.dbPath}</span>
-              </div>
-            )}
             {s.classifier.enabled && !s.classifier.error && (
               <div className={styles.row}>
                 <span className={styles.label}>Vector Indices</span>

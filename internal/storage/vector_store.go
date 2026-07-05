@@ -68,8 +68,8 @@ func (s *FSGitStorage) discardAllVectorStores() {
 	}
 }
 
-// vectorConfigured reports whether the vector index is active.
-func (s *FSGitStorage) vectorConfigured() bool {
+// VectorConfigured reports whether the vector index is active.
+func (s *FSGitStorage) VectorConfigured() bool {
 	s.vecMu.Lock()
 	defer s.vecMu.Unlock()
 	return s.vecConfig != nil
@@ -156,7 +156,7 @@ func (s *FSGitStorage) removeVectorFile(namespace, projectName string) {
 // vectorDelete removes a path from the vector index. Synchronous and best-effort
 // (no API call needed for a delete — just a bbolt key removal).
 func (s *FSGitStorage) vectorDelete(namespace, projectName, rel string) {
-	if !s.vectorConfigured() {
+	if !s.VectorConfigured() {
 		return
 	}
 	st := s.vectorForRead(namespace, projectName)
@@ -173,7 +173,7 @@ func (s *FSGitStorage) vectorDelete(namespace, projectName, rel string) {
 // vectorEnqueue queues a file for background vectorization. Non-blocking: if the
 // channel is full the item is dropped (the sweep catches it later).
 func (s *FSGitStorage) vectorEnqueue(namespace, projectName, rel string, content []byte) {
-	if !s.vectorConfigured() {
+	if !s.VectorConfigured() {
 		return
 	}
 	item := vectorWorkItem{

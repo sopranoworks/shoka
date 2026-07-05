@@ -373,7 +373,6 @@ catalog: {}
 #     enabled: true
 #     embedding_model: "text-embedding-nomic-embed-text-v1.5"
 #     embedding_base_url: "http://localhost:1234/v1"   # LM Studio / local server
-#     db_path: "/var/lib/shoka/classifier.db"          # global classifier DB path
 #
 # Example with OpenAI production embeddings:
 # librarian:
@@ -383,11 +382,13 @@ catalog: {}
 #     enabled: true
 #     embedding_model: "text-embedding-3-small"        # OpenAI embedding model
 #     # embedding_base_url omitted = use OpenAI's default endpoint
-#     db_path: "/var/lib/shoka/classifier.db"
 #
 # Classifier config reference:
 #   enabled: false              # (bool) set to true to enable; default false
 #   provider: ""                # (string, optional) "openai" or "gemini"; defaults to parent librarian.provider
 #   embedding_model: ""         # (string, REQUIRED when enabled) embedding model id
 #   embedding_base_url: ""      # (string, optional) custom endpoint; defaults to parent librarian.base_url
-#   db_path: ""                 # (string, REQUIRED when enabled) path to the global classifier bbolt DB
+#
+# Vector indices are stored automatically as per-project siblings:
+#   <base_dir>/<namespace>/<project>.vector.db
+# No path configuration needed — they live alongside the project storage.

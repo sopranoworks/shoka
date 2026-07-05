@@ -479,7 +479,6 @@ semantically related documents even when the query uses different terminology.
 | `librarian.classifier.provider` | string | no | parent `librarian.provider` | `openai` or `gemini` (Anthropic does not support embeddings). |
 | `librarian.classifier.embedding_model` | string | yes (when enabled) | — | Embedding model id (e.g. `text-embedding-nomic-embed-text-v1.5`, `text-embedding-3-small`). |
 | `librarian.classifier.embedding_base_url` | string | no | parent `librarian.base_url` | Custom endpoint for the embedding API (e.g. `http://localhost:1234/v1` for LM Studio). |
-| `librarian.classifier.db_path` | string | yes (when enabled) | — | Path for the global classifier bbolt DB (e.g. `/var/lib/shoka/classifier.db`). |
 
 Per-project vector indices are stored as `<base_dir>/<namespace>/<project>.vector.db`
 (a derivative sibling like the catalog and search index). They are disposable: a model

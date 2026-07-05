@@ -6,7 +6,6 @@ export interface ClassifierStatus {
   provider?: string
   model?: string
   baseUrl?: string
-  dbPath?: string
   projectCount: number
   error?: string
 }

@@ -74,7 +74,7 @@ func AskTheLibrarianHandler(s *storage.FSGitStorage, lib *librarian.Librarian) f
 		}
 
 		corpus := librariansrc.NewCorpus(s, input.Namespace, input.ProjectName)
-		if lib.Classifier() != nil {
+		if s.VectorConfigured() {
 			corpus.WithVectorSearch(s)
 		}
 		res, err := lib.Ask(ctx, librarian.Request{

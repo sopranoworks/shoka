@@ -44,7 +44,6 @@ import (
 	"github.com/sopranoworks/shoka/pkg/librarian"
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
 
-	bolt "go.etcd.io/bbolt"
 	"github.com/sopranoworks/shoka/pkg/oauth"
 	"github.com/sopranoworks/shoka/pkg/oauthstore"
 	"github.com/sopranoworks/shoka/pkg/reqtrace"
@@ -603,7 +602,6 @@ func main() {
 			Provider:     cc.ResolvedProvider(cfg.Librarian.Provider),
 			Model:        cc.EmbeddingModel,
 			BaseURL:      cc.ResolvedBaseURL(cfg.Librarian.BaseURL),
-			DBPath:       cc.DBPath,
 			ProjectCount: s.VectorProjectCount(),
 		}
 	})
@@ -834,27 +832,6 @@ func llmConfig(cfg *config.Config) llm.LLMConfig {
 	}
 }
 
-func initClassifier(cfg *config.Config, logger *slog.Logger) (librarian.Classifier, error) {
-	cc := cfg.Librarian.Classifier
-	embedCfg := llm.LLMConfig{
-		Provider: cc.ResolvedProvider(cfg.Librarian.Provider),
-		BaseURL:  cc.ResolvedBaseURL(cfg.Librarian.BaseURL),
-		Model:    cc.EmbeddingModel,
-	}
-
-	embedder, err := llm.NewEmbedder(embedCfg)
-	if err != nil {
-		return nil, fmt.Errorf("create embedder: %w", err)
-	}
-
-	db, err := bolt.Open(cc.DBPath, 0600, nil)
-	if err != nil {
-		return nil, fmt.Errorf("open classifier db %q: %w", cc.DBPath, err)
-	}
-
-	return librarian.NewClassifier(embedder, db, cc.EmbeddingModel), nil
-}
-
 // setupMCPServer builds the MCP server and returns it together with the
 // ask_the_librarian Librarian (nil when the LLM is not configured at startup).
 // The caller uses the Librarian to wire the live config-reload swap; the MCP tool
@@ -1059,34 +1036,24 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 			lib = librarian.New(llmClient, cfg.Librarian.MaxSteps)
 
 			if cfg.Librarian.Classifier.Enabled {
-				cl, clErr := initClassifier(cfg, logger)
-				if clErr != nil {
-					logger.Error("classifier: init failed; continuing without classifier", "error", clErr)
+				cc := cfg.Librarian.Classifier
+				embedCfg := llm.LLMConfig{
+					Provider: cc.ResolvedProvider(cfg.Librarian.Provider),
+					BaseURL:  cc.ResolvedBaseURL(cfg.Librarian.BaseURL),
+					Model:    cc.EmbeddingModel,
+				}
+				vecEmbedder, vecErr := llm.NewEmbedder(embedCfg)
+				if vecErr != nil {
+					logger.Error("classifier: cannot build embedder", "error", vecErr)
 				} else {
-					lib.WithClassifier(cl)
-					logger.Info("classifier: initialized",
-						"provider", cfg.Librarian.Classifier.ResolvedProvider(cfg.Librarian.Provider),
-						"model", cfg.Librarian.Classifier.EmbeddingModel,
-						"db_path", cfg.Librarian.Classifier.DBPath)
-
-					// Wire per-project vector index into storage write path.
-					embedCfg := llm.LLMConfig{
-						Provider: cfg.Librarian.Classifier.ResolvedProvider(cfg.Librarian.Provider),
-						BaseURL:  cfg.Librarian.Classifier.ResolvedBaseURL(cfg.Librarian.BaseURL),
-						Model:    cfg.Librarian.Classifier.EmbeddingModel,
-					}
-					vecEmbedder, vecErr := llm.NewEmbedder(embedCfg)
-					if vecErr != nil {
-						logger.Error("vector index: cannot build embedder", "error", vecErr)
-					} else {
-						s.SetVectorConfig(&storage.VectorIndexConfig{
-							Embedder: vecEmbedder,
-							Model:    cfg.Librarian.Classifier.EmbeddingModel,
-						})
-						s.StartVectorWorker(ctx, 5*time.Minute)
-						logger.Info("vector index: worker started",
-							"model", cfg.Librarian.Classifier.EmbeddingModel)
-					}
+					s.SetVectorConfig(&storage.VectorIndexConfig{
+						Embedder: vecEmbedder,
+						Model:    cc.EmbeddingModel,
+					})
+					s.StartVectorWorker(ctx, 5*time.Minute)
+					logger.Info("classifier: vector index active",
+						"provider", cc.ResolvedProvider(cfg.Librarian.Provider),
+						"model", cc.EmbeddingModel)
 				}
 			}
 

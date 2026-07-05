@@ -29,7 +29,7 @@ type vectorWorkItem struct {
 // queue). The goroutine stops when ctx is cancelled. Safe to call multiple times;
 // only the first call starts the worker.
 func (s *FSGitStorage) StartVectorWorker(ctx context.Context, interval time.Duration) {
-	if !s.vectorConfigured() {
+	if !s.VectorConfigured() {
 		return
 	}
 	if !s.vecWorkerStarted.CompareAndSwap(false, true) {
@@ -95,7 +95,7 @@ func (s *FSGitStorage) processVectorItem(ctx context.Context, item vectorWorkIte
 // reconcileAllVectors scans all projects and vectorizes any files that are missing
 // from the vector index. This is the sweep equivalent of reconcileAllIndexes.
 func (s *FSGitStorage) reconcileAllVectors(ctx context.Context) {
-	if !s.vectorConfigured() {
+	if !s.VectorConfigured() {
 		return
 	}
 	s.vecSweepRuns.Add(1)

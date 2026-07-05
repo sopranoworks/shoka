@@ -31,7 +31,6 @@ type ClassifierStatus struct {
 	Provider     string `json:"provider,omitempty"`
 	Model        string `json:"model,omitempty"`
 	BaseURL      string `json:"baseUrl,omitempty"`
-	DBPath       string `json:"dbPath,omitempty"`
 	ProjectCount int    `json:"projectCount"` // projects with vector indices
 	Error        string `json:"error,omitempty"`
 }
