@@ -20,6 +20,7 @@ type Snapshot struct {
 	Kind       string `json:"kind"`                // "ready"/"model_not_found"/… or "unconfigured" / "unknown"
 	Detail     string `json:"detail,omitempty"`    // short, secret-free explanation
 	CheckedAt  string `json:"checkedAt,omitempty"` // RFC3339 UTC of the last check, "" if never run
+	MaxSteps   int    `json:"maxSteps,omitempty"` // tool-call loop budget (0 = not configured)
 
 	// Classifier fields — populated when the classifier is wired.
 	Classifier *ClassifierStatus `json:"classifier,omitempty"`
@@ -63,6 +64,7 @@ func New(cfg llm.LLMConfig) *Checker {
 			Provider:   cfg.Provider,
 			Model:      cfg.Model,
 			Kind:       kind,
+			MaxSteps:   cfg.MaxSteps,
 		},
 	}
 }
@@ -113,6 +115,7 @@ func SnapshotFor(cfg llm.LLMConfig, res llm.HealthResult) Snapshot {
 		Kind:       string(res.Kind),
 		Detail:     res.Detail,
 		CheckedAt:  time.Now().UTC().Format(time.RFC3339),
+		MaxSteps:   cfg.MaxSteps,
 	}
 }
 

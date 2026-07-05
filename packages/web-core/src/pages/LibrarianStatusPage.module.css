@@ -75,3 +75,19 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.settingsControl {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.numberInput {
+  width: 4rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--color-border, #3a3a3a);
+  border-radius: 4px;
+  background: var(--color-surface, #2a2a2a);
+  color: var(--color-text, #eaeaea);
+  font-size: 0.9rem;
+}

@@ -46,7 +46,8 @@ func TestGateTables_MatchPreExtraction(t *testing.T) {
 
 		// --- document rows added after the extraction (B-73 librarian status) ---
 		MsgLibrarianStatus:        {Level: authz.LevelAdmin, Global: true},
-		MsgRefreshLibrarianStatus: {Level: authz.LevelAdmin, Global: true},
+		MsgRefreshLibrarianStatus:  {Level: authz.LevelAdmin, Global: true},
+		MsgSetLibrarianMaxSteps:    {Level: authz.LevelAdmin, Global: true},
 
 		// --- server info (read, global — any authenticated user) ---
 		MsgServerNetworkInfo: {Level: authz.LevelRead, Global: true},

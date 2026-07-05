@@ -6,14 +6,15 @@ import type { ReactNode } from 'react'
 
 // Mock the imperative ops so the test asserts the rendered view + the refresh
 // wiring, not the /ws/ui path.
-const { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig } = vi.hoisted(() => ({
+const { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps } = vi.hoisted(() => ({
   librarianStatus: vi.fn(),
   refreshLibrarianStatus: vi.fn(),
   reloadLibrarianConfig: vi.fn(),
+  setLibrarianMaxSteps: vi.fn(),
 }))
 vi.mock('../lib/librarianStatus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/librarianStatus')>()
-  return { ...actual, librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig }
+  return { ...actual, librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps }
 })
 
 import { LibrarianStatusPage } from './LibrarianStatusPage'
@@ -27,6 +28,7 @@ beforeEach(() => {
   librarianStatus.mockReset()
   refreshLibrarianStatus.mockReset()
   reloadLibrarianConfig.mockReset()
+  setLibrarianMaxSteps.mockReset()
 })
 
 describe('LibrarianStatusPage', () => {
@@ -85,6 +87,33 @@ describe('LibrarianStatusPage', () => {
     await waitFor(() => expect(screen.getByTestId('librarian-kind')).toHaveTextContent('Model not found'))
     expect(screen.getByTestId('librarian-detail')).toHaveTextContent('does not exist')
     expect(reloadLibrarianConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the max steps setting and saves a new value', async () => {
+    librarianStatus.mockResolvedValue({
+      configured: true,
+      provider: 'openai',
+      model: 'gpt-4o',
+      kind: 'ready',
+      maxSteps: 8,
+    })
+    setLibrarianMaxSteps.mockResolvedValue({
+      configured: true,
+      provider: 'openai',
+      model: 'gpt-4o',
+      kind: 'ready',
+      maxSteps: 12,
+    })
+    render(wrap(<LibrarianStatusPage />))
+
+    await waitFor(() => expect(screen.getByTestId('max-steps-input')).toHaveValue(8))
+
+    const input = screen.getByTestId('max-steps-input')
+    await userEvent.clear(input)
+    await userEvent.type(input, '12')
+    await userEvent.click(screen.getByTestId('max-steps-save'))
+
+    await waitFor(() => expect(setLibrarianMaxSteps).toHaveBeenCalledWith(12))
   })
 
   it('never renders an API key', async () => {

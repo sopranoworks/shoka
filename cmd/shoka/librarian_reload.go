@@ -13,6 +13,7 @@ import (
 // real Librarian or a cloud call.)
 type clientSwapper interface {
 	SetClient(llm.Client)
+	SetMaxSteps(int)
 }
 
 // statusApplier is the subset of *libstatus.Checker the reloader drives: it
@@ -74,6 +75,7 @@ func newLibrarianReloader(configPath string, lib clientSwapper, checker statusAp
 			})
 		}
 		lib.SetClient(newClient)
+		lib.SetMaxSteps(lc.MaxSteps)
 		if deps.onClassifierReload != nil {
 			deps.onClassifierReload(ctx, cfg)
 		}

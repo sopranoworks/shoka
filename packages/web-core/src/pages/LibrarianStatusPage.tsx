@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig } from '../lib/librarianStatus'
+import { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps } from '../lib/librarianStatus'
 import styles from './LibrarianStatusPage.module.css'
 
 // Human labels for the server's health kinds (B-73). Never shows the API key.
@@ -21,7 +21,13 @@ export function LibrarianStatusPage() {
   const qc = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
   const [reloading, setReloading] = useState(false)
+  const [savingSteps, setSavingSteps] = useState(false)
+  const [maxStepsInput, setMaxStepsInput] = useState('')
   const q = useQuery({ queryKey: ['librarian-status'], queryFn: librarianStatus })
+
+  useEffect(() => {
+    if (q.data?.maxSteps) setMaxStepsInput(String(q.data.maxSteps))
+  }, [q.data?.maxSteps])
 
   async function onRefresh() {
     setRefreshing(true)
@@ -134,6 +140,46 @@ export function LibrarianStatusPage() {
                 <span className={styles.bad}>{s.classifier.error}</span>
               </div>
             )}
+          </div>
+        </>
+      )}
+
+      {s?.configured && (
+        <>
+          <h2 className={styles.title} style={{ marginTop: '1.5rem' }}>Settings</h2>
+          <div className={styles.card} data-testid="librarian-settings">
+            <div className={styles.row}>
+              <span className={styles.label}>Max steps</span>
+              <span className={styles.settingsControl}>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={maxStepsInput}
+                  onChange={(e) => setMaxStepsInput(e.target.value)}
+                  className={styles.numberInput}
+                  data-testid="max-steps-input"
+                />
+                <button
+                  className={styles.refresh}
+                  disabled={savingSteps || !maxStepsInput}
+                  data-testid="max-steps-save"
+                  onClick={async () => {
+                    const n = parseInt(maxStepsInput, 10)
+                    if (isNaN(n) || n < 1 || n > 20) return
+                    setSavingSteps(true)
+                    try {
+                      const fresh = await setLibrarianMaxSteps(n)
+                      qc.setQueryData(['librarian-status'], fresh)
+                    } finally {
+                      setSavingSteps(false)
+                    }
+                  }}
+                >
+                  {savingSteps ? 'Saving…' : 'Save'}
+                </button>
+              </span>
+            </div>
           </div>
         </>
       )}

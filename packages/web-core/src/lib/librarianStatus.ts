@@ -21,6 +21,7 @@ export interface LibrarianStatus {
   kind: string
   detail?: string
   checkedAt?: string
+  maxSteps?: number
   classifier?: ClassifierStatus
 }
 
@@ -44,4 +45,10 @@ export function refreshLibrarianStatus(): Promise<LibrarianStatus> {
 // Super-user only.
 export function reloadLibrarianConfig(): Promise<LibrarianStatus> {
   return wsClient().request('RELOAD_LIBRARIAN_CONFIG', {})
+}
+
+// setLibrarianMaxSteps updates the tool-call loop budget on the running server
+// and returns the updated librarian status snapshot. Admin-only.
+export function setLibrarianMaxSteps(maxSteps: number): Promise<LibrarianStatus> {
+  return wsClient().request('SET_LIBRARIAN_MAX_STEPS', { maxSteps })
 }

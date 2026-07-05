@@ -33,6 +33,13 @@ test('Librarian status renders and Refresh re-checks (unconfigured server)', asy
   await expect(page.getByTestId('librarian-kind')).toHaveText('Not configured')
 })
 
+test('Settings section is hidden when librarian is not configured', async ({ page }) => {
+  await page.goto('/settings?item=librarian')
+  await expect(page.getByRole('heading', { name: 'Librarian' })).toBeVisible()
+  await expect(page.getByTestId('librarian-kind')).toHaveText('Not configured')
+  await expect(page.getByTestId('librarian-settings')).not.toBeVisible()
+})
+
 test('Classifier section shows "Not configured" when classifier is disabled', async ({ page }) => {
   await page.goto('/settings?item=librarian')
   await expect(page.getByRole('heading', { name: 'Librarian' })).toBeVisible()

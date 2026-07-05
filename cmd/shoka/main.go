@@ -589,6 +589,10 @@ func main() {
 		}))
 	}
 
+	if librarianInst != nil {
+		uim.SetMaxStepsGetSet(librarianInst)
+	}
+
 	// Classifier status for the Settings → Librarian UI. Reads config and counts
 	// projects with open vector stores. The closure captures cfg (read-only after
 	// startup) and s (thread-safe).

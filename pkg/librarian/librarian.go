@@ -98,6 +98,21 @@ func (l *Librarian) SetClient(client llm.Client) {
 	l.mu.Unlock()
 }
 
+// SetMaxSteps atomically swaps the tool-call loop budget. In-flight Ask calls
+// already snapshotted the previous value; the next Ask picks up the new one.
+func (l *Librarian) SetMaxSteps(n int) {
+	l.mu.Lock()
+	l.maxSteps = n
+	l.mu.Unlock()
+}
+
+// MaxSteps returns the current tool-call loop budget.
+func (l *Librarian) MaxSteps() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.maxSteps
+}
+
 // currentClient returns the live client reference under the read lock. The caller
 // uses the returned value without holding the lock, so a concurrent SetClient can
 // proceed and no lock spans the subsequent round-trips.
@@ -119,8 +134,8 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 		corpus = NewDirCorpus(req.Root)
 	}
 	tools := buildTools(guard, corpus)
-	// Snapshot the swappable client reference before the loop; runLoop captures it
-	// by value, so a concurrent SetClient never affects this in-flight call.
-	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.maxSteps)
+	// Snapshot the swappable references before the loop so a concurrent
+	// SetClient/SetMaxSteps never affects this in-flight call.
+	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps())
 	return Result{Answer: answer, Calls: calls}, err
 }

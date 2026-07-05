@@ -102,7 +102,8 @@ const (
 	// runtime state, so it is super-user-gated (stricter than the admin reads
 	// above). Returns a LibrarianStatus payload: the new snapshot on success, or
 	// the attempted config + the typed failure detail (old client kept) on failure.
-	MsgReloadLibrarianConfig MessageType = "RELOAD_LIBRARIAN_CONFIG"
+	MsgReloadLibrarianConfig    MessageType = "RELOAD_LIBRARIAN_CONFIG"
+	MsgSetLibrarianMaxSteps    MessageType = "SET_LIBRARIAN_MAX_STEPS"
 	// MsgServerNetworkInfo returns the server's network endpoints (listen addresses,
 	// external URLs, protocols, status). Read-level, global — any authenticated user
 	// may see how to connect.
@@ -270,7 +271,8 @@ type Manager struct {
 	librarianReload  func(context.Context) libstatus.Snapshot
 	// classifierStatusFn returns the current classifier status for the UI. nil when
 	// the classifier was never configured. Wired at cmd/shoka.
-	classifierStatusFn func() *libstatus.ClassifierStatus
+	classifierStatusFn  func() *libstatus.ClassifierStatus
+	maxStepsGetSet      MaxStepsGetSet
 	networkInfoProvider func() []NetworkElement
 	originChecker    func(*http.Request) bool
 	upgrader        websocket.Upgrader
@@ -394,7 +396,8 @@ var wsLevels = map[MessageType]uiws.Op{
 	// the handler exposes no secret). Refresh makes one real API call, so it is
 	// gated the same as the read.
 	MsgLibrarianStatus:        {Level: authz.LevelAdmin, Global: true},
-	MsgRefreshLibrarianStatus: {Level: authz.LevelAdmin, Global: true},
+	MsgRefreshLibrarianStatus:  {Level: authz.LevelAdmin, Global: true},
+	MsgSetLibrarianMaxSteps:    {Level: authz.LevelAdmin, Global: true},
 
 	MsgServerNetworkInfo: {Level: authz.LevelRead, Global: true},
 }
@@ -534,6 +537,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleRefreshLibrarianStatus(client)
 		case MsgReloadLibrarianConfig:
 			m.handleReloadLibrarianConfig(client)
+		case MsgSetLibrarianMaxSteps:
+			m.handleSetLibrarianMaxSteps(client, wsMsg.Payload)
 		case MsgServerNetworkInfo:
 			m.handleServerNetworkInfo(client)
 		default:
@@ -842,6 +847,15 @@ func (m *Manager) SetLibrarianReloader(f func(context.Context) libstatus.Snapsho
 	m.librarianReload = f
 }
 
+// MaxStepsGetSet reads and writes the librarian's tool-call loop budget.
+type MaxStepsGetSet interface {
+	MaxSteps() int
+	SetMaxSteps(int)
+}
+
+// SetMaxStepsGetSet wires the live max-steps getter/setter for the Settings UI.
+func (m *Manager) SetMaxStepsGetSet(gs MaxStepsGetSet) { m.maxStepsGetSet = gs }
+
 // SetClassifierStatus wires the classifier status provider for the Settings UI.
 func (m *Manager) SetClassifierStatus(f func() *libstatus.ClassifierStatus) {
 	m.classifierStatusFn = f
@@ -898,8 +912,41 @@ func (m *Manager) handleLibrarianStatus(client *uiws.Client) {
 		return
 	}
 	snap := m.librarianStatus.Get()
+	if m.maxStepsGetSet != nil {
+		snap.MaxSteps = m.maxStepsGetSet.MaxSteps()
+	}
 	snap.Classifier = m.classifierStatus()
 	client.SendResponse(MsgLibrarianStatus, snap)
+}
+
+func (m *Manager) handleSetLibrarianMaxSteps(client *uiws.Client, payload json.RawMessage) {
+	if m.maxStepsGetSet == nil {
+		client.SendError("librarian not configured")
+		return
+	}
+	var req struct {
+		MaxSteps int `json:"maxSteps"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		client.SendError("invalid payload")
+		return
+	}
+	if req.MaxSteps < 1 || req.MaxSteps > 20 {
+		client.SendError("maxSteps must be between 1 and 20")
+		return
+	}
+	m.maxStepsGetSet.SetMaxSteps(req.MaxSteps)
+	if m.librarianStatus != nil {
+		snap := m.librarianStatus.Get()
+		snap.MaxSteps = req.MaxSteps
+		snap.Classifier = m.classifierStatus()
+		client.SendResponse(MsgLibrarianStatus, snap)
+		return
+	}
+	client.SendResponse(MsgLibrarianStatus, libstatus.Snapshot{
+		Kind:     "unconfigured",
+		MaxSteps: req.MaxSteps,
+	})
 }
 
 func (m *Manager) classifierStatus() *libstatus.ClassifierStatus {

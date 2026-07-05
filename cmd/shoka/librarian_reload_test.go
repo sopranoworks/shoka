@@ -14,11 +14,13 @@ import (
 // --- fakes (no real config file, no cloud call) ---
 
 type fakeSwapper struct {
-	set    int
-	client llm.Client
+	set      int
+	client   llm.Client
+	maxSteps int
 }
 
 func (f *fakeSwapper) SetClient(c llm.Client) { f.set++; f.client = c }
+func (f *fakeSwapper) SetMaxSteps(n int)       { f.maxSteps = n }
 
 type fakeApplier struct {
 	applied int
