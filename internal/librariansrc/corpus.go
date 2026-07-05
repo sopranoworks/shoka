@@ -19,6 +19,8 @@ import (
 	"github.com/sopranoworks/shoka/pkg/librarian"
 )
 
+const vectorSearchMaxResults = 5
+
 // Store is the minimal slice of the storage layer the adapter needs.
 // *storage.FSGitStorage satisfies it.
 type Store interface {
@@ -128,7 +130,11 @@ func (c *Corpus) Search(ctx context.Context, query string, limit int) ([]librari
 	go func() {
 		defer wg.Done()
 		start := time.Now()
-		vr.results, vr.err = c.vec.VectorSearch(ctx, c.namespace, c.project, query, limit)
+		vecLimit := limit
+		if vecLimit > vectorSearchMaxResults {
+			vecLimit = vectorSearchMaxResults
+		}
+		vr.results, vr.err = c.vec.VectorSearch(ctx, c.namespace, c.project, query, vecLimit)
 		vr.ms = time.Since(start).Milliseconds()
 	}()
 	wg.Wait()

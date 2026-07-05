@@ -262,7 +262,7 @@ func (s *FSGitStorage) vectorEmbed(ctx context.Context, namespace, projectName, 
 // VectorSearchMinSimilarity is the floor below which results are discarded.
 // Without this, every file in the index is returned (top-N by score) even when
 // none are semantically related, causing the librarian LLM to loop fruitlessly.
-const VectorSearchMinSimilarity = 0.3
+const VectorSearchMinSimilarity = 0.45
 
 // VectorSearchResult is one result from a vector similarity search.
 type VectorSearchResult struct {
