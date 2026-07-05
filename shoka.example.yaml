@@ -211,8 +211,8 @@ storage:
   # interval) Shoka checks each project's working tree against its git HEAD and
   # marks projects healthy / corrupted / dangerous. Defaults shown.
   drift_scan:
-    on_startup: true   # run a scan once at startup
-    interval: 0        # 0 = no periodic re-scan; e.g. "5m" to enable
+    on_startup: true   # (bool) run a scan once at startup; default true
+    interval: 0        # (duration) 0 = no periodic re-scan; e.g. "5m" to enable; default 0
 
   # Lost+found worker. A periodic sweep that restores the "tracked-only working
   # tree" invariant: per healthy project, untracked files matching a
@@ -224,8 +224,8 @@ storage:
   # <base_dir>/<namespace>/<project>.shoka.disposable, merged additively.
   # Defaults shown.
   lost_found:
-    enabled: true      # set false to disable the worker (dev/debug)
-    interval: 5m       # sweep cadence
+    enabled: true      # (bool) set false to disable the worker (dev/debug); default true
+    interval: 5m       # (duration) sweep cadence; default 5m
 
   # Index repair worker (I1). A periodic sweep that reconciles each project's
   # derivative index store (<base_dir>/<namespace>/<project>.index.db) with git
@@ -233,8 +233,8 @@ storage:
   # corrupt. The index is a disposable cache; no query reads it yet (the full-text
   # and reverse-link fast paths arrive in later directives). Defaults shown.
   index:
-    enabled: true      # set false to disable the worker (dev/debug)
-    interval: 5m       # sweep cadence
+    enabled: true      # (bool) set false to disable the worker (dev/debug); default true
+    interval: 5m       # (duration) sweep cadence; default 5m
 
   # Deleted-file log. A per-project store (<base_dir>/<namespace>/<project>.deleted.db)
   # of currently-deleted files, written at the commit funnel and used by the admin
@@ -244,9 +244,9 @@ storage:
   # rebuilding from a BOUNDED recent-commit walk (never the full history). Defaults
   # shown; an absent block uses them.
   deleted_log:
-    enabled: true       # set false to disable the deleted-file log + revive/list ops
-    repair_depth: 50    # bounded rebuild-walk depth in commits (the stable since_last50 window)
-    max_entries: 1000   # FIFO cap on remembered deletions (oldest evicted; 0 = unbounded)
+    enabled: true       # (bool) set false to disable the deleted-file log + revive/list ops; default true
+    repair_depth: 50    # (int) bounded rebuild-walk depth in commits; default 50
+    max_entries: 1000   # (int) FIFO cap on remembered deletions (oldest evicted; 0 = unbounded); default 1000
 
   # OAuth dead-series cleaner. The OAuth token store has no other garbage
   # collection, so fully-dead token series (both the access AND refresh token
@@ -258,30 +258,30 @@ storage:
   # config that still sets oauth_cleaner.grace will FAIL to load (strict key
   # checking). Delete the line.
   oauth_cleaner:
-    enabled: true      # set false to keep dead series (they show on the admin page)
-    interval: 1h       # how often to sweep
+    enabled: true      # (bool) set false to keep dead series (they show on the admin page); default true
+    interval: 1h       # (duration) how often to sweep for expired token series; default 1h
 
 # Per-file write lock manager. Reads take no lock; each write holds a per-file
 # lock only across the check-and-write critical section. Defaults shown.
 filelock:
-  max_lease_duration: 5m   # a stale lease is reaped after this long
-  reaper_interval: 1s
+  max_lease_duration: 5m   # (duration) stale lease reap threshold; default 5m
+  reaper_interval: 1s      # (duration) how often to scan for stale leases; default 1s
 
 # Write-ahead log. Every write/delete is appended here before the background
 # worker commits it to git. If the WAL backs up past max_entries, writes are
 # refused (write-disabled mode) until it drains. Defaults shown.
 wal:
-  max_entries: 1000
+  max_entries: 1000        # (int) capacity before writes are refused; default 1000
 
 # Background git-commit worker pool that drains the WAL. Per-project order is
 # preserved; different projects commit concurrently. Defaults shown.
 wal_worker:
-  min_workers: 1
-  max_workers: 8
-  idle_timeout: 30s
-  scan_interval: 100ms
-  backoff_initial: 100ms
-  backoff_max: 30s
+  min_workers: 1           # (int) floor of the elastic pool; default 1
+  max_workers: 8           # (int) ceiling (one goroutine each); default 8
+  idle_timeout: 30s        # (duration) idle worker exits after this; default 30s
+  scan_interval: 100ms     # (duration) poll interval for new WAL entries; default 100ms
+  backoff_initial: 100ms   # (duration) first retry delay on commit failure; default 100ms
+  backoff_max: 30s         # (duration) max retry delay (exponential backoff cap); default 30s
 
 # In-process notification center. Records recent storage activity
 # (file.write / file.delete / project.create) in a bounded in-memory ring
@@ -289,7 +289,7 @@ wal_worker:
 # It is always constructed; setting max_entries: 1 effectively keeps only the
 # latest event. No transport or subscriber API exists yet. Default shown.
 notify:
-  max_entries: 1000   # ring buffer size for the notification center
+  max_entries: 1000   # (int) ring buffer size for the notification center; default 1000
 
 # Optional Prometheus metrics endpoint. Like the pprof endpoint (--profile-addr),
 # it is off by default and forced to a loopback host when set.
@@ -351,3 +351,43 @@ catalog: {}
 # var. ollama exposes Anthropic-/OpenAI-compatible endpoints but not the native
 # Gemini protocol, so gemini has no ollama path. ollama is a dev aid, not a
 # deployment target.)
+#
+# --- Classifier (semantic vector search) ---
+#
+# Optional sub-block under librarian. When enabled, ask_the_librarian runs
+# vector similarity search alongside fulltext: documents are embedded on write,
+# and queries are matched semantically (by meaning, not just keywords). This
+# finds documents even when the query uses different terminology.
+#
+# Requires: a provider that supports embeddings (openai or gemini; NOT anthropic).
+# The embedding API key is the SAME env var as the parent provider.
+#
+# Per-project vector indices live at <base_dir>/<namespace>/<project>.vector.db
+# (a disposable derivative — deleted and rebuilt on model change).
+#
+# Example with LM Studio (local embedding server):
+# librarian:
+#   provider: "openai"
+#   model: "gpt-4o"
+#   classifier:
+#     enabled: true
+#     embedding_model: "text-embedding-nomic-embed-text-v1.5"
+#     embedding_base_url: "http://localhost:1234/v1"   # LM Studio / local server
+#     db_path: "/var/lib/shoka/classifier.db"          # global classifier DB path
+#
+# Example with OpenAI production embeddings:
+# librarian:
+#   provider: "openai"
+#   model: "gpt-4o"
+#   classifier:
+#     enabled: true
+#     embedding_model: "text-embedding-3-small"        # OpenAI embedding model
+#     # embedding_base_url omitted = use OpenAI's default endpoint
+#     db_path: "/var/lib/shoka/classifier.db"
+#
+# Classifier config reference:
+#   enabled: false              # (bool) set to true to enable; default false
+#   provider: ""                # (string, optional) "openai" or "gemini"; defaults to parent librarian.provider
+#   embedding_model: ""         # (string, REQUIRED when enabled) embedding model id
+#   embedding_base_url: ""      # (string, optional) custom endpoint; defaults to parent librarian.base_url
+#   db_path: ""                 # (string, REQUIRED when enabled) path to the global classifier bbolt DB

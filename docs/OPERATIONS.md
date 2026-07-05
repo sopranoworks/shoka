@@ -465,6 +465,36 @@ started without one still needs a restart (the MCP tool is registered at startup
 > ollama debug path; its `base_url` is for a Gemini-protocol proxy/gateway only.)
 > ollama is a dev aid only and is not a supported deployment target.
 
+#### Classifier (semantic vector search)
+
+The optional `librarian.classifier` sub-block enables **vector similarity search**
+within `ask_the_librarian`. When enabled, every file write triggers asynchronous
+embedding (via an LLM embedding API), and queries run both fulltext bigram search
+and vector cosine-similarity search in parallel, merging results. This finds
+semantically related documents even when the query uses different terminology.
+
+| Key | Type | Required | Default | Meaning |
+|-----|------|----------|---------|---------|
+| `librarian.classifier.enabled` | bool | no | `false` | Enable/disable the classifier. |
+| `librarian.classifier.provider` | string | no | parent `librarian.provider` | `openai` or `gemini` (Anthropic does not support embeddings). |
+| `librarian.classifier.embedding_model` | string | yes (when enabled) | — | Embedding model id (e.g. `text-embedding-nomic-embed-text-v1.5`, `text-embedding-3-small`). |
+| `librarian.classifier.embedding_base_url` | string | no | parent `librarian.base_url` | Custom endpoint for the embedding API (e.g. `http://localhost:1234/v1` for LM Studio). |
+| `librarian.classifier.db_path` | string | yes (when enabled) | — | Path for the global classifier bbolt DB (e.g. `/var/lib/shoka/classifier.db`). |
+
+Per-project vector indices are stored as `<base_dir>/<namespace>/<project>.vector.db`
+(a derivative sibling like the catalog and search index). They are disposable: a model
+or dimension change discards the index and rebuilds from scratch.
+
+**Performance**: vectorization is async and non-blocking — the write path enqueues
+files to a background worker. A failed embedding (network error, rate limit) is
+skipped and retried by the periodic sweep (every 5 minutes). Vector search failure
+at query time falls back silently to fulltext-only results.
+
+**Live reload**: the classifier follows the librarian's live config reload. Changing
+the embedding model in the config and clicking "Reload" discards stale vector indices
+and starts rebuilding with the new model. Enabling/disabling the classifier on reload
+also works without a restart.
+
 Validation: the server refuses to start without `storage.base_dir`,
 `server.http.listen`, or at least one MCP transport (`server.mcp.plain.listen` /
 `server.mcp.oauth.listen`), and rejects an invalid `server.log.level`/`format` or

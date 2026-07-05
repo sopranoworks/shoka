@@ -20,9 +20,12 @@ Beyond basic file CRUD, Shoka provides — see the linked docs for the detail:
 - **Rich editing tools** — partial edits (`append_to_file`, `patch_file`) and
   `move_file` alongside read/write/delete. (Contract
   [§ 4](docs/contracts/mcp-v1.md).)
-- **Indexed search & link tracking** — full-text search (`search_files`) over a
-  project's documents, plus an internal reverse-link index that keeps
-  inter-document Markdown links consistent. (Contract § 4.12;
+- **Indexed search & link tracking** — full-text bigram search (`search_files`)
+  over a project's documents, plus an internal reverse-link index that keeps
+  inter-document Markdown links consistent. When the classifier is enabled,
+  `ask_the_librarian` also runs **vector similarity search** (semantic matching)
+  alongside fulltext — documents are vectorized on write, and queries are matched
+  by meaning, not just keywords. (Contract § 4.12;
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).)
 - **OAuth 2.1 authorization server** — a built-in AS (discovery, `/authorize`,
   `/token`) an operator can enable so remote MCP clients connect securely; **off

@@ -34,6 +34,15 @@ Shoka is a single Go binary running two HTTP listeners (Source:
   and reverse-link index maintained by a background sweep, backing `search_files`
   and link integrity. (Source: `internal/storage/index_store.go`,
   `internal/storage/index_sweep.go`.)
+- **Vector index** — `internal/storage`, a bbolt database beside each project
+  (`<base_dir>/<namespace>/<project>.vector.db`). A per-file embedding store
+  (K = file path, V = float64 vector) used by `ask_the_librarian` for semantic
+  similarity search. Documents are vectorized asynchronously on write (never
+  blocking the write path); a background sweep reconciles missing entries. A
+  model or dimension change discards the index and triggers a full rebuild.
+  Only active when the classifier is configured. (Source:
+  `internal/storage/vector_store.go`, `internal/storage/vector_worker.go`,
+  `internal/storage/vectorindex/vectorindex.go`.)
 - **Lost+found worker** — `internal/storage`. A periodic sweep over each namespace:
   untracked files matching the `shoka.disposable` marker are deleted, anything else
   is relocated to a `.shoka-lostfound` holding area rather than altered in place, so
@@ -84,11 +93,12 @@ Shoka is a single Go binary running two HTTP listeners (Source:
   the critical path. Writes stay fast, and per-repository Git contention does not
   block callers. The working tree, not the latest commit, is ground truth. (Source:
   `internal/storage/wal`, `internal/storage/walworker`.)
-- **Derived state is disposable.** The catalog and the search index are rebuildable
-  caches kept beside each project, never the source of truth; a missing or stale one
-  is rebuilt from the working tree. Untracked clutter is swept to a lost+found area
-  (or deleted when marked `shoka.disposable`) rather than committed. (Source:
-  `internal/storage/catalog_store.go`, `internal/storage/index_sweep.go`,
+- **Derived state is disposable.** The catalog, the search index, and the vector
+  index are rebuildable caches kept beside each project, never the source of truth;
+  a missing or stale one is rebuilt from the working tree. Untracked clutter is
+  swept to a lost+found area (or deleted when marked `shoka.disposable`) rather
+  than committed. (Source: `internal/storage/catalog_store.go`,
+  `internal/storage/index_sweep.go`, `internal/storage/vector_worker.go`,
   `internal/storage/lostfound_area.go`.)
 - **Namespace/project filesystem isolation (no IDs, no metadata service).**
   Project identity is the human-readable `namespace/project` path. There is no
