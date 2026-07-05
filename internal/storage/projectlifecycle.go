@@ -260,6 +260,16 @@ func (s *FSGitStorage) evictProjectHandles(namespace, projectName string) {
 		delete(s.deletedLogs, key)
 	}
 	s.dlMu.Unlock()
+	s.vecStoreMu.Lock()
+	if st, ok := s.vecStores[key]; ok {
+		if st != nil {
+			if err := st.Close(); err != nil {
+				s.log().Warn("vector index close on delete failed", "project", key, "err", err)
+			}
+		}
+		delete(s.vecStores, key)
+	}
+	s.vecStoreMu.Unlock()
 	s.stateMu.Lock()
 	delete(s.states, key)
 	s.stateMu.Unlock()

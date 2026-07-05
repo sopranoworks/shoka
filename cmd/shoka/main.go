@@ -1025,6 +1025,25 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 						"provider", cfg.Librarian.Classifier.ResolvedProvider(cfg.Librarian.Provider),
 						"model", cfg.Librarian.Classifier.EmbeddingModel,
 						"db_path", cfg.Librarian.Classifier.DBPath)
+
+					// Wire per-project vector index into storage write path.
+					embedCfg := llm.LLMConfig{
+						Provider: cfg.Librarian.Classifier.ResolvedProvider(cfg.Librarian.Provider),
+						BaseURL:  cfg.Librarian.Classifier.ResolvedBaseURL(cfg.Librarian.BaseURL),
+						Model:    cfg.Librarian.Classifier.EmbeddingModel,
+					}
+					vecEmbedder, vecErr := llm.NewEmbedder(embedCfg)
+					if vecErr != nil {
+						logger.Error("vector index: cannot build embedder", "error", vecErr)
+					} else {
+						s.SetVectorConfig(&storage.VectorIndexConfig{
+							Embedder: vecEmbedder,
+							Model:    cfg.Librarian.Classifier.EmbeddingModel,
+						})
+						s.StartVectorWorker(ctx, 5*time.Minute)
+						logger.Info("vector index: worker started",
+							"model", cfg.Librarian.Classifier.EmbeddingModel)
+					}
 				}
 			}
 

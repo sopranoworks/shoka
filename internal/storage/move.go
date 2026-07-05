@@ -138,6 +138,9 @@ func (s *FSGitStorage) Move(ctx context.Context, sessionID, namespace, projectNa
 		// Best-effort, under the locks, strictly after the catalog op.
 		s.indexDelete(namespace, projectName, srcRel)
 		s.indexPut(namespace, projectName, dstRel, movedContent, newEtag)
+		// Vector index: delete source, enqueue dest for re-embedding.
+		s.vectorDelete(namespace, projectName, srcRel)
+		s.vectorEnqueue(namespace, projectName, dstRel, movedContent)
 
 		// One WAL entry → one atomic git commit (the rename only; no Aux).
 		id := identity.Resolve(ctx, s.identityDefaults)

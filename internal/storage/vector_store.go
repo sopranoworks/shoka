@@ -1,0 +1,219 @@
+package storage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/sopranoworks/shoka/internal/storage/vectorindex"
+	"github.com/sopranoworks/shoka/pkg/librarian/llm"
+)
+
+// VectorIndexConfig holds the embedder configuration needed to operate the
+// per-project vector index. When nil/zero the vector index is disabled and the
+// write path is unaffected.
+type VectorIndexConfig struct {
+	Embedder   llm.Embedder
+	Model      string
+	Dimensions int // 0 = determine lazily from first embed response
+}
+
+// vectorPath returns a project's vector index DB path:
+// <base_dir>/<namespace>/<project>.vector.db
+func (s *FSGitStorage) vectorPath(namespace, projectName string) string {
+	if namespace == "" {
+		namespace = "default"
+	}
+	return filepath.Join(s.baseDir, namespace, projectName+".vector.db")
+}
+
+// SetVectorConfig injects the embedder configuration after construction. This
+// is called by cmd/shoka after the classifier is initialised. When cfg is nil
+// (classifier not configured), the vector index is disabled.
+func (s *FSGitStorage) SetVectorConfig(cfg *VectorIndexConfig) {
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
+	s.vecConfig = cfg
+}
+
+// vectorConfigured reports whether the vector index is active.
+func (s *FSGitStorage) vectorConfigured() bool {
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
+	return s.vecConfig != nil
+}
+
+// vectorForRead returns the open vector store for a project without ever creating
+// one. Returns nil if no store is registered and none can be opened, or if the
+// model/dimensions don't match the current config (triggering a rebuild).
+func (s *FSGitStorage) vectorForRead(namespace, projectName string) *vectorindex.Store {
+	key := projectKey(namespace, projectName)
+	s.vecStoreMu.Lock()
+	defer s.vecStoreMu.Unlock()
+	if st, ok := s.vecStores[key]; ok && st != nil {
+		return st
+	}
+	st, err := vectorindex.Open(s.vectorPath(namespace, projectName))
+	if err != nil {
+		return nil
+	}
+	s.vecStores[key] = st
+	return st
+}
+
+// vectorFor returns the open vector store for a project, opening or creating it
+// on demand. Returns an error if the store cannot be opened/created, or if the
+// model/dimensions have changed (the caller should rebuild).
+func (s *FSGitStorage) vectorFor(namespace, projectName string) (*vectorindex.Store, error) {
+	key := projectKey(namespace, projectName)
+	s.vecStoreMu.Lock()
+	defer s.vecStoreMu.Unlock()
+	if st, ok := s.vecStores[key]; ok && st != nil {
+		return st, nil
+	}
+	p := s.vectorPath(namespace, projectName)
+	st, err := vectorindex.Open(p)
+	if errors.Is(err, vectorindex.ErrNotFound) {
+		cfg := s.currentVecConfig()
+		if cfg == nil {
+			return nil, fmt.Errorf("vectorindex: not configured")
+		}
+		dims := cfg.Dimensions
+		if dims == 0 {
+			dims = s.vecResolvedDims
+		}
+		if dims == 0 {
+			return nil, fmt.Errorf("vectorindex: dimensions not yet resolved")
+		}
+		st, err = vectorindex.Create(p, namespace, projectName, cfg.Model, dims)
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.vecStores[key] = st
+	return st, nil
+}
+
+// registerVectorStore records an already-open vector store handle.
+func (s *FSGitStorage) registerVectorStore(namespace, projectName string, st *vectorindex.Store) {
+	key := projectKey(namespace, projectName)
+	s.vecStoreMu.Lock()
+	if old, ok := s.vecStores[key]; ok && old != nil && old != st {
+		_ = old.Close()
+	}
+	s.vecStores[key] = st
+	s.vecStoreMu.Unlock()
+}
+
+// removeVectorFile deletes a project's on-disk vector DB and drops any registered
+// handle. Used by the sweep to discard a stale/corrupt store before recreating.
+func (s *FSGitStorage) removeVectorFile(namespace, projectName string) {
+	key := projectKey(namespace, projectName)
+	s.vecStoreMu.Lock()
+	if old, ok := s.vecStores[key]; ok && old != nil {
+		_ = old.Close()
+		delete(s.vecStores, key)
+	}
+	s.vecStoreMu.Unlock()
+	if err := os.Remove(s.vectorPath(namespace, projectName)); err != nil && !os.IsNotExist(err) {
+		s.log().Warn("vector index file remove failed",
+			"namespace", namespace, "project", projectName, "err", err)
+	}
+}
+
+// vectorDelete removes a path from the vector index. Synchronous and best-effort
+// (no API call needed for a delete — just a bbolt key removal).
+func (s *FSGitStorage) vectorDelete(namespace, projectName, rel string) {
+	if !s.vectorConfigured() {
+		return
+	}
+	st := s.vectorForRead(namespace, projectName)
+	if st == nil {
+		return
+	}
+	if err := st.Delete(rel); err != nil {
+		s.log().Warn("vector index delete failed",
+			"namespace", namespace, "project", projectName, "path", rel, "err", err)
+		s.vecUpdateFailedDelete.Add(1)
+	}
+}
+
+// vectorEnqueue queues a file for background vectorization. Non-blocking: if the
+// channel is full the item is dropped (the sweep catches it later).
+func (s *FSGitStorage) vectorEnqueue(namespace, projectName, rel string, content []byte) {
+	if !s.vectorConfigured() {
+		return
+	}
+	item := vectorWorkItem{
+		namespace: namespace,
+		project:   projectName,
+		path:      rel,
+		content:   content,
+	}
+	select {
+	case s.vecQueue <- item:
+		s.vecEnqueued.Add(1)
+	default:
+		s.vecDropped.Add(1)
+	}
+}
+
+// currentVecConfig returns the current vector config under the lock.
+func (s *FSGitStorage) currentVecConfig() *VectorIndexConfig {
+	s.vecMu.Lock()
+	defer s.vecMu.Unlock()
+	return s.vecConfig
+}
+
+// VectorCounters returns the vector index observability counters.
+func (s *FSGitStorage) VectorCounters() (enqueued, dropped, embedded, failedEmbed, failedDelete, rebuilds int64) {
+	return s.vecEnqueued.Load(),
+		s.vecDropped.Load(),
+		s.vecEmbedded.Load(),
+		s.vecFailedEmbed.Load(),
+		s.vecUpdateFailedDelete.Load(),
+		s.vecRebuilds.Load()
+}
+
+// VectorSweepRuns returns the number of vector reconcile passes.
+func (s *FSGitStorage) VectorSweepRuns() int64 { return s.vecSweepRuns.Load() }
+
+// vectorEmbed calls the configured embedder and stores the result. Called by
+// the background worker. Returns the dimensions (for lazy resolution).
+func (s *FSGitStorage) vectorEmbed(ctx context.Context, namespace, projectName, rel string, content []byte) (int, error) {
+	cfg := s.currentVecConfig()
+	if cfg == nil {
+		return 0, fmt.Errorf("vectorindex: not configured")
+	}
+	vec, err := cfg.Embedder.Embed(ctx, string(content))
+	if err != nil {
+		s.vecFailedEmbed.Add(1)
+		return 0, err
+	}
+
+	// Lazy dimension resolution: the first successful embed determines dimensions.
+	s.vecDimOnce.Do(func() {
+		s.vecResolvedDims = vec.Dimensions
+	})
+
+	st, stErr := s.vectorFor(namespace, projectName)
+	if stErr != nil {
+		s.vecFailedEmbed.Add(1)
+		return vec.Dimensions, stErr
+	}
+
+	// Check model/dimensions match
+	if err := st.CheckModel(cfg.Model, vec.Dimensions); err != nil {
+		s.vecFailedEmbed.Add(1)
+		return vec.Dimensions, err
+	}
+
+	if err := st.Put(rel, vec.Values); err != nil {
+		s.vecFailedEmbed.Add(1)
+		return vec.Dimensions, err
+	}
+	s.vecEmbedded.Add(1)
+	return vec.Dimensions, nil
+}

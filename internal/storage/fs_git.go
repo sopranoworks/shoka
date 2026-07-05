@@ -24,6 +24,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/storage/filelock"
 	"github.com/sopranoworks/shoka/internal/storage/index"
 	"github.com/sopranoworks/shoka/internal/storage/nsregistry"
+	"github.com/sopranoworks/shoka/internal/storage/vectorindex"
 	"github.com/sopranoworks/shoka/internal/storage/wal"
 	"github.com/sopranoworks/shoka/internal/storage/walworker"
 	"github.com/sopranoworks/shoka/internal/utils"
@@ -164,6 +165,34 @@ type FSGitStorage struct {
 	// increments it; a genuinely-corrupted one re-pays per write attempt until
 	// recovery clears it. Surfaced via LazyRescanCount().
 	lazyRescans atomic.Int64
+
+	// vecStores holds one open per-project vector index keyed by
+	// "<namespace>/<project>", at the sibling path <base>/<ns>/<project>.vector.db.
+	// Like the fulltext index it is a disposable derivative, opened lazily and
+	// rebuilt by the vector sweep when missing/stale/model-changed.
+	vecStoreMu sync.Mutex
+	vecStores  map[string]*vectorindex.Store
+
+	// vecConfig is the injected embedder configuration (nil = vector index disabled).
+	// vecMu guards the config pointer; vecDimOnce + vecResolvedDims handle lazy
+	// dimension resolution from the first embed response.
+	vecMu           sync.Mutex
+	vecConfig       *VectorIndexConfig
+	vecDimOnce      sync.Once
+	vecResolvedDims int
+
+	// vecQueue is the non-blocking channel the write path enqueues files into for
+	// background vectorization.
+	vecQueue chan vectorWorkItem
+
+	// Vector index observability counters.
+	vecEnqueued          atomic.Int64
+	vecDropped           atomic.Int64
+	vecEmbedded          atomic.Int64
+	vecFailedEmbed       atomic.Int64
+	vecUpdateFailedDelete atomic.Int64
+	vecRebuilds          atomic.Int64
+	vecSweepRuns         atomic.Int64
 
 	// notify is the in-process notification center (internal/notify). It may be
 	// nil; every call site uses the nil-safe receiver method, so storage never
@@ -403,6 +432,8 @@ func NewFSGitStorageWithOptions(baseDir string, opts Options) (*FSGitStorage, er
 		catalogs:         make(map[string]*catalog.Catalog),
 		indexes:          make(map[string]*index.Index),
 		deletedLogs:      make(map[string]*deletedlog.Store),
+		vecStores:        make(map[string]*vectorindex.Store),
+		vecQueue:         make(chan vectorWorkItem, vectorQueueSize),
 		fixLinksKicks:    make(chan fixLinksKick, fixLinksKickBuffer),
 		notify:           opts.NotifyCenter,
 		nsReg:            nsReg,
@@ -478,6 +509,16 @@ func (s *FSGitStorage) Close() error {
 		delete(s.deletedLogs, key)
 	}
 	s.dlMu.Unlock()
+	s.vecStoreMu.Lock()
+	for key, st := range s.vecStores {
+		if st != nil {
+			if err := st.Close(); err != nil {
+				s.log().Warn("vector index close failed", "project", key, "err", err)
+			}
+		}
+		delete(s.vecStores, key)
+	}
+	s.vecStoreMu.Unlock()
 	if s.nsReg != nil {
 		if err := s.nsReg.Close(); err != nil {
 			s.log().Warn("namespace registry close failed", "err", err)
@@ -710,6 +751,9 @@ func (s *FSGitStorage) writeTransformed(ctx context.Context, sessionID, namespac
 		// best-effort, under the same lock. A failure leaves the index stale for
 		// the repair sweep; it never fails the write.
 		s.indexPut(namespace, projectName, rel, newContent, newEtag)
+		// Vector index: enqueue for async background embedding. Non-blocking:
+		// if the queue is full the item is dropped (the sweep catches it later).
+		s.vectorEnqueue(namespace, projectName, rel, newContent)
 		return nil
 	})
 	if lockErr != nil {
@@ -860,6 +904,8 @@ func (s *FSGitStorage) deleteFile(ctx context.Context, sessionID, namespace, pro
 		s.catalogDelete(namespace, projectName, rel)
 		// Index update (I1): mirror the catalog delete, best-effort, under the lock.
 		s.indexDelete(namespace, projectName, rel)
+		// Vector index: synchronous delete (no API call, just a bbolt key removal).
+		s.vectorDelete(namespace, projectName, rel)
 		id := identity.Resolve(ctx, s.identityDefaults)
 		if _, err := s.wal.Append(wal.Entry{
 			Namespace:    namespace,
