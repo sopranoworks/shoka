@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	"google.golang.org/genai"
@@ -236,4 +237,53 @@ func toolResponse(content string, isError bool) map[string]any {
 		key = "error"
 	}
 	return map[string]any{key: content}
+}
+
+// geminiEmbedder adapts the genai SDK's Models.EmbedContent method.
+type geminiEmbedder struct {
+	cfg  LLMConfig
+	once sync.Once
+	client  *genai.Client
+	initErr error
+}
+
+func newGeminiEmbedder(cfg LLMConfig) Embedder {
+	return &geminiEmbedder{cfg: cfg}
+}
+
+func (g *geminiEmbedder) ensure(ctx context.Context) (*genai.Client, error) {
+	g.once.Do(func() {
+		cc := &genai.ClientConfig{Backend: genai.BackendGeminiAPI}
+		if g.cfg.BaseURL != "" {
+			cc.HTTPOptions = genai.HTTPOptions{BaseURL: g.cfg.BaseURL}
+		}
+		g.client, g.initErr = genai.NewClient(ctx, cc)
+	})
+	return g.client, g.initErr
+}
+
+func (g *geminiEmbedder) Embed(ctx context.Context, text string) (*EmbeddingVector, error) {
+	client, err := g.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Models.EmbedContent(ctx, g.cfg.Model, []*genai.Content{
+		{Parts: []*genai.Part{{Text: text}}},
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Embeddings) == 0 {
+		return nil, fmt.Errorf("gemini embedding response contained no embeddings")
+	}
+	vals32 := resp.Embeddings[0].Values
+	vals := make([]float64, len(vals32))
+	for i, v := range vals32 {
+		vals[i] = float64(v)
+	}
+	return &EmbeddingVector{
+		Model:      g.cfg.Model,
+		Dimensions: len(vals),
+		Values:     vals,
+	}, nil
 }

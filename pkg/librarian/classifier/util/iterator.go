@@ -39,8 +39,8 @@ func NewMemoryStore(model string, dimensions int) *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) Model() string    { return s.model }
-func (s *MemoryStore) Dimensions() int  { return s.dimensions }
+func (s *MemoryStore) Model() string   { return s.model }
+func (s *MemoryStore) Dimensions() int { return s.dimensions }
 
 func (s *MemoryStore) Write(key string, vector []float64) error {
 	if len(vector) != s.dimensions {
@@ -71,8 +71,8 @@ type memoryIterator struct {
 	pos        int
 }
 
-func (it *memoryIterator) Model() string    { return it.model }
-func (it *memoryIterator) Dimensions() int  { return it.dimensions }
+func (it *memoryIterator) Model() string   { return it.model }
+func (it *memoryIterator) Dimensions() int { return it.dimensions }
 
 func (it *memoryIterator) Read() (*KeyedVector, error) {
 	if it.pos >= len(it.entries) {

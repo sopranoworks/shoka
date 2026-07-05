@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -124,6 +125,42 @@ func toOpenAITools(tools []ToolDef) []openai.ChatCompletionToolUnionParam {
 		out = append(out, openai.ChatCompletionFunctionTool(fn))
 	}
 	return out
+}
+
+// openaiEmbedder adapts the openai-go SDK's Embeddings service.
+type openaiEmbedder struct {
+	client openai.Client
+	model  string
+}
+
+func newOpenAIEmbedder(cfg LLMConfig) Embedder {
+	var opts []option.RequestOption
+	if cfg.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	return &openaiEmbedder{
+		client: openai.NewClient(opts...),
+		model:  cfg.Model,
+	}
+}
+
+func (e *openaiEmbedder) Embed(ctx context.Context, text string) (*EmbeddingVector, error) {
+	resp, err := e.client.Embeddings.New(ctx, openai.EmbeddingNewParams{
+		Model: openai.EmbeddingModel(e.model),
+		Input: openai.EmbeddingNewParamsInputUnion{OfString: openai.String(text)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("embedding response contained no data")
+	}
+	embedding := resp.Data[0].Embedding
+	return &EmbeddingVector{
+		Model:      resp.Model,
+		Dimensions: len(embedding),
+		Values:     embedding,
+	}, nil
 }
 
 // fromOpenAIMessage converts an OpenAI reply to a neutral assistant Message,

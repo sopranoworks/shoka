@@ -1,13 +1,12 @@
-package core
+package classifier
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
 
-	"github.com/sopranoworks/shoka/internal/classifier/util"
+	"github.com/sopranoworks/shoka/pkg/librarian/classifier/util"
 )
 
 type MatchResult struct {
@@ -34,7 +33,7 @@ func (m *Matcher) FindTopN(ctx context.Context, target *Vector, iter util.Iterat
 			return nil, err
 		}
 		kv, err := iter.Read()
-		if errors.Is(err, util.ErrIteratorExhausted) {
+		if err == util.ErrIteratorExhausted {
 			break
 		}
 		if err != nil {

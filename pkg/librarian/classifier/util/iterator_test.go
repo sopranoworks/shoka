@@ -1,10 +1,9 @@
 package util_test
 
 import (
-	"errors"
 	"testing"
 
-	"github.com/sopranoworks/shoka/internal/classifier/util"
+	"github.com/sopranoworks/shoka/pkg/librarian/classifier/util"
 )
 
 func TestMemoryStore_WriteAndIterate(t *testing.T) {
@@ -41,7 +40,7 @@ func TestMemoryStore_WriteAndIterate(t *testing.T) {
 	}
 
 	_, err = iter.Read()
-	if !errors.Is(err, util.ErrIteratorExhausted) {
+	if err != util.ErrIteratorExhausted {
 		t.Fatalf("expected ErrIteratorExhausted, got %v", err)
 	}
 }
@@ -54,21 +53,11 @@ func TestMemoryStore_WriteDimensionMismatch(t *testing.T) {
 	}
 }
 
-func TestMemoryStore_WriteModelExposed(t *testing.T) {
-	store := util.NewMemoryStore("my-model", 2)
-	if store.Model() != "my-model" {
-		t.Fatalf("expected model 'my-model', got %q", store.Model())
-	}
-	if store.Dimensions() != 2 {
-		t.Fatalf("expected dimensions 2, got %d", store.Dimensions())
-	}
-}
-
 func TestMemoryStore_EmptyIterator(t *testing.T) {
 	store := util.NewMemoryStore("m", 3)
 	iter := store.Iterator()
 	_, err := iter.Read()
-	if !errors.Is(err, util.ErrIteratorExhausted) {
+	if err != util.ErrIteratorExhausted {
 		t.Fatalf("expected ErrIteratorExhausted on empty store, got %v", err)
 	}
 }

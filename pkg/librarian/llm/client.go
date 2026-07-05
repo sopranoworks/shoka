@@ -145,3 +145,29 @@ func NewClient(cfg LLMConfig) (Client, error) {
 		return nil, fmt.Errorf("unknown llm provider %q (want %q, %q or %q)", cfg.Provider, ProviderAnthropic, ProviderOpenAI, ProviderGemini)
 	}
 }
+
+// EmbeddingVector is the result of an embedding call.
+type EmbeddingVector struct {
+	Model      string
+	Dimensions int
+	Values     []float64
+}
+
+// Embedder produces embedding vectors from text via an LLM provider.
+type Embedder interface {
+	Embed(ctx context.Context, text string) (*EmbeddingVector, error)
+}
+
+// NewEmbedder builds an Embedder for the configured provider.
+func NewEmbedder(cfg LLMConfig) (Embedder, error) {
+	switch cfg.Provider {
+	case ProviderOpenAI:
+		return newOpenAIEmbedder(cfg), nil
+	case ProviderGemini:
+		return newGeminiEmbedder(cfg), nil
+	case ProviderAnthropic:
+		return nil, fmt.Errorf("provider %q does not support embeddings", ProviderAnthropic)
+	default:
+		return nil, fmt.Errorf("unknown llm provider %q (want %q, %q or %q)", cfg.Provider, ProviderAnthropic, ProviderOpenAI, ProviderGemini)
+	}
+}
