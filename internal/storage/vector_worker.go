@@ -39,7 +39,10 @@ func (s *FSGitStorage) StartVectorWorker(ctx context.Context, interval time.Dura
 }
 
 func (s *FSGitStorage) vectorWorkerLoop(ctx context.Context, interval time.Duration) {
-	// Process any queued items before the first sweep.
+	// Initial reconcile: vectorize all pre-existing project files that have no
+	// vector entry yet (mirrors StartIndexSweep's immediate reconcileAllIndexes).
+	s.reconcileAllVectors(ctx)
+	// Drain items that arrived during the initial reconcile.
 	s.drainVectorQueue(ctx)
 
 	var ticker *time.Ticker

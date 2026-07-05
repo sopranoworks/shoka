@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -69,6 +70,20 @@ func setupVectorStore(t *testing.T) (*FSGitStorage, *fakeEmbedder) {
 		Dimensions: 4,
 	})
 	return s, embedder
+}
+
+// waitForSweep waits until the vector sweep has completed at least n runs.
+func waitForSweep(t *testing.T, s *FSGitStorage, n int64) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for s.VectorSweepRuns() < n {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for sweep runs >= %d (got %d)", n, s.VectorSweepRuns())
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 }
 
 // waitForVectorEmbedded waits until at least n successful embeddings are stored.
@@ -159,22 +174,41 @@ func TestVector_MoveDeletesSourceEnqueuesDest(t *testing.T) {
 	defer cancel()
 	s.StartVectorWorker(ctx, 0)
 
+	// Wait for initial sweep to complete (empty project, fast)
+	waitForSweep(t, s, 1)
+
 	_, err := s.Write(context.Background(), "sess", "ns", "proj", "src.md", "body", nil)
 	require.NoError(t, err)
 	waitForVectorEmbedded(t, s, 1)
 
 	_, _, err = s.Move(context.Background(), "sess", "ns", "proj", "src.md", "dst.md", nil)
 	require.NoError(t, err)
-	waitForVectorEmbedded(t, s, 2)
+
+	// Wait until dst.md appears in the store (the move enqueues it; poll the store).
+	deadline := time.After(5 * time.Second)
+	for {
+		st := s.vectorForRead("ns", "proj")
+		if st != nil {
+			if _, found, _ := st.Get("dst.md"); found {
+				break
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for dst.md to appear in vector index")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 
 	st := s.vectorForRead("ns", "proj")
 	require.NotNil(t, st)
 
-	// Source should be gone
+	// Source should be gone (vectorDelete is synchronous, ran before enqueue)
 	_, found, _ := st.Get("src.md")
 	assert.False(t, found)
 
-	// Dest should exist
+	// Dest confirmed above
 	_, found, _ = st.Get("dst.md")
 	assert.True(t, found)
 }
@@ -198,12 +232,28 @@ func TestVector_EmbedFailure_DoesNotCrash(t *testing.T) {
 	defer cancel()
 	s.StartVectorWorker(ctx, 0)
 
+	// Wait for initial sweep (empty project)
+	waitForSweep(t, s, 1)
+
 	embedder.setFailNext()
 	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
 	require.NoError(t, err)
 
 	// Wait for the worker to process (it will fail)
-	waitForVectorProcessed(t, s, 1)
+	_, _, _, baseFailed, _, _ := s.VectorCounters()
+	deadline := time.After(5 * time.Second)
+	for {
+		_, _, _, failed, _, _ := s.VectorCounters()
+		if failed > baseFailed {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for embed failure")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 
 	// The write succeeded even though embedding failed
 	content, err := s.ReadFile("ns", "proj", "a.md")
@@ -223,6 +273,9 @@ func TestVector_ModelChange_DiscardsStore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.StartVectorWorker(ctx, 0)
+
+	// Wait for initial sweep to finish (empty project, fast)
+	waitForSweep(t, s, 1)
 
 	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
 	require.NoError(t, err)
@@ -244,14 +297,21 @@ func TestVector_ModelChange_DiscardsStore(t *testing.T) {
 	// Write again — the worker detects model mismatch and discards the store
 	_, err = s.Write(context.Background(), "sess", "ns", "proj", "b.md", "world", nil)
 	require.NoError(t, err)
-	// The embed will succeed (API call works) but CheckModel fails, so the store
-	// is removed. Wait for the item to be processed (counted as a failed embed).
-	waitForVectorProcessed(t, s, 2)
 
-	// The old store with "old-model" should be removed from disk
-	_, openErr := vectorindex.Open(p)
-	assert.ErrorIs(t, openErr, vectorindex.ErrNotFound,
-		"vector DB should have been removed on model mismatch")
+	// Wait until the model-mismatch discard happens (poll the disk)
+	deadline := time.After(5 * time.Second)
+	for {
+		_, openErr := vectorindex.Open(p)
+		if errors.Is(openErr, vectorindex.ErrNotFound) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for model mismatch discard")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 func TestVector_SiblingRegistered(t *testing.T) {
@@ -311,11 +371,14 @@ func TestVector_SetVectorConfig_Deactivate(t *testing.T) {
 	defer cancel()
 	s.StartVectorWorker(ctx, 0)
 
+	// Wait for initial sweep + write embed to settle
+	waitForSweep(t, s, 1)
 	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
 	require.NoError(t, err)
 	waitForVectorEmbedded(t, s, 1)
 
-	// Deactivate
+	// Record embed count, then deactivate
+	_, _, baseEmbedded, _, _, _ := s.VectorCounters()
 	s.SetVectorConfig(nil)
 
 	// Write should not enqueue anything
@@ -325,7 +388,7 @@ func TestVector_SetVectorConfig_Deactivate(t *testing.T) {
 	// Give the worker time to NOT process anything
 	time.Sleep(50 * time.Millisecond)
 	_, _, embedded, _, _, _ := s.VectorCounters()
-	assert.Equal(t, int64(1), embedded, "no new embeds after deactivation")
+	assert.Equal(t, baseEmbedded, embedded, "no new embeds after deactivation")
 }
 
 func TestVector_SetVectorConfig_Activate_OnReload(t *testing.T) {
@@ -347,13 +410,42 @@ func TestVector_SetVectorConfig_Activate_OnReload(t *testing.T) {
 	})
 	s.StartVectorWorker(ctx, 0)
 
-	// Write after activation should be vectorized
-	_, err = s.Write(context.Background(), "sess", "ns", "proj", "b.md", "world", nil)
-	require.NoError(t, err)
+	// The initial reconcile should vectorize the pre-existing "a.md"
 	waitForVectorEmbedded(t, s, 1)
 
 	st := s.vectorForRead("ns", "proj")
 	require.NotNil(t, st)
-	_, found, _ := st.Get("b.md")
-	assert.True(t, found)
+	_, found, _ := st.Get("a.md")
+	assert.True(t, found, "pre-existing file should be vectorized by initial sweep")
+}
+
+func TestVector_InitialSweep_VectorizesPreExistingFiles(t *testing.T) {
+	s, _ := newStore(t, Options{})
+	require.NoError(t, s.CreateProject("ns", "proj"))
+
+	// Write files BEFORE classifier is configured
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "doc1.md", "first document", nil)
+	require.NoError(t, err)
+	_, err = s.Write(context.Background(), "sess", "ns", "proj", "doc2.md", "second document", nil)
+	require.NoError(t, err)
+
+	// Now configure and start the worker
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.SetVectorConfig(&VectorIndexConfig{
+		Embedder:   newFakeEmbedder(4),
+		Model:      "test-model",
+		Dimensions: 4,
+	})
+	s.StartVectorWorker(ctx, 0) // interval=0 means no periodic sweep; initial sweep still runs
+
+	// Both pre-existing files should be vectorized by the initial reconcile
+	waitForVectorEmbedded(t, s, 2)
+
+	st := s.vectorForRead("ns", "proj")
+	require.NotNil(t, st)
+	_, found1, _ := st.Get("doc1.md")
+	_, found2, _ := st.Get("doc2.md")
+	assert.True(t, found1, "doc1.md should be vectorized")
+	assert.True(t, found2, "doc2.md should be vectorized")
 }
