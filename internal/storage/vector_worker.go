@@ -26,9 +26,13 @@ type vectorWorkItem struct {
 // StartVectorWorker starts the background vectorization goroutine. It processes
 // enqueued items (from the write path) and runs periodic reconciliation sweeps.
 // interval <= 0 disables the periodic sweep (items are still processed from the
-// queue). The goroutine stops when ctx is cancelled.
+// queue). The goroutine stops when ctx is cancelled. Safe to call multiple times;
+// only the first call starts the worker.
 func (s *FSGitStorage) StartVectorWorker(ctx context.Context, interval time.Duration) {
 	if !s.vectorConfigured() {
+		return
+	}
+	if !s.vecWorkerStarted.CompareAndSwap(false, true) {
 		return
 	}
 	go s.vectorWorkerLoop(ctx, interval)

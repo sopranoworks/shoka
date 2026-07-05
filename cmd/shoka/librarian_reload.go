@@ -28,6 +28,10 @@ type reloadDeps struct {
 	loadConfig  func(string) (*config.Config, error)
 	checkHealth func(context.Context, llm.LLMConfig) llm.HealthResult
 	newClient   func(llm.LLMConfig) (llm.Client, error)
+	// onClassifierReload is called after a successful LLM client swap with the
+	// new config so the caller can re-wire the classifier and vector index.
+	// May be nil (no classifier support).
+	onClassifierReload func(context.Context, *config.Config)
 }
 
 // newLibrarianReloader builds the B-73 Option-2 reload action: an llm-block-only,
@@ -70,6 +74,9 @@ func newLibrarianReloader(configPath string, lib clientSwapper, checker statusAp
 			})
 		}
 		lib.SetClient(newClient)
+		if deps.onClassifierReload != nil {
+			deps.onClassifierReload(ctx, cfg)
+		}
 		return checker.Apply(lc, res)
 	}
 }

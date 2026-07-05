@@ -29,13 +29,41 @@ func (s *FSGitStorage) vectorPath(namespace, projectName string) string {
 	return filepath.Join(s.baseDir, namespace, projectName+".vector.db")
 }
 
-// SetVectorConfig injects the embedder configuration after construction. This
-// is called by cmd/shoka after the classifier is initialised. When cfg is nil
-// (classifier not configured), the vector index is disabled.
+// SetVectorConfig injects or swaps the embedder configuration. This is called
+// at startup and on config live-reload. When cfg is nil (classifier not
+// configured or deactivated), the vector index is disabled but existing stores
+// are left on disk (they'll be valid if the same model is re-enabled later).
+// When the model changes, all in-memory stores are discarded so the next write
+// or sweep detects the mismatch and rebuilds.
 func (s *FSGitStorage) SetVectorConfig(cfg *VectorIndexConfig) {
 	s.vecMu.Lock()
-	defer s.vecMu.Unlock()
+	oldCfg := s.vecConfig
 	s.vecConfig = cfg
+	s.vecMu.Unlock()
+
+	// Detect model change: if the old and new configs have different models,
+	// discard all in-memory vector stores. The on-disk .vector.db files are left;
+	// the sweep or next write will detect the model mismatch via CheckModel and
+	// rebuild from scratch.
+	if oldCfg != nil && cfg != nil && oldCfg.Model != cfg.Model {
+		s.discardAllVectorStores()
+		s.log().Info("vector index: model changed, discarded in-memory stores",
+			"old_model", oldCfg.Model, "new_model", cfg.Model)
+	}
+}
+
+// discardAllVectorStores closes and removes all in-memory vector store handles.
+// The on-disk files remain — they are rebuilt by the sweep when it detects the
+// model mismatch.
+func (s *FSGitStorage) discardAllVectorStores() {
+	s.vecStoreMu.Lock()
+	defer s.vecStoreMu.Unlock()
+	for key, st := range s.vecStores {
+		if st != nil {
+			_ = st.Close()
+		}
+		delete(s.vecStores, key)
+	}
 }
 
 // vectorConfigured reports whether the vector index is active.

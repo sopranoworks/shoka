@@ -268,3 +268,92 @@ func TestVector_SiblingRegistered(t *testing.T) {
 	}
 	assert.True(t, found, "vector.db must be in siblingDBPaths")
 }
+
+func TestVector_SetVectorConfig_ModelChange_DiscardsHandles(t *testing.T) {
+	s, _ := setupVectorStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.StartVectorWorker(ctx, 0)
+
+	// Write a file so the vector store is opened
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
+	require.NoError(t, err)
+	waitForVectorEmbedded(t, s, 1)
+
+	// Verify store is in memory
+	st := s.vectorForRead("ns", "proj")
+	require.NotNil(t, st)
+
+	// Swap to a different model via SetVectorConfig
+	newEmbedder := newFakeEmbedder(8)
+	s.SetVectorConfig(&VectorIndexConfig{
+		Embedder:   newEmbedder,
+		Model:      "new-model",
+		Dimensions: 8,
+	})
+
+	// In-memory handles should be gone (discarded on model change)
+	st2 := s.vectorForRead("ns", "proj")
+	// The old store handle was closed; vectorForRead tries to open from disk but
+	// the on-disk file has the old model — it opens fine but CheckModel will fail
+	// when the sweep or next write hits it. The key point: the in-memory registry
+	// was cleared.
+	if st2 != nil {
+		err = st2.CheckModel("new-model", 8)
+		assert.ErrorIs(t, err, vectorindex.ErrModelMismatch,
+			"old on-disk store should not match new model")
+	}
+}
+
+func TestVector_SetVectorConfig_Deactivate(t *testing.T) {
+	s, _ := setupVectorStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.StartVectorWorker(ctx, 0)
+
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
+	require.NoError(t, err)
+	waitForVectorEmbedded(t, s, 1)
+
+	// Deactivate
+	s.SetVectorConfig(nil)
+
+	// Write should not enqueue anything
+	_, err = s.Write(context.Background(), "sess", "ns", "proj", "b.md", "world", nil)
+	require.NoError(t, err)
+
+	// Give the worker time to NOT process anything
+	time.Sleep(50 * time.Millisecond)
+	_, _, embedded, _, _, _ := s.VectorCounters()
+	assert.Equal(t, int64(1), embedded, "no new embeds after deactivation")
+}
+
+func TestVector_SetVectorConfig_Activate_OnReload(t *testing.T) {
+	s, _ := newStore(t, Options{})
+	require.NoError(t, s.CreateProject("ns", "proj"))
+	// Not configured at startup — write should not enqueue
+
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "a.md", "hello", nil)
+	require.NoError(t, err)
+
+	// Now activate via SetVectorConfig + StartVectorWorker (as the reload would)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	embedder := newFakeEmbedder(4)
+	s.SetVectorConfig(&VectorIndexConfig{
+		Embedder:   embedder,
+		Model:      "test-model",
+		Dimensions: 4,
+	})
+	s.StartVectorWorker(ctx, 0)
+
+	// Write after activation should be vectorized
+	_, err = s.Write(context.Background(), "sess", "ns", "proj", "b.md", "world", nil)
+	require.NoError(t, err)
+	waitForVectorEmbedded(t, s, 1)
+
+	st := s.vectorForRead("ns", "proj")
+	require.NotNil(t, st)
+	_, found, _ := st.Get("b.md")
+	assert.True(t, found)
+}

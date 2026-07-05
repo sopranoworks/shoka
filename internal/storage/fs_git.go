@@ -183,7 +183,8 @@ type FSGitStorage struct {
 
 	// vecQueue is the non-blocking channel the write path enqueues files into for
 	// background vectorization.
-	vecQueue chan vectorWorkItem
+	vecQueue         chan vectorWorkItem
+	vecWorkerStarted atomic.Bool
 
 	// Vector index observability counters.
 	vecEnqueued          atomic.Int64

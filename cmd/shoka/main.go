@@ -562,6 +562,31 @@ func main() {
 			loadConfig:  config.Load,
 			checkHealth: llm.CheckHealth,
 			newClient:   llm.NewClient,
+			onClassifierReload: func(reloadCtx context.Context, newCfg *config.Config) {
+				cc := newCfg.Librarian.Classifier
+				if !cc.Enabled {
+					s.SetVectorConfig(nil)
+					logger.Info("vector index: deactivated on reload (classifier disabled)")
+					return
+				}
+				embedCfg := llm.LLMConfig{
+					Provider: cc.ResolvedProvider(newCfg.Librarian.Provider),
+					BaseURL:  cc.ResolvedBaseURL(newCfg.Librarian.BaseURL),
+					Model:    cc.EmbeddingModel,
+				}
+				vecEmbedder, err := llm.NewEmbedder(embedCfg)
+				if err != nil {
+					logger.Error("vector index: reload embedder failed", "error", err)
+					s.SetVectorConfig(nil)
+					return
+				}
+				s.SetVectorConfig(&storage.VectorIndexConfig{
+					Embedder: vecEmbedder,
+					Model:    cc.EmbeddingModel,
+				})
+				s.StartVectorWorker(reloadCtx, 5*time.Minute)
+				logger.Info("vector index: reloaded", "model", cc.EmbeddingModel)
+			},
 		}))
 	}
 
