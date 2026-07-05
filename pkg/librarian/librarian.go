@@ -29,8 +29,11 @@ const systemPrompt = "You are a librarian answering questions about a corpus of 
 	"Use the 'search' tool to find relevant files by content, the 'list' tool to " +
 	"discover files, and the 'read' tool to read them. For a large file, pass a search " +
 	"hit's 'offset' to 'read' to fetch just the matching passage. Base your answer only " +
-	"on what you read. Be concise and answer the question directly. All access is " +
-	"read-only and confined to the corpus; some paths may be refused."
+	"on what you read. Be concise and answer the question directly. When multiple " +
+	"documents are relevant, list all of them with a brief description of each — do not " +
+	"narrow to a single answer when several candidates exist. Include all relevant source " +
+	"paths in your response. All access is read-only and confined to the corpus; some " +
+	"paths may be refused."
 
 // Request is one librarian query: a natural-language question over a corpus
 // rooted at Root, with Root's contents filtered by IgnorePatterns (".git/" is
