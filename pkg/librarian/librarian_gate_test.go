@@ -3,12 +3,16 @@ package librarian
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,7 +59,7 @@ func TestAsk_GateBenchmark(t *testing.T) {
 
 	// --- Build corpus ---
 	root := t.TempDir()
-	fileCount := generateBenchmarkCorpus(t, root)
+	fileCount := downloadMMLUCorpus(t, root)
 	if fileCount < 800 {
 		t.Fatalf("expected 800+ corpus files, got %d", fileCount)
 	}
@@ -138,12 +142,10 @@ func TestAsk_GateBenchmark(t *testing.T) {
 	}
 }
 
-// --- Benchmark corpus generation ---
+// --- MMLU corpus download ---
 //
-// The corpus is structured after MMLU benchmark categories (MIT license).
-// Each category gets its own subdirectory with 20 markdown documents, for
-// a total of 820+ files. Content is generated procedurally with subject-
-// specific variation — real document structure, realistic length.
+// Downloads actual MMLU benchmark questions (MIT license) from HuggingFace
+// at test time. 41 categories × 20 questions = 820 files.
 
 var mmluCategories = [...]string{
 	"abstract_algebra", "anatomy", "astronomy", "business_ethics",
@@ -164,17 +166,60 @@ var mmluCategories = [...]string{
 	"medical_genetics",
 }
 
-func generateBenchmarkCorpus(t *testing.T, root string) int {
+type mmluRow struct {
+	Question string   `json:"question"`
+	Subject  string   `json:"subject"`
+	Choices  []string `json:"choices"`
+	Answer   int      `json:"answer"`
+}
+
+type mmluAPIResponse struct {
+	Rows []struct {
+		Row mmluRow `json:"row"`
+	} `json:"rows"`
+}
+
+func downloadMMLUCorpus(t *testing.T, root string) int {
 	t.Helper()
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	type catResult struct {
+		cat  string
+		rows []mmluRow
+		err  error
+	}
+	results := make([]catResult, len(mmluCategories))
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
+	for i, cat := range mmluCategories {
+		wg.Add(1)
+		go func(idx int, category string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			rows, err := fetchMMLUCategory(httpClient, category)
+			results[idx] = catResult{cat: category, rows: rows, err: err}
+		}(i, cat)
+	}
+	wg.Wait()
+
+	for _, r := range results {
+		if r.err != nil {
+			t.Skipf("MMLU download failed for %s: %v", r.cat, r.err)
+		}
+	}
+
 	count := 0
-	for _, cat := range mmluCategories {
-		dir := filepath.Join(root, "benchmark", cat)
+	for _, r := range results {
+		dir := filepath.Join(root, "benchmark", r.cat)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
-		for q := 1; q <= 20; q++ {
-			content := benchmarkDoc(cat, q)
-			path := filepath.Join(dir, fmt.Sprintf("q%03d.md", q))
+		for i, row := range r.rows {
+			content := mmluDocFromRow(r.cat, i+1, row)
+			path := filepath.Join(dir, fmt.Sprintf("q%03d.md", i+1))
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				t.Fatalf("write %s: %v", path, err)
 			}
@@ -184,92 +229,55 @@ func generateBenchmarkCorpus(t *testing.T, root string) int {
 	return count
 }
 
-var (
-	sectionHeaders = [...]string{
-		"Overview", "Background", "Core Concepts", "Analysis",
-		"Methodology", "Evidence", "Discussion", "Implications",
+func fetchMMLUCategory(client *http.Client, category string) ([]mmluRow, error) {
+	url := fmt.Sprintf(
+		"https://datasets-server.huggingface.co/rows?dataset=cais/mmlu&config=%s&split=test&offset=0&length=20",
+		category,
+	)
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", category, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: HTTP %d", category, resp.StatusCode)
 	}
 
-	sectionBodies = [...]string{
-		"This area of %s examines how various factors influence outcomes in domain %d. " +
-			"Researchers have identified several key variables that predict performance " +
-			"across different contexts and populations.",
-
-		"Historical development of %s shows a progression from early theories to modern " +
-			"frameworks addressing topic %d. Early work established foundational principles " +
-			"that continue to shape current understanding.",
-
-		"Central theories in %s applicable to question %d involve multi-factor models. " +
-			"These models account for interactions between primary and secondary variables, " +
-			"yielding predictions that can be tested empirically.",
-
-		"Quantitative methods in %s applied to topic %d reveal statistically significant " +
-			"patterns. Meta-analyses across multiple studies confirm the robustness and " +
-			"generalizability of these findings.",
-
-		"Empirical approaches to %s for investigating topic %d use controlled experiments " +
-			"and longitudinal studies. Sample sizes typically range from hundreds to thousands " +
-			"of observations, ensuring adequate statistical power.",
-
-		"Data collected across studies of %s concerning aspect %d support the theoretical " +
-			"predictions. Effect sizes range from small to moderate, with variability " +
-			"attributable to methodological differences.",
-
-		"Competing perspectives on %s regarding question %d offer complementary explanations. " +
-			"Integration of these viewpoints yields a more complete understanding of the " +
-			"underlying mechanisms.",
-
-		"Broader implications of %s findings on topic %d extend to policy and practice. " +
-			"Translation from theory to application requires careful consideration of " +
-			"contextual factors and implementation constraints.",
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", category, err)
 	}
 
-	assessmentQuestions = [...]string{
-		"Which factor most strongly influences the primary outcome variable?",
-		"What is the relationship between the independent and dependent variables?",
-		"How does the control condition differ from the experimental condition?",
-		"Which theoretical framework best explains the observed phenomenon?",
+	var data mmluAPIResponse
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", category, err)
 	}
 
-	assessmentOptions = [...][4]string{
-		{"Environmental factors dominate", "Genetic predisposition is primary",
-			"Interaction effects are strongest", "No single factor predominates"},
-		{"Positive linear correlation", "Inverse relationship",
-			"Curvilinear association", "No significant relationship"},
-		{"Magnitude of effect differs", "Direction of effect reverses",
-			"Variance is altered", "Both groups show convergence"},
-		{"Classical theory", "Modern synthesis",
-			"Ecological model", "Systems perspective"},
+	rows := make([]mmluRow, 0, len(data.Rows))
+	for _, r := range data.Rows {
+		rows = append(rows, r.Row)
 	}
-)
+	return rows, nil
+}
 
-func benchmarkDoc(category string, num int) string {
+var answerLetters = [...]string{"A", "B", "C", "D"}
+
+func mmluDocFromRow(category string, num int, row mmluRow) string {
 	title := strings.ReplaceAll(category, "_", " ")
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s — Question %d\n\n", title, num)
-
-	nSections := 3 + num%3 // 3–5 body sections
-	for s := 0; s < nSections; s++ {
-		hi := (num + s) % len(sectionHeaders)
-		bi := (num + s*3) % len(sectionBodies)
-		fmt.Fprintf(&b, "## %s\n\n", sectionHeaders[hi])
-		fmt.Fprintf(&b, sectionBodies[bi]+"\n\n", title, num)
-
-		if (num+s)%2 == 0 {
-			extra := (num*7 + s*13) % len(sectionBodies)
-			fmt.Fprintf(&b, sectionBodies[extra]+"\n\n", title, num)
+	fmt.Fprintf(&b, "%s\n\n", row.Question)
+	for i, choice := range row.Choices {
+		if i < 4 {
+			fmt.Fprintf(&b, "- %s) %s\n", answerLetters[i], choice)
 		}
 	}
-
-	qi := num % len(assessmentQuestions)
-	oi := num % len(assessmentOptions)
-	fmt.Fprintf(&b, "## Assessment\n\n")
-	fmt.Fprintf(&b, "%s\n\n", assessmentQuestions[qi])
-	for j, opt := range assessmentOptions[oi] {
-		fmt.Fprintf(&b, "- %s) %s\n", string(rune('A'+j)), opt)
+	letter := "A"
+	if row.Answer >= 0 && row.Answer < 4 {
+		letter = answerLetters[row.Answer]
 	}
-	fmt.Fprintf(&b, "\n**Answer:** %s\n", string(rune('A'+num%4)))
-
+	fmt.Fprintf(&b, "\n**Answer:** %s\n", letter)
 	return b.String()
 }

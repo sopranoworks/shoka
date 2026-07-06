@@ -3,9 +3,12 @@ package librariansrc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -235,10 +238,11 @@ func gateWaitEmbeddings(t *testing.T, s *storage.FSGitStorage, target int, timeo
 	}
 }
 
-// --- Corpus generation ---
+// --- MMLU corpus download ---
 //
-// MMLU-inspired categories. 6 categories × 20 files = 120 files, enough to
-// exercise the production search path without the embedding time of 800+ files.
+// Downloads actual MMLU benchmark questions (MIT license) from HuggingFace
+// at test time. 6 categories × 20 questions = 120 files — enough to exercise
+// the production search path without the embedding time of 800+ files.
 // The 820-file scale test remains in pkg/librarian/librarian_gate_test.go.
 
 var gateCategories = [...]string{
@@ -246,13 +250,33 @@ var gateCategories = [...]string{
 	"computer_security", "machine_learning", "international_law",
 }
 
+type gateMMLURow struct {
+	Question string   `json:"question"`
+	Subject  string   `json:"subject"`
+	Choices  []string `json:"choices"`
+	Answer   int      `json:"answer"`
+}
+
+type gateMMLUResponse struct {
+	Rows []struct {
+		Row gateMMLURow `json:"row"`
+	} `json:"rows"`
+}
+
 func writeGateCorpus(t *testing.T, s *storage.FSGitStorage) int {
 	t.Helper()
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
 	count := 0
+
 	for _, cat := range gateCategories {
-		for q := 1; q <= 20; q++ {
-			path := fmt.Sprintf("benchmark/%s/q%03d.md", cat, q)
-			content := gateDoc(cat, q)
+		rows, err := gateDownloadCategory(httpClient, cat)
+		if err != nil {
+			t.Skipf("MMLU download failed for %s: %v", cat, err)
+		}
+		for i, row := range rows {
+			path := fmt.Sprintf("benchmark/%s/q%03d.md", cat, i+1)
+			content := gateMMluDoc(cat, i+1, row)
 			write(t, s, "gate", "benchmark", path, content)
 			count++
 		}
@@ -260,78 +284,55 @@ func writeGateCorpus(t *testing.T, s *storage.FSGitStorage) int {
 	return count
 }
 
-var (
-	gateSectionHeaders = [...]string{
-		"Overview", "Background", "Core Concepts", "Analysis",
-		"Methodology", "Evidence", "Discussion", "Implications",
+func gateDownloadCategory(client *http.Client, category string) ([]gateMMLURow, error) {
+	url := fmt.Sprintf(
+		"https://datasets-server.huggingface.co/rows?dataset=cais/mmlu&config=%s&split=test&offset=0&length=20",
+		category,
+	)
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", category, err)
 	}
-	gateSectionBodies = [...]string{
-		"This area of %s examines how various factors influence outcomes in domain %d. " +
-			"Researchers have identified several key variables that predict performance " +
-			"across different contexts and populations.",
-		"Historical development of %s shows a progression from early theories to modern " +
-			"frameworks addressing topic %d. Early work established foundational principles " +
-			"that continue to shape current understanding.",
-		"Central theories in %s applicable to question %d involve multi-factor models. " +
-			"These models account for interactions between primary and secondary variables, " +
-			"yielding predictions that can be tested empirically.",
-		"Quantitative methods in %s applied to topic %d reveal statistically significant " +
-			"patterns. Meta-analyses across multiple studies confirm the robustness and " +
-			"generalizability of these findings.",
-		"Empirical approaches to %s for investigating topic %d use controlled experiments " +
-			"and longitudinal studies. Sample sizes typically range from hundreds to thousands " +
-			"of observations, ensuring adequate statistical power.",
-		"Data collected across studies of %s concerning aspect %d support the theoretical " +
-			"predictions. Effect sizes range from small to moderate, with variability " +
-			"attributable to methodological differences.",
-		"Competing perspectives on %s regarding question %d offer complementary explanations. " +
-			"Integration of these viewpoints yields a more complete understanding of the " +
-			"underlying mechanisms.",
-		"Broader implications of %s findings on topic %d extend to policy and practice. " +
-			"Translation from theory to application requires careful consideration of " +
-			"contextual factors and implementation constraints.",
-	}
-	gateQuestions = [...]string{
-		"Which factor most strongly influences the primary outcome variable?",
-		"What is the relationship between the independent and dependent variables?",
-		"How does the control condition differ from the experimental condition?",
-		"Which theoretical framework best explains the observed phenomenon?",
-	}
-	gateOptions = [...][4]string{
-		{"Environmental factors dominate", "Genetic predisposition is primary",
-			"Interaction effects are strongest", "No single factor predominates"},
-		{"Positive linear correlation", "Inverse relationship",
-			"Curvilinear association", "No significant relationship"},
-		{"Magnitude of effect differs", "Direction of effect reverses",
-			"Variance is altered", "Both groups show convergence"},
-		{"Classical theory", "Modern synthesis",
-			"Ecological model", "Systems perspective"},
-	}
-)
+	defer resp.Body.Close()
 
-func gateDoc(category string, num int) string {
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: HTTP %d", category, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", category, err)
+	}
+
+	var data gateMMLUResponse
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", category, err)
+	}
+
+	rows := make([]gateMMLURow, 0, len(data.Rows))
+	for _, r := range data.Rows {
+		rows = append(rows, r.Row)
+	}
+	return rows, nil
+}
+
+var gateAnswerLetters = [...]string{"A", "B", "C", "D"}
+
+func gateMMluDoc(category string, num int, row gateMMLURow) string {
 	title := strings.ReplaceAll(category, "_", " ")
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s — Question %d\n\n", title, num)
-
-	nSections := 3 + num%3
-	for sec := 0; sec < nSections; sec++ {
-		hi := (num + sec) % len(gateSectionHeaders)
-		bi := (num + sec*3) % len(gateSectionBodies)
-		fmt.Fprintf(&b, "## %s\n\n", gateSectionHeaders[hi])
-		fmt.Fprintf(&b, gateSectionBodies[bi]+"\n\n", title, num)
-		if (num+sec)%2 == 0 {
-			extra := (num*7 + sec*13) % len(gateSectionBodies)
-			fmt.Fprintf(&b, gateSectionBodies[extra]+"\n\n", title, num)
+	fmt.Fprintf(&b, "%s\n\n", row.Question)
+	for i, choice := range row.Choices {
+		if i < 4 {
+			fmt.Fprintf(&b, "- %s) %s\n", gateAnswerLetters[i], choice)
 		}
 	}
-
-	qi := num % len(gateQuestions)
-	oi := num % len(gateOptions)
-	fmt.Fprintf(&b, "## Assessment\n\n%s\n\n", gateQuestions[qi])
-	for j, opt := range gateOptions[oi] {
-		fmt.Fprintf(&b, "- %s) %s\n", string(rune('A'+j)), opt)
+	letter := "A"
+	if row.Answer >= 0 && row.Answer < 4 {
+		letter = gateAnswerLetters[row.Answer]
 	}
-	fmt.Fprintf(&b, "\n**Answer:** %s\n", string(rune('A'+num%4)))
+	fmt.Fprintf(&b, "\n**Answer:** %s\n", letter)
 	return b.String()
 }
