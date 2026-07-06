@@ -62,7 +62,7 @@ func TestAsk_LMStudioEmptyAnswer(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	lib := New(client, 6).WithLogger(logger)
+	lib := New(client, 0).WithLogger(logger) // 0 → default (12)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()

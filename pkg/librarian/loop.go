@@ -37,7 +37,7 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 	}}
 
 	if maxSteps <= 0 {
-		maxSteps = 8
+		maxSteps = 12
 	}
 
 	var calls []ToolCall
