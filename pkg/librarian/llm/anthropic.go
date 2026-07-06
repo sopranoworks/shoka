@@ -108,7 +108,7 @@ func toSDKTools(tools []ToolDef) []anthropic.ToolUnionParam {
 // fromSDKMessage converts an SDK reply to a neutral assistant Message, keeping
 // only the text and tool_use blocks the loop acts on.
 func fromSDKMessage(resp *anthropic.Message) Message {
-	out := Message{Role: RoleAssistant}
+	out := Message{Role: RoleAssistant, RawResponse: rawSnapshot(resp)}
 	for _, blk := range resp.Content {
 		switch blk.Type {
 		case "text":

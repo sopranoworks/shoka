@@ -65,6 +65,11 @@ type Block struct {
 type Message struct {
 	Role    Role
 	Content []Block
+
+	// RawResponse is a truncated string snapshot of the raw SDK response
+	// object, populated by the from* conversion functions for debug logging.
+	// It is never used in the conversation — only for diagnostics.
+	RawResponse string
 }
 
 // ToolDef is a tool definition handed to the model. Properties and Required
@@ -93,6 +98,20 @@ type Client interface {
 	// CreateMessage performs one model round-trip and returns the assistant's
 	// reply (either tool_use blocks to dispatch, or a final text answer).
 	CreateMessage(ctx context.Context, params CreateMessageParams) (Message, error)
+}
+
+const rawResponseMaxLen = 500
+
+func rawSnapshot(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("(marshal error: %v)", err)
+	}
+	s := string(b)
+	if len(s) > rawResponseMaxLen {
+		return s[:rawResponseMaxLen] + "…"
+	}
+	return s
 }
 
 // Provider names accepted by NewClient.

@@ -180,7 +180,7 @@ func toGeminiTools(tools []ToolDef) []*genai.Tool {
 // keeping the text and the function calls the loop acts on. Thought (reasoning)
 // parts are skipped — they are not the answer.
 func fromGeminiResponse(resp *genai.GenerateContentResponse) Message {
-	out := Message{Role: RoleAssistant}
+	out := Message{Role: RoleAssistant, RawResponse: rawSnapshot(resp)}
 	if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
 		return out
 	}

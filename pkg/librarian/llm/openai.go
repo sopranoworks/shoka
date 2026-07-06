@@ -166,7 +166,7 @@ func (e *openaiEmbedder) Embed(ctx context.Context, text string) (*EmbeddingVect
 // fromOpenAIMessage converts an OpenAI reply to a neutral assistant Message,
 // keeping the text and the function tool_calls the loop acts on.
 func fromOpenAIMessage(resp *openai.ChatCompletion) Message {
-	out := Message{Role: RoleAssistant}
+	out := Message{Role: RoleAssistant, RawResponse: rawSnapshot(resp)}
 	if len(resp.Choices) == 0 {
 		return out
 	}

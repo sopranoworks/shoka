@@ -208,9 +208,11 @@ func TestLoop_DebugLogging(t *testing.T) {
 	}
 	log := buf.String()
 	for _, want := range []string{
-		"librarian: llm response",
+		"librarian: llm raw response",
 		"block_count=",
-		"block_types=",
+		"librarian: llm response block",
+		"type=tool_use",
+		"type=text",
 		"librarian: tool call",
 		"librarian: tool result",
 		"librarian: loop complete",

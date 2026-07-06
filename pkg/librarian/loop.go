@@ -55,12 +55,44 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 			return "", calls, fmt.Errorf("llm round-trip (step %d): %w", step, err)
 		}
 
-		// Log raw response structure.
-		log.Debug("librarian: llm response",
+		// Log raw SDK response (truncated) so dropped/misparsed blocks are visible.
+		log.Debug("librarian: llm raw response",
 			slog.Int("step", step),
 			slog.Int("block_count", len(reply.Content)),
-			slog.String("block_types", blockTypeSummary(reply.Content)),
-			slog.String("text_preview", textPreview(reply.Content, 200)))
+			slog.String("raw", reply.RawResponse))
+
+		// Log each block individually.
+		for i, b := range reply.Content {
+			attrs := []slog.Attr{
+				slog.Int("step", step),
+				slog.Int("block", i),
+				slog.String("type", b.Type),
+			}
+			switch b.Type {
+			case llm.BlockText:
+				attrs = append(attrs,
+					slog.Int("len", len(b.Text)),
+					slog.String("preview", truncate(b.Text, 200)))
+			case llm.BlockToolUse:
+				attrs = append(attrs,
+					slog.String("id", b.ID),
+					slog.String("name", b.Name),
+					slog.Int("input_len", len(b.Input)),
+					slog.String("input_preview", truncate(string(b.Input), 200)))
+			case llm.BlockToolResult:
+				attrs = append(attrs,
+					slog.String("tool_use_id", b.ToolUseID),
+					slog.Bool("is_error", b.IsError),
+					slog.Int("len", len(b.Content)),
+					slog.String("preview", truncate(b.Content, 200)))
+			default:
+				attrs = append(attrs,
+					slog.Int("text_len", len(b.Text)),
+					slog.Int("input_len", len(b.Input)),
+					slog.String("preview", truncate(b.Text, 200)))
+			}
+			log.LogAttrs(ctx, slog.LevelDebug, "librarian: llm response block", attrs...)
+		}
 
 		messages = append(messages, reply)
 
