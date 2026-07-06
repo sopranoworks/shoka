@@ -225,14 +225,15 @@ func TestLoop_DebugLogging(t *testing.T) {
 }
 
 // TestLoop_StepBudgetExhausted: when the model never stops calling tools and
-// the step budget runs out, the loop logs the exhaustion and returns whatever
-// text the model last produced (may be empty).
+// the step budget runs out, the loop makes a force-final-answer call (no tools)
+// to extract an answer from the conversation.
 func TestLoop_StepBudgetExhausted(t *testing.T) {
 	root, ignore, _ := fixtureCorpus(t)
 	client := &scriptedClient{replies: []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("t1", "list", listArgs{})}},
 		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("t2", "list", listArgs{})}},
-		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("t3", "list", listArgs{})}},
+		// scriptedClient returns "done" when script runs out — that's the
+		// force-final-answer response.
 	}}
 	var buf bytes.Buffer
 	lib := New(client, 2).WithLogger(debugLogger(&buf))
@@ -240,15 +241,46 @@ func TestLoop_StepBudgetExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if res.Answer != "" {
-		t.Errorf("expected empty answer on budget exhaustion, got %q", res.Answer)
+	// The force-final-answer call produces a non-empty answer.
+	if res.Answer == "" {
+		t.Errorf("expected non-empty answer from force-final-answer, got empty")
 	}
 	log := buf.String()
 	if !strings.Contains(log, "step budget exhausted") {
 		t.Errorf("log missing 'step budget exhausted'\nfull log:\n%s", log)
 	}
-	if !strings.Contains(log, "answer_empty=true") {
-		t.Errorf("log missing 'answer_empty=true'\nfull log:\n%s", log)
+	if !strings.Contains(log, "forcing final answer") {
+		t.Errorf("log missing 'forcing final answer'\nfull log:\n%s", log)
+	}
+}
+
+// TestLoop_ForceFinalAnswer: when the model answers with empty text (no tool
+// calls, no text), the loop makes a no-tools synthesis call to force an answer.
+func TestLoop_ForceFinalAnswer(t *testing.T) {
+	root, ignore, _ := fixtureCorpus(t)
+	client := &scriptedClient{replies: []llm.Message{
+		// Step 0: model returns empty content (no text, no tool calls).
+		{Role: llm.RoleAssistant, Content: []llm.Block{}},
+		// scriptedClient returns "done" for the force-final-answer call.
+	}}
+	var buf bytes.Buffer
+	lib := New(client, 8).WithLogger(debugLogger(&buf))
+	res, err := lib.Ask(context.Background(), Request{Question: "q", Root: root, IgnorePatterns: ignore})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if res.Answer == "" {
+		t.Errorf("expected non-empty answer from force-final-answer, got empty")
+	}
+	log := buf.String()
+	if !strings.Contains(log, "forcing") {
+		t.Errorf("log missing force-final-answer entry\nfull log:\n%s", log)
+	}
+	// The force call must NOT include tools (verify via the seen params).
+	// The last CreateMessage call is the force-final-answer — it has no tools.
+	lastParams := client.seen[len(client.seen)-1]
+	if len(lastParams.Tools) != 0 {
+		t.Errorf("force-final-answer call included %d tools, want 0", len(lastParams.Tools))
 	}
 }
 

@@ -116,8 +116,17 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 			lastText = t
 		}
 
-		// No tool calls => the model has answered.
+		// No tool calls => the model has answered (or tried to).
 		if len(toolUses) == 0 {
+			if lastText == "" {
+				log.Debug("librarian: model answered with empty text, forcing synthesis",
+					slog.Int("step", step))
+				forced, ferr := forceFinalAnswer(ctx, client, system, messages, log)
+				if ferr != nil {
+					return "", calls, fmt.Errorf("force-final-answer: %w", ferr)
+				}
+				return forced, calls, nil
+			}
 			log.Debug("librarian: loop complete (model answered)",
 				slog.Int("step", step),
 				slog.Int("total_calls", len(calls)),
@@ -180,13 +189,56 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 		messages = append(messages, llm.Message{Role: llm.RoleUser, Content: resultBlocks})
 	}
 
-	// Step budget exhausted: return whatever text we last saw (may be empty).
-	log.Debug("librarian: loop complete (step budget exhausted)",
+	// Step budget exhausted.
+	log.Debug("librarian: step budget exhausted",
 		slog.Int("max_steps", maxSteps),
 		slog.Int("total_calls", len(calls)),
-		slog.Bool("answer_empty", lastText == ""),
-		slog.String("answer_preview", truncate(lastText, 200)))
+		slog.Bool("answer_empty", lastText == ""))
+
+	if lastText == "" {
+		lastText, err := forceFinalAnswer(ctx, client, system, messages, log)
+		if err != nil {
+			return "", calls, fmt.Errorf("force-final-answer: %w", err)
+		}
+		return lastText, calls, nil
+	}
 	return lastText, calls, nil
+}
+
+// forceFinalAnswer makes one additional LLM call WITHOUT tools, forcing the
+// model to produce a text answer from the conversation so far. Called when the
+// tool-call loop exhausted its step budget without the model ever answering.
+func forceFinalAnswer(ctx context.Context, client llm.Client, system string, messages []llm.Message, log *slog.Logger) (string, error) {
+	log.Debug("librarian: forcing final answer (no-tools synthesis call)")
+
+	reply, err := client.CreateMessage(ctx, llm.CreateMessageParams{
+		System:   system,
+		Messages: messages,
+		// Tools deliberately omitted — forces a text-only response.
+	})
+	if err != nil {
+		log.Debug("librarian: force-final-answer failed",
+			slog.String("error", err.Error()))
+		return "", err
+	}
+
+	log.Debug("librarian: force-final-answer raw response",
+		slog.Int("block_count", len(reply.Content)),
+		slog.String("raw", reply.RawResponse))
+
+	var parts []string
+	for _, b := range reply.Content {
+		if b.Type == llm.BlockText && strings.TrimSpace(b.Text) != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	answer := strings.TrimSpace(strings.Join(parts, "\n"))
+
+	log.Debug("librarian: loop complete (force-final-answer)",
+		slog.Bool("answer_empty", answer == ""),
+		slog.String("answer_preview", truncate(answer, 200)))
+
+	return answer, nil
 }
 
 func detailIf(cond bool, s string) string {
