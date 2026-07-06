@@ -128,6 +128,7 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 				}
 				return forced, calls, nil
 			}
+			lastText = stripControlTokens(lastText)
 			log.Debug("librarian: loop complete (model answered)",
 				slog.Int("step", step),
 				slog.Int("total_calls", len(calls)),
@@ -203,7 +204,7 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 		}
 		return lastText, calls, nil
 	}
-	return lastText, calls, nil
+	return stripControlTokens(lastText), calls, nil
 }
 
 // forceFinalAnswer tries two strategies to get a text answer:
