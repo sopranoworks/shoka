@@ -276,11 +276,20 @@ func TestLoop_ForceFinalAnswer(t *testing.T) {
 	if !strings.Contains(log, "forcing") {
 		t.Errorf("log missing force-final-answer entry\nfull log:\n%s", log)
 	}
-	// The force call must NOT include tools (verify via the seen params).
-	// The last CreateMessage call is the force-final-answer — it has no tools.
-	lastParams := client.seen[len(client.seen)-1]
-	if len(lastParams.Tools) != 0 {
-		t.Errorf("force-final-answer call included %d tools, want 0", len(lastParams.Tools))
+	// The force call adds a user nudge message. It may make one or two calls
+	// (attempt 1 with tools, attempt 2 without if the first returns tool_calls).
+	// At minimum the first attempt should have the nudge.
+	found := false
+	for _, p := range client.seen {
+		last := p.Messages[len(p.Messages)-1]
+		if last.Role == llm.RoleUser && len(last.Content) > 0 && last.Content[0].Type == llm.BlockText &&
+			strings.Contains(last.Content[0].Text, "answer my original question") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("force-final-answer should include a nudge user message")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
@@ -121,7 +122,7 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 			if lastText == "" {
 				log.Debug("librarian: model answered with empty text, forcing synthesis",
 					slog.Int("step", step))
-				forced, ferr := forceFinalAnswer(ctx, client, system, messages, log)
+				forced, ferr := forceFinalAnswer(ctx, client, system, messages, defs, log)
 				if ferr != nil {
 					return "", calls, fmt.Errorf("force-final-answer: %w", ferr)
 				}
@@ -196,7 +197,7 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 		slog.Bool("answer_empty", lastText == ""))
 
 	if lastText == "" {
-		lastText, err := forceFinalAnswer(ctx, client, system, messages, log)
+		lastText, err := forceFinalAnswer(ctx, client, system, messages, defs, log)
 		if err != nil {
 			return "", calls, fmt.Errorf("force-final-answer: %w", err)
 		}
@@ -205,40 +206,78 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 	return lastText, calls, nil
 }
 
-// forceFinalAnswer makes one additional LLM call WITHOUT tools, forcing the
-// model to produce a text answer from the conversation so far. Called when the
-// tool-call loop exhausted its step budget without the model ever answering.
-func forceFinalAnswer(ctx context.Context, client llm.Client, system string, messages []llm.Message, log *slog.Logger) (string, error) {
-	log.Debug("librarian: forcing final answer (no-tools synthesis call)")
+// forceFinalAnswer tries two strategies to get a text answer:
+//  1. Keep tools + append a user nudge message ("answer now, no more tools").
+//  2. If the model still returns tool_calls with no text, retry WITHOUT tools.
+//
+// Any raw chat-template control tokens (<|...|>) are stripped from the result.
+func forceFinalAnswer(ctx context.Context, client llm.Client, system string, messages []llm.Message, tools []llm.ToolDef, log *slog.Logger) (string, error) {
+	log.Debug("librarian: forcing final answer")
 
+	nudge := llm.Message{
+		Role: llm.RoleUser,
+		Content: []llm.Block{{
+			Type: llm.BlockText,
+			Text: "Based on what you have read, answer my original question now. Do not call any more tools.",
+		}},
+	}
+	finalMessages := make([]llm.Message, len(messages)+1)
+	copy(finalMessages, messages)
+	finalMessages[len(messages)] = nudge
+
+	// Attempt 1: with tools + nudge.
 	reply, err := client.CreateMessage(ctx, llm.CreateMessageParams{
 		System:   system,
-		Messages: messages,
-		// Tools deliberately omitted — forces a text-only response.
+		Messages: finalMessages,
+		Tools:    tools,
 	})
 	if err != nil {
-		log.Debug("librarian: force-final-answer failed",
-			slog.String("error", err.Error()))
 		return "", err
 	}
-
-	log.Debug("librarian: force-final-answer raw response",
-		slog.Int("block_count", len(reply.Content)),
+	answer := extractText(reply)
+	log.Debug("librarian: force-final-answer attempt 1 (tools+nudge)",
+		slog.Bool("answer_empty", answer == ""),
 		slog.String("raw", reply.RawResponse))
 
-	var parts []string
-	for _, b := range reply.Content {
-		if b.Type == llm.BlockText && strings.TrimSpace(b.Text) != "" {
-			parts = append(parts, b.Text)
+	// Attempt 2: if the model returned tool_calls with no text, retry without tools.
+	if answer == "" {
+		log.Debug("librarian: force-final-answer attempt 2 (no tools)")
+		reply2, err2 := client.CreateMessage(ctx, llm.CreateMessageParams{
+			System:   system,
+			Messages: finalMessages,
+		})
+		if err2 != nil {
+			return "", err2
 		}
+		answer = extractText(reply2)
+		log.Debug("librarian: force-final-answer attempt 2 result",
+			slog.Bool("answer_empty", answer == ""),
+			slog.String("raw", reply2.RawResponse))
 	}
-	answer := strings.TrimSpace(strings.Join(parts, "\n"))
+
+	answer = stripControlTokens(answer)
 
 	log.Debug("librarian: loop complete (force-final-answer)",
 		slog.Bool("answer_empty", answer == ""),
 		slog.String("answer_preview", truncate(answer, 200)))
 
 	return answer, nil
+}
+
+func extractText(msg llm.Message) string {
+	var parts []string
+	for _, b := range msg.Content {
+		if b.Type == llm.BlockText && strings.TrimSpace(b.Text) != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+var controlTokenRe = regexp.MustCompile(`<\|[^|]*\|>`)
+
+func stripControlTokens(s string) string {
+	return strings.TrimSpace(controlTokenRe.ReplaceAllString(s, ""))
 }
 
 func detailIf(cond bool, s string) string {
