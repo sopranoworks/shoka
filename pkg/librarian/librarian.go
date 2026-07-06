@@ -55,8 +55,9 @@ type Request struct {
 // paths it read/listed and any refusals) — useful for callers and for the
 // structural assertions in tests.
 type Result struct {
-	Answer string
-	Calls  []ToolCall
+	Answer    string // post-strip (control tokens removed)
+	RawAnswer string // pre-strip (as the model produced it)
+	Calls     []ToolCall
 }
 
 // Librarian runs ask_the_librarian queries against an injected LLM client.
@@ -162,6 +163,6 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 	tools := buildTools(guard, corpus)
 	// Snapshot the swappable references before the loop so a concurrent
 	// SetClient/SetMaxSteps never affects this in-flight call.
-	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps(), l.logger())
-	return Result{Answer: answer, Calls: calls}, err
+	raw, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps(), l.logger())
+	return Result{Answer: stripControlTokens(raw), RawAnswer: raw, Calls: calls}, err
 }

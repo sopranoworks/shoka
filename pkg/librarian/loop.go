@@ -128,7 +128,6 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 				}
 				return forced, calls, nil
 			}
-			lastText = stripControlTokens(lastText)
 			log.Debug("librarian: loop complete (model answered)",
 				slog.Int("step", step),
 				slog.Int("total_calls", len(calls)),
@@ -204,14 +203,12 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 		}
 		return lastText, calls, nil
 	}
-	return stripControlTokens(lastText), calls, nil
+	return lastText, calls, nil
 }
 
 // forceFinalAnswer tries two strategies to get a text answer:
 //  1. Keep tools + append a user nudge message ("answer now, no more tools").
 //  2. If the model still returns tool_calls with no text, retry WITHOUT tools.
-//
-// Any raw chat-template control tokens (<|...|>) are stripped from the result.
 func forceFinalAnswer(ctx context.Context, client llm.Client, system string, messages []llm.Message, tools []llm.ToolDef, log *slog.Logger) (string, error) {
 	log.Debug("librarian: forcing final answer")
 
@@ -255,8 +252,6 @@ func forceFinalAnswer(ctx context.Context, client llm.Client, system string, mes
 			slog.Bool("answer_empty", answer == ""),
 			slog.String("raw", reply2.RawResponse))
 	}
-
-	answer = stripControlTokens(answer)
 
 	log.Debug("librarian: loop complete (force-final-answer)",
 		slog.Bool("answer_empty", answer == ""),

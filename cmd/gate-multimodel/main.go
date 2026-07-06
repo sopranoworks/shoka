@@ -54,7 +54,8 @@ type gateResult struct {
 	Model         string
 	DisplayName   string
 	NonEmpty      bool
-	NoCtrlTokens  bool
+	NoCtrlTokens  bool // post-strip answer has no control tokens (always true after strip)
+	RawLeak       bool // raw answer contained control tokens before stripping
 	TargetFound   bool
 	Error         string
 	AnswerPreview string
@@ -155,11 +156,14 @@ func main() {
 				fmt.Println("    ✗ empty answer")
 			}
 			if !result.NoCtrlTokens {
-				fmt.Println("    ✗ control tokens present")
+				fmt.Println("    ✗ control tokens in stripped answer")
 			}
 			if !result.TargetFound {
 				fmt.Println("    ✗ target file not found")
 			}
+		}
+		if result.RawLeak {
+			fmt.Println("  ⚠ raw answer contained control tokens (stripped before final answer)")
 		}
 		if result.AnswerPreview != "" {
 			fmt.Printf("  Answer: %s\n", result.AnswerPreview)
@@ -214,6 +218,8 @@ func runGate(root, modelKey, displayName string) gateResult {
 		return r
 	}
 
+	r.RawLeak = controlTokenRe.MatchString(res.RawAnswer)
+
 	answer := strings.TrimSpace(res.Answer)
 	r.NonEmpty = answer != ""
 	r.NoCtrlTokens = !controlTokenRe.MatchString(res.Answer)
@@ -235,11 +241,12 @@ func runGate(root, modelKey, displayName string) gateResult {
 }
 
 func printSummary(results []gateResult) {
-	fmt.Println("╔══════════════════════════════════════════════════╦══════════╦═══════════╦══════════╦══════════╦══════════╗")
-	fmt.Println("║ Model                                            ║ Overall  ║ Non-empty ║ No ctrl  ║ Target   ║ Duration ║")
-	fmt.Println("╠══════════════════════════════════════════════════╬══════════╬═══════════╬══════════╬══════════╬══════════╣")
+	fmt.Println("╔══════════════════════════════════════════════════╦══════════╦══════════╦══════════════╦══════════╦══════════╗")
+	fmt.Println("║ Model                                            ║ Overall  ║ Raw leak ║ Answer valid ║ Target   ║ Duration ║")
+	fmt.Println("╠══════════════════════════════════════════════════╬══════════╬══════════╬══════════════╬══════════╬══════════╣")
 
 	passCount := 0
+	leakCount := 0
 	for _, r := range results {
 		model := r.Model
 		if len(model) > 50 {
@@ -254,23 +261,44 @@ func printSummary(results []gateResult) {
 			passCount++
 		}
 
+		rawLeak := "-"
+		answerValid := "-"
+		if r.Error == "" {
+			if r.RawLeak {
+				rawLeak = "YES"
+				leakCount++
+			} else {
+				rawLeak = "no"
+			}
+			if r.NonEmpty && r.NoCtrlTokens {
+				answerValid = "PASS"
+			} else {
+				answerValid = "FAIL"
+			}
+		}
+
 		dur := "-"
 		if r.Duration > 0 {
 			dur = r.Duration.Round(time.Second).String()
 		}
 
-		fmt.Printf("║ %-48s ║ %-8s ║ %-9s ║ %-8s ║ %-8s ║ %8s ║\n",
+		fmt.Printf("║ %-48s ║ %-8s ║ %-8s ║ %-12s ║ %-8s ║ %8s ║\n",
 			model,
 			overall,
-			boolMark(r.NonEmpty, r.Error != ""),
-			boolMark(r.NoCtrlTokens, r.Error != ""),
+			rawLeak,
+			answerValid,
 			boolMark(r.TargetFound, r.Error != ""),
 			dur,
 		)
 	}
 
-	fmt.Println("╚══════════════════════════════════════════════════╩══════════╩═══════════╩══════════╩══════════╩══════════╝")
+	fmt.Println("╚══════════════════════════════════════════════════╩══════════╩══════════╩══════════════╩══════════╩══════════╝")
 	fmt.Printf("\n%d/%d models passed all gate checks.\n", passCount, len(results))
+	if leakCount > 0 {
+		fmt.Printf("%d/%d models leaked raw control tokens (recovered by stripping).\n", leakCount, len(results))
+	} else {
+		fmt.Println("No models leaked raw control tokens.")
+	}
 }
 
 func boolMark(val bool, isErr bool) string {
