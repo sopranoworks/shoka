@@ -121,10 +121,3 @@ func TestAsk_OllamaEndToEnd(t *testing.T) {
 
 	t.Logf("ollama end-to-end OK: %d tool call(s), answer=%q", len(res.Calls), truncate(res.Answer, 200))
 }
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}

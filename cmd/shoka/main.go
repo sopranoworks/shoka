@@ -1037,7 +1037,7 @@ func setupMCPServer(ctx context.Context, cfg *config.Config, s *storage.FSGitSto
 			// happen; log and skip registration rather than crash serving.
 			logger.Error("ask_the_librarian: cannot build LLM client; tool not registered", "error", err)
 		} else {
-			lib = librarian.New(llmClient, cfg.Librarian.MaxSteps)
+			lib = librarian.New(llmClient, cfg.Librarian.MaxSteps).WithLogger(logger)
 
 			if cfg.Librarian.Classifier.Enabled {
 				cc := cfg.Librarian.Classifier

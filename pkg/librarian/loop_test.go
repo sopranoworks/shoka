@@ -1,8 +1,10 @@
 package librarian
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,5 +177,95 @@ func TestLoop_EscapeRefused(t *testing.T) {
 	}
 	if strings.TrimSpace(res.Answer) == "" {
 		t.Errorf("answer should be non-empty")
+	}
+}
+
+func debugLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// TestLoop_DebugLogging: the loop emits debug lines for every phase of the
+// tool-call lifecycle — LLM response, tool dispatch, and loop completion.
+func TestLoop_DebugLogging(t *testing.T) {
+	root, ignore, _ := fixtureCorpus(t)
+	client := &scriptedClient{replies: []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("t1", "list", listArgs{})}},
+		{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "The answer."}}},
+	}}
+	var buf bytes.Buffer
+	lib := New(client, 8).WithLogger(debugLogger(&buf))
+	_, err := lib.Ask(context.Background(), Request{Question: "q", Root: root, IgnorePatterns: ignore})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	log := buf.String()
+	for _, want := range []string{
+		"librarian: llm response",
+		"block_count=",
+		"block_types=",
+		"librarian: tool call",
+		"librarian: tool result",
+		"librarian: loop complete",
+		"model answered",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log missing %q\nfull log:\n%s", want, log)
+		}
+	}
+}
+
+// TestLoop_StepBudgetExhausted: when the model never stops calling tools and
+// the step budget runs out, the loop logs the exhaustion and returns whatever
+// text the model last produced (may be empty).
+func TestLoop_StepBudgetExhausted(t *testing.T) {
+	root, ignore, _ := fixtureCorpus(t)
+	client := &scriptedClient{replies: []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("t1", "list", listArgs{})}},
+		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("t2", "list", listArgs{})}},
+		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("t3", "list", listArgs{})}},
+	}}
+	var buf bytes.Buffer
+	lib := New(client, 2).WithLogger(debugLogger(&buf))
+	res, err := lib.Ask(context.Background(), Request{Question: "q", Root: root, IgnorePatterns: ignore})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if res.Answer != "" {
+		t.Errorf("expected empty answer on budget exhaustion, got %q", res.Answer)
+	}
+	log := buf.String()
+	if !strings.Contains(log, "step budget exhausted") {
+		t.Errorf("log missing 'step budget exhausted'\nfull log:\n%s", log)
+	}
+	if !strings.Contains(log, "answer_empty=true") {
+		t.Errorf("log missing 'answer_empty=true'\nfull log:\n%s", log)
+	}
+}
+
+// TestLoop_UnknownBlockType: unknown block types in the LLM response are logged
+// at debug level and do not cause the loop to panic or produce incorrect results.
+func TestLoop_UnknownBlockType(t *testing.T) {
+	root, ignore, _ := fixtureCorpus(t)
+	client := &scriptedClient{replies: []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.Block{
+			{Type: "thinking", Text: "internal reasoning"},
+			{Type: llm.BlockText, Text: "The answer."},
+		}},
+	}}
+	var buf bytes.Buffer
+	lib := New(client, 8).WithLogger(debugLogger(&buf))
+	res, err := lib.Ask(context.Background(), Request{Question: "q", Root: root, IgnorePatterns: ignore})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if res.Answer != "The answer." {
+		t.Errorf("answer = %q, want 'The answer.'", res.Answer)
+	}
+	log := buf.String()
+	if !strings.Contains(log, "unknown block type skipped") {
+		t.Errorf("log missing 'unknown block type skipped'\nfull log:\n%s", log)
+	}
+	if !strings.Contains(log, `type=thinking`) {
+		t.Errorf("log should name the unknown type 'thinking'\nfull log:\n%s", log)
 	}
 }

@@ -17,6 +17,7 @@ package librarian
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
@@ -69,12 +70,20 @@ type Librarian struct {
 	client     llm.Client
 	maxSteps   int
 	classifier Classifier // nil when not configured
+	log        *slog.Logger
 }
 
 // New builds a Librarian over an LLM client. maxSteps caps the tool-call loop's
 // model round-trips (<= 0 falls back to a sensible default).
 func New(client llm.Client, maxSteps int) *Librarian {
 	return &Librarian{client: client, maxSteps: maxSteps}
+}
+
+// WithLogger attaches a structured logger for debug diagnostics of the
+// tool-call loop. A nil logger (default) discards output.
+func (l *Librarian) WithLogger(log *slog.Logger) *Librarian {
+	l.log = log
+	return l
 }
 
 // WithClassifier returns the Librarian with the given classifier attached.
@@ -122,6 +131,20 @@ func (l *Librarian) currentClient() llm.Client {
 	return l.client
 }
 
+func (l *Librarian) logger() *slog.Logger {
+	if l.log != nil {
+		return l.log
+	}
+	return slog.New(discardHandler{})
+}
+
+type discardHandler struct{}
+
+func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
+func (d discardHandler) WithAttrs([]slog.Attr) slog.Handler      { return d }
+func (d discardHandler) WithGroup(string) slog.Handler            { return d }
+
 // Ask answers a question over the request's corpus root. It builds a fresh
 // guard + tool set for the root, runs the tool-call loop, and returns the
 // answer and the call trace. The corpus bytes live only in the loop's
@@ -136,6 +159,6 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 	tools := buildTools(guard, corpus)
 	// Snapshot the swappable references before the loop so a concurrent
 	// SetClient/SetMaxSteps never affects this in-flight call.
-	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps())
+	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps(), l.logger())
 	return Result{Answer: answer, Calls: calls}, err
 }
