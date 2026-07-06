@@ -135,6 +135,9 @@ func runLoop(ctx context.Context, client llm.Client, system, question string, to
 				Refused: res.isError,
 				Detail:  detailIf(res.isError, res.content),
 			})
+			for _, p := range res.autoReadPaths {
+				calls = append(calls, ToolCall{Tool: "read", Path: p})
+			}
 			resultBlocks = append(resultBlocks, llm.Block{
 				Type:      llm.BlockToolResult,
 				ToolUseID: tu.ID,

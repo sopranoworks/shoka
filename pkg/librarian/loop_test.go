@@ -109,20 +109,28 @@ func TestLoop_SearchThenRangedRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if len(res.Calls) != 2 || res.Calls[0].Tool != "search" || res.Calls[1].Tool != "read" {
-		t.Fatalf("calls = %+v, want [search, read]", res.Calls)
+	// Calls: search (+ auto-read of notes.md), then explicit ranged read.
+	if len(res.Calls) < 2 || res.Calls[0].Tool != "search" {
+		t.Fatalf("calls = %+v, want search first", res.Calls)
 	}
+	hasExplicitRead := false
 	for _, c := range res.Calls {
 		if c.Refused {
 			t.Errorf("call %q refused: %s", c.Tool, c.Detail)
 		}
+		if c.Tool == "read" && c.Path == "notes.md" {
+			hasExplicitRead = true
+		}
 	}
-	// The read fed back to the model must be the bounded passage, not the whole file.
+	if !hasExplicitRead {
+		t.Fatalf("calls = %+v, want at least one read of notes.md", res.Calls)
+	}
+	// The explicit ranged read fed back to the model must be the bounded passage.
 	var fedRead string
 	for _, p := range client.seen {
 		for _, m := range p.Messages {
 			for _, blk := range m.Content {
-				if blk.Type == llm.BlockToolResult && strings.Contains(blk.Content, "8443") {
+				if blk.Type == llm.BlockToolResult && strings.Contains(blk.Content, "ANSWER: the port is 8443") && !strings.Contains(blk.Content, "===") {
 					fedRead = blk.Content
 				}
 			}
@@ -267,5 +275,48 @@ func TestLoop_UnknownBlockType(t *testing.T) {
 	}
 	if !strings.Contains(log, `type=thinking`) {
 		t.Errorf("log should name the unknown type 'thinking'\nfull log:\n%s", log)
+	}
+}
+
+// TestLoop_AutoReadTrackedInTrace: when search auto-reads files, the auto-read
+// paths appear as synthetic "read" ToolCalls so source extraction works.
+func TestLoop_AutoReadTrackedInTrace(t *testing.T) {
+	root := t.TempDir()
+	writeFileErr(filepath.Join(root, "info.md"), "# Info\nThe answer is here.\n")
+
+	client := &scriptedClient{replies: []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.Block{toolUse("s1", "search", searchArgs{Query: "answer"})}},
+		{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: "The answer is here."}}},
+	}}
+
+	lib := New(client, 8)
+	res, err := lib.Ask(context.Background(), Request{Question: "what?", Root: root})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	readPaths := map[string]bool{}
+	for _, c := range res.Calls {
+		if c.Tool == "read" && !c.Refused {
+			readPaths[c.Path] = true
+		}
+	}
+	if !readPaths["info.md"] {
+		t.Errorf("auto-read of info.md not in trace; calls = %+v", res.Calls)
+	}
+
+	// The search result fed to the model includes the file content.
+	var searchResult string
+	for _, p := range client.seen {
+		for _, m := range p.Messages {
+			for _, blk := range m.Content {
+				if blk.Type == llm.BlockToolResult && strings.Contains(blk.Content, "info.md") {
+					searchResult = blk.Content
+				}
+			}
+		}
+	}
+	if !strings.Contains(searchResult, "The answer is here.") {
+		t.Errorf("search result fed to model = %q, want it to contain auto-read content", searchResult)
 	}
 }

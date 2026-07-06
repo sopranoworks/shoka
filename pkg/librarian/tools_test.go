@@ -147,7 +147,7 @@ func TestSearchTool_Security(t *testing.T) {
 	search := searchDispatch(g, NewDirCorpus(root))
 	ctx := context.Background()
 
-	// A content search finds the in-root file and reports the match line.
+	// A content search finds the in-root file and auto-reads its content.
 	res := search(ctx, json.RawMessage(`{"query":"widget config"}`))
 	if res.isError {
 		t.Fatalf("search refused: %v", res.content)
@@ -155,8 +155,8 @@ func TestSearchTool_Security(t *testing.T) {
 	if !strings.Contains(res.content, "guide/topic.md") {
 		t.Errorf("search missed the in-root hit: %q", res.content)
 	}
-	if !strings.Contains(res.content, "offset 2") {
-		t.Errorf("search did not report the match line (offset 2): %q", res.content)
+	if !strings.Contains(res.content, "widget config") {
+		t.Errorf("search did not include auto-read content: %q", res.content)
 	}
 
 	// Searching for the secret must surface NO hit (it lives only in ignored
@@ -204,3 +204,50 @@ func TestSearchTool_RangedReadFlow(t *testing.T) {
 		t.Errorf("ranged read = %q, want just the needle line", r.content)
 	}
 }
+
+// TestSearchTool_AutoRead: search auto-reads the top results and includes file
+// content in the response. The auto-read paths are tracked for source extraction.
+func TestSearchTool_AutoRead(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "alpha.md"), "# Alpha\nThis document describes alpha features.\n")
+	writeFile(t, filepath.Join(root, "beta.md"), "# Beta\nThis document describes beta features.\n")
+	writeFile(t, filepath.Join(root, "gamma.md"), "# Gamma\nThis document describes gamma features.\n")
+	writeFile(t, filepath.Join(root, "delta.md"), "# Delta\nThis document describes delta features.\n")
+
+	g := NewGuard(root, nil)
+	search := searchDispatch(g, NewDirCorpus(root))
+	ctx := context.Background()
+
+	res := search(ctx, json.RawMessage(`{"query":"describes"}`))
+	if res.isError {
+		t.Fatalf("search failed: %v", res.content)
+	}
+
+	// Auto-read includes file content with === path === headers.
+	if !strings.Contains(res.content, "===") {
+		t.Errorf("search result missing auto-read header markers: %q", res.content)
+	}
+
+	// Auto-read paths are tracked (up to autoReadCount).
+	if len(res.autoReadPaths) == 0 {
+		t.Fatalf("autoReadPaths is empty, want up to %d paths", autoReadCount)
+	}
+	if len(res.autoReadPaths) > autoReadCount {
+		t.Errorf("autoReadPaths = %d, want <= %d", len(res.autoReadPaths), autoReadCount)
+	}
+
+	// Each auto-read file's content is present in the result.
+	for _, p := range res.autoReadPaths {
+		if !strings.Contains(res.content, "=== "+p+" ===") {
+			t.Errorf("auto-read file %q missing from result", p)
+		}
+	}
+
+	// Files beyond the auto-read count appear as path-only references.
+	if len(res.autoReadPaths) < 4 {
+		if !strings.Contains(res.content, "Other results:") {
+			t.Errorf("search result missing 'Other results:' for non-auto-read hits")
+		}
+	}
+}
+

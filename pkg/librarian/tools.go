@@ -10,14 +10,20 @@ import (
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
 )
 
+const (
+	autoReadCount    = 3
+	autoReadMaxChars = 1500
+)
+
 // toolResult is the outcome of one tool dispatch. Errors are encoded as
 // isError + content (which becomes a tool_result error fed back to the model),
 // never as a Go error that would abort the loop — a refused access is data, not
 // a crash. path records the path/dir/query the call targeted, for the trace.
 type toolResult struct {
-	content string
-	isError bool
-	path    string
+	content       string
+	isError       bool
+	path          string
+	autoReadPaths []string // paths auto-read by the search tool (for source tracking)
 }
 
 // toolFunc dispatches one tool call from its raw JSON arguments.
@@ -192,20 +198,54 @@ func searchDispatch(g *Guard, c Corpus) toolFunc {
 			return res
 		}
 
-		var lines []string
+		// Guard-filter: drop any hit whose path is out-of-root, ignored, or a
+		// symlink BEFORE it (or its snippet) ever reaches the model.
+		var approved []Hit
 		for _, h := range hits {
-			// Guard-filter: drop any hit whose path is out-of-root, ignored, or a
-			// symlink BEFORE it (or its snippet) ever reaches the model.
 			if _, _, gerr := g.Resolve(h.Path, false); gerr != nil {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s (offset %d): %s", h.Path, h.Offset, h.Snippet))
+			approved = append(approved, h)
 		}
-		if len(lines) == 0 {
+
+		if len(approved) == 0 {
 			res.content = "(no matches)"
-		} else {
-			res.content = strings.Join(lines, "\n")
+			return res
 		}
+
+		// Auto-read top N files so the LLM receives content directly and
+		// can synthesize an answer without a separate read call.
+		readN := autoReadCount
+		if readN > len(approved) {
+			readN = len(approved)
+		}
+
+		var sections []string
+		for i := 0; i < readN; i++ {
+			h := approved[i]
+			data, rerr := c.Read(ctx, h.Path, 0, 0)
+			if rerr != nil {
+				sections = append(sections, fmt.Sprintf("=== %s ===\n(read error: %v)", h.Path, rerr))
+				continue
+			}
+			content := string(data)
+			if len(content) > autoReadMaxChars {
+				content = content[:autoReadMaxChars] + "\n[truncated]"
+			}
+			res.autoReadPaths = append(res.autoReadPaths, h.Path)
+			sections = append(sections, fmt.Sprintf("=== %s ===\n%s", h.Path, content))
+		}
+
+		// Remaining hits as path-only references.
+		if len(approved) > readN {
+			var remaining []string
+			for _, h := range approved[readN:] {
+				remaining = append(remaining, fmt.Sprintf("%s (offset %d): %s", h.Path, h.Offset, h.Snippet))
+			}
+			sections = append(sections, "Other results:\n"+strings.Join(remaining, "\n"))
+		}
+
+		res.content = strings.Join(sections, "\n\n")
 		return res
 	}
 }
