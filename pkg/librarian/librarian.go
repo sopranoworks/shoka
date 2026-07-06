@@ -29,8 +29,12 @@ import (
 const systemPrompt = "You are a librarian answering questions about a corpus of files. " +
 	"Use the 'search' tool to find relevant files by content, the 'list' tool to " +
 	"discover files, and the 'read' tool to read them. For a large file, pass a search " +
-	"hit's 'offset' to 'read' to fetch just the matching passage. Base your answer only " +
-	"on what you read. Be concise and answer the question directly. When multiple " +
+	"hit's 'offset' to 'read' to fetch just the matching passage. " +
+	"IMPORTANT: when search returns results, immediately read the most promising " +
+	"result(s) before doing another search. Do not repeat search with different queries " +
+	"without first reading results from the previous search. Your answer must be based " +
+	"on file content you have actually read, not on search result titles or snippets alone. " +
+	"Be concise and answer the question directly. When multiple " +
 	"documents are relevant, list all of them with a brief description of each — do not " +
 	"narrow to a single answer when several candidates exist. Include all relevant source " +
 	"paths in your response. All access is read-only and confined to the corpus; some " +
