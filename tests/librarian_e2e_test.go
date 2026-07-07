@@ -132,6 +132,7 @@ func TestLibrarianE2E_MCP(t *testing.T) {
 
 	text := wireText(res)
 	t.Logf("MCP response (IsError=%v): %s", res.IsError, text)
+	t.Logf("GATE_RAW_LEAK=%v", strings.Contains(text, "<|"))
 
 	if res.IsError {
 		if strings.Contains(text, "connection refused") || strings.Contains(text, "connect:") {

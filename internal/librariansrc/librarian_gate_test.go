@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -171,13 +172,16 @@ func TestLibrarianGate_ProductionPath(t *testing.T) {
 	}
 
 	// --- Gate assertions ---
+	rawLeak := gateControlTokenRe.MatchString(res.RawAnswer)
+	t.Logf("GATE_RAW_LEAK=%v", rawLeak)
+
 	if strings.TrimSpace(res.Answer) == "" {
 		t.Logf("Debug log:\n%s", logBuf.String())
 		t.Errorf("GATE FAIL: empty answer with %d tool calls", len(res.Calls))
 	}
 
 	if gateControlTokenRe.MatchString(res.Answer) {
-		t.Errorf("GATE FAIL: control tokens in answer: %q", answerPreview)
+		t.Errorf("GATE FAIL: control tokens in stripped answer: %q", answerPreview)
 	}
 
 	foundTarget := false
@@ -285,6 +289,10 @@ func writeGateCorpus(t *testing.T, s *storage.FSGitStorage) int {
 }
 
 func gateDownloadCategory(client *http.Client, category string) ([]gateMMLURow, error) {
+	if rows, ok := gateLoadMMLUCache(category); ok {
+		return rows, nil
+	}
+
 	url := fmt.Sprintf(
 		"https://datasets-server.huggingface.co/rows?dataset=cais/mmlu&config=%s&split=test&offset=0&length=20",
 		category,
@@ -313,7 +321,35 @@ func gateDownloadCategory(client *http.Client, category string) ([]gateMMLURow, 
 	for _, r := range data.Rows {
 		rows = append(rows, r.Row)
 	}
+	gateSaveMMLUCache(category, rows)
 	return rows, nil
+}
+
+func gateMMLUCacheDir() string {
+	return filepath.Join(os.TempDir(), "shoka-mmlu-cache")
+}
+
+func gateLoadMMLUCache(category string) ([]gateMMLURow, bool) {
+	path := filepath.Join(gateMMLUCacheDir(), category+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var rows []gateMMLURow
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, false
+	}
+	return rows, len(rows) > 0
+}
+
+func gateSaveMMLUCache(category string, rows []gateMMLURow) {
+	dir := gateMMLUCacheDir()
+	_ = os.MkdirAll(dir, 0o755)
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, category+".json"), data, 0o644)
 }
 
 var gateAnswerLetters = [...]string{"A", "B", "C", "D"}

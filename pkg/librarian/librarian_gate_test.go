@@ -116,6 +116,9 @@ func TestAsk_GateBenchmark(t *testing.T) {
 
 	// --- Gate assertions ---
 
+	rawLeak := controlTokenRe.MatchString(res.RawAnswer)
+	t.Logf("GATE_RAW_LEAK=%v", rawLeak)
+
 	// 1. Non-empty answer.
 	answer := strings.TrimSpace(res.Answer)
 	if answer == "" {
@@ -125,7 +128,7 @@ func TestAsk_GateBenchmark(t *testing.T) {
 
 	// 2. No control tokens.
 	if controlTokenRe.MatchString(res.Answer) {
-		t.Errorf("GATE FAIL: control tokens in answer: %q", truncate(res.Answer, 200))
+		t.Errorf("GATE FAIL: control tokens in stripped answer: %q", truncate(res.Answer, 200))
 	}
 
 	// 3. Target file was accessed (via direct read or search auto-read).
@@ -230,6 +233,10 @@ func downloadMMLUCorpus(t *testing.T, root string) int {
 }
 
 func fetchMMLUCategory(client *http.Client, category string) ([]mmluRow, error) {
+	if rows, ok := loadMMLUCache(category); ok {
+		return rows, nil
+	}
+
 	url := fmt.Sprintf(
 		"https://datasets-server.huggingface.co/rows?dataset=cais/mmlu&config=%s&split=test&offset=0&length=20",
 		category,
@@ -258,7 +265,35 @@ func fetchMMLUCategory(client *http.Client, category string) ([]mmluRow, error) 
 	for _, r := range data.Rows {
 		rows = append(rows, r.Row)
 	}
+	saveMMLUCache(category, rows)
 	return rows, nil
+}
+
+func mmluCacheDir() string {
+	return filepath.Join(os.TempDir(), "shoka-mmlu-cache")
+}
+
+func loadMMLUCache(category string) ([]mmluRow, bool) {
+	path := filepath.Join(mmluCacheDir(), category+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var rows []mmluRow
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, false
+	}
+	return rows, len(rows) > 0
+}
+
+func saveMMLUCache(category string, rows []mmluRow) {
+	dir := mmluCacheDir()
+	_ = os.MkdirAll(dir, 0o755)
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, category+".json"), data, 0o644)
 }
 
 var answerLetters = [...]string{"A", "B", "C", "D"}
