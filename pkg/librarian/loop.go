@@ -272,9 +272,6 @@ func extractText(msg llm.Message) string {
 
 var controlTokenRe = regexp.MustCompile(`<\|[^|]*\|>`)
 
-func stripControlTokens(s string) string {
-	return strings.TrimSpace(controlTokenRe.ReplaceAllString(s, ""))
-}
 
 func detailIf(cond bool, s string) string {
 	if cond {

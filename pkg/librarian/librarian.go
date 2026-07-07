@@ -163,6 +163,6 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 	tools := buildTools(guard, corpus)
 	// Snapshot the swappable references before the loop so a concurrent
 	// SetClient/SetMaxSteps never affects this in-flight call.
-	raw, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps(), l.logger())
-	return Result{Answer: stripControlTokens(raw), RawAnswer: raw, Calls: calls}, err
+	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps(), l.logger())
+	return Result{Answer: answer, RawAnswer: answer, Calls: calls}, err
 }
