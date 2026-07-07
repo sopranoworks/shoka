@@ -104,7 +104,7 @@ func TestLibrarianE2E_MCP(t *testing.T) {
 	defer httpSrv.Close()
 
 	// --- MCP client ---
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	mcpCli := mcp.NewClient(&mcp.Implementation{Name: "librarian-e2e-client", Version: "0.0.0"}, nil)

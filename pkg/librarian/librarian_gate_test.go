@@ -114,21 +114,21 @@ func TestAsk_GateBenchmark(t *testing.T) {
 		t.Logf("  [%d] %s path=%q refused=%v detail=%q", i, c.Tool, c.Path, c.Refused, c.Detail)
 	}
 
-	// --- Gate assertions ---
+	// --- Gate assertions (judged on RAW answer, no stripping) ---
 
 	rawLeak := controlTokenRe.MatchString(res.RawAnswer)
 	t.Logf("GATE_RAW_LEAK=%v", rawLeak)
 
-	// 1. Non-empty answer.
-	answer := strings.TrimSpace(res.Answer)
+	// 1. Non-empty answer (raw).
+	answer := strings.TrimSpace(res.RawAnswer)
 	if answer == "" {
 		t.Logf("Debug log:\n%s", logBuf.String())
 		t.Errorf("GATE FAIL: empty answer with %d tool calls", len(res.Calls))
 	}
 
-	// 2. No control tokens.
-	if controlTokenRe.MatchString(res.Answer) {
-		t.Errorf("GATE FAIL: control tokens in stripped answer: %q", truncate(res.Answer, 200))
+	// 2. No control tokens in raw answer.
+	if rawLeak {
+		t.Errorf("GATE FAIL: control tokens in raw answer: %q", truncate(res.RawAnswer, 200))
 	}
 
 	// 3. Target file was accessed (via direct read or search auto-read).

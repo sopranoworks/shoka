@@ -119,7 +119,12 @@ func main() {
 				}
 				continue
 			}
-			fmt.Print(" OK\n")
+			fmt.Print(" OK, warming up...")
+			if err := warmupModel(m.Key); err != nil {
+				fmt.Printf(" WARN: %v\n", err)
+			} else {
+				fmt.Print(" ready\n")
+			}
 
 			for _, t := range tests {
 				for rep := 1; rep <= repsPerRun; rep++ {
@@ -350,6 +355,25 @@ func listModels() ([]lmsModel, error) {
 		return nil, err
 	}
 	return data.Models, nil
+}
+
+func warmupModel(key string) error {
+	payload, _ := json.Marshal(map[string]any{
+		"model":    key,
+		"messages": []map[string]string{{"role": "user", "content": "Say hello."}},
+		"max_completion_tokens": 16,
+	})
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Post(lmsBaseURL+"/v1/chat/completions", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func loadModel(key string) error {

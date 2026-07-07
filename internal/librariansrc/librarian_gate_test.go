@@ -161,27 +161,27 @@ func TestLibrarianGate_ProductionPath(t *testing.T) {
 	}
 
 	// --- Results ---
-	answerPreview := res.Answer
+	answerPreview := res.RawAnswer
 	if len(answerPreview) > 300 {
 		answerPreview = answerPreview[:300] + "…"
 	}
-	t.Logf("Answer: %q", answerPreview)
+	t.Logf("Answer (raw): %q", answerPreview)
 	t.Logf("Calls (%d):", len(res.Calls))
 	for i, c := range res.Calls {
 		t.Logf("  [%d] %s path=%q refused=%v", i, c.Tool, c.Path, c.Refused)
 	}
 
-	// --- Gate assertions ---
+	// --- Gate assertions (judged on RAW answer, no stripping) ---
 	rawLeak := gateControlTokenRe.MatchString(res.RawAnswer)
 	t.Logf("GATE_RAW_LEAK=%v", rawLeak)
 
-	if strings.TrimSpace(res.Answer) == "" {
+	if strings.TrimSpace(res.RawAnswer) == "" {
 		t.Logf("Debug log:\n%s", logBuf.String())
 		t.Errorf("GATE FAIL: empty answer with %d tool calls", len(res.Calls))
 	}
 
-	if gateControlTokenRe.MatchString(res.Answer) {
-		t.Errorf("GATE FAIL: control tokens in stripped answer: %q", answerPreview)
+	if rawLeak {
+		t.Errorf("GATE FAIL: control tokens in raw answer: %q", answerPreview)
 	}
 
 	foundTarget := false
