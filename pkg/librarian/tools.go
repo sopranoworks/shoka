@@ -92,12 +92,14 @@ func buildTools(g *Guard, c Corpus) []tool {
 		{
 			def: llm.ToolDef{
 				Name: "search",
-				Description: "Search the corpus for a case-insensitive substring and return matching " +
-					"files with a context snippet and the 0-based line of the match ('offset'). " +
-					"Pass that 'offset' to the read tool to read just the matching passage of a " +
-					"large file. Out-of-root, ignored, and symlink hits are never returned.",
+				Description: "Search the corpus for matching files by keyword. Matches files containing " +
+					"the query as a substring, or (for multi-word queries) files containing all " +
+					"query words in any order. Returns a context snippet and the 0-based line of " +
+					"the match ('offset'). Pass that 'offset' to the read tool to read just the " +
+					"matching passage of a large file. Out-of-root, ignored, and symlink hits are " +
+					"never returned.",
 				Properties: map[string]any{
-					"query": map[string]any{"type": "string", "description": "Substring to search for (case-insensitive)."},
+					"query": map[string]any{"type": "string", "description": "Keywords to search for (case-insensitive)."},
 					"limit": map[string]any{"type": "integer", "description": "Maximum number of hits to return. Optional."},
 				},
 				Required: []string{"query"},

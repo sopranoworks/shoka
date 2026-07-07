@@ -121,6 +121,9 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 	if q == "" {
 		return nil, nil
 	}
+
+	words := strings.Fields(q)
+
 	var hits []Hit
 	err := filepath.WalkDir(c.root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -129,19 +132,34 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 		if d.IsDir() {
 			return nil
 		}
-		// Never read through a symlink (the guard would drop the hit anyway).
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 		data, rerr := os.ReadFile(p)
 		if rerr != nil {
-			return nil // unreadable file: skip, not fatal
-		}
-		content := string(data)
-		bidx := strings.Index(strings.ToLower(content), q)
-		if bidx < 0 {
 			return nil
 		}
+		content := string(data)
+		lower := strings.ToLower(content)
+
+		// Try exact substring match first.
+		bidx := strings.Index(lower, q)
+		if bidx < 0 {
+			// Fall back to all-words match: every word in the query
+			// must appear somewhere in the file. Long words are
+			// prefix-matched (min 5 chars) to handle inflection
+			// differences (e.g. "documentation" matches "documented").
+			if len(words) < 2 {
+				return nil
+			}
+			for _, w := range words {
+				if !containsWordOrPrefix(lower, w) {
+					return nil
+				}
+			}
+			bidx = strings.Index(lower, words[0])
+		}
+
 		rel, relErr := filepath.Rel(c.root, p)
 		if relErr != nil {
 			return nil
@@ -149,7 +167,7 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 		hits = append(hits, Hit{
 			Path:    filepath.ToSlash(rel),
 			Snippet: snippetAround(content, bidx, len(query)),
-			Offset:  strings.Count(content[:bidx], "\n"), // 0-based match line
+			Offset:  strings.Count(content[:bidx], "\n"),
 		})
 		if limit > 0 && len(hits) >= limit {
 			return filepath.SkipAll
@@ -160,4 +178,16 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 		return nil, err
 	}
 	return hits, nil
+}
+
+const wordPrefixMinLen = 5
+
+func containsWordOrPrefix(content, word string) bool {
+	if strings.Contains(content, word) {
+		return true
+	}
+	if len(word) > wordPrefixMinLen {
+		return strings.Contains(content, word[:wordPrefixMinLen])
+	}
+	return false
 }
