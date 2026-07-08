@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	lmsBaseURL    = "http://localhost:1234"
-	defaultReps   = 5
-	defaultRounds = 10
+	lmsBaseURL = "http://localhost:1234"
+	repsPerRun = 5
+	rounds     = 10
 )
 
 type testSpec struct {
@@ -63,15 +63,6 @@ type runResult struct {
 }
 
 func main() {
-	repsPerRun := defaultReps
-	rounds := defaultRounds
-	if v := os.Getenv("GATE_REPS"); v != "" {
-		fmt.Sscanf(v, "%d", &repsPerRun)
-	}
-	if v := os.Getenv("GATE_ROUNDS"); v != "" {
-		fmt.Sscanf(v, "%d", &rounds)
-	}
-
 	models, err := listModels()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to query LM Studio: %v\n", err)
