@@ -27,15 +27,39 @@ function formatDate(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+function selectFallback(text: string): boolean {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand('copy')
+  document.body.removeChild(ta)
+  return ok
+}
+
 function CopyPathButton({ path }: { path: string }) {
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  const handleCopy = () => {
-    navigator.clipboard?.writeText(path).catch(() => {})
+  const markCopied = () => {
     setCopied(true)
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => setCopied(false), 1500)
+  }
+
+  const handleCopy = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard
+        .writeText(path)
+        .then(() => markCopied())
+        .catch(() => {
+          if (selectFallback(path)) markCopied()
+        })
+    } else {
+      if (selectFallback(path)) markCopied()
+    }
   }
 
   useEffect(() => () => clearTimeout(timerRef.current), [])

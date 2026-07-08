@@ -19,7 +19,8 @@ test.beforeAll(async () => {
 
 // ---- Feature 1: Copy filename button ----
 
-test('copy-path button shows checkmark feedback on click', async ({ page }) => {
+test('copy-path button copies filename to clipboard', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await page.goto('/p/demo/docs/blob/_e2e/searchable-view.md')
   await expect(page.getByRole('heading', { name: 'View Search Test' })).toBeVisible()
 
@@ -29,13 +30,11 @@ test('copy-path button shows checkmark feedback on click', async ({ page }) => {
   await copyBtn.click()
   await expect(copyBtn).toHaveAttribute('title', 'Copied!')
 
+  const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
+  expect(clipboardText).toBe('_e2e/searchable-view.md')
+
   await page.waitForTimeout(1600)
   await expect(copyBtn).toHaveAttribute('title', 'Copy file path')
-
-  await page.screenshot({
-    path: `${SCREENSHOT_DIR}/file-view-copy-button.png`,
-    fullPage: true,
-  })
 })
 
 // ---- Feature 2: In-view text search ----
