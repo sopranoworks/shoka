@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -124,8 +125,14 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 
 	words := strings.Fields(q)
 
-	var hits []Hit
-	err := filepath.WalkDir(c.root, func(p string, d fs.DirEntry, err error) error {
+	type scored struct {
+		hit   Hit
+		score int // number of query words matched
+		exact bool
+	}
+	var candidates []scored
+
+	_ = filepath.WalkDir(c.root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -142,40 +149,80 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 		content := string(data)
 		lower := strings.ToLower(content)
 
-		// Try exact substring match first.
-		bidx := strings.Index(lower, q)
-		if bidx < 0 {
-			// Fall back to all-words match: every word in the query
-			// must appear somewhere in the file. Long words are
-			// prefix-matched (min 5 chars) to handle inflection
-			// differences (e.g. "documentation" matches "documented").
-			if len(words) < 2 {
-				return nil
-			}
-			for _, w := range words {
-				if !containsWordOrPrefix(lower, w) {
-					return nil
-				}
-			}
-			bidx = strings.Index(lower, words[0])
-		}
-
 		rel, relErr := filepath.Rel(c.root, p)
 		if relErr != nil {
 			return nil
 		}
-		hits = append(hits, Hit{
-			Path:    filepath.ToSlash(rel),
-			Snippet: snippetAround(content, bidx, len(query)),
-			Offset:  strings.Count(content[:bidx], "\n"),
-		})
-		if limit > 0 && len(hits) >= limit {
-			return filepath.SkipAll
+		relPath := filepath.ToSlash(rel)
+
+		// Exact substring match is the strongest signal.
+		if bidx := strings.Index(lower, q); bidx >= 0 {
+			candidates = append(candidates, scored{
+				hit: Hit{
+					Path:    relPath,
+					Snippet: snippetAround(content, bidx, len(query)),
+					Offset:  strings.Count(content[:bidx], "\n"),
+				},
+				score: len(words),
+				exact: true,
+			})
+			return nil
 		}
+
+		// Keyword match: count how many query words appear (prefix-matched
+		// for long words to handle inflection). Require ≥ half of words
+		// for multi-word queries.
+		if len(words) < 2 {
+			return nil
+		}
+		matched := 0
+		firstIdx := -1
+		firstWord := ""
+		for _, w := range words {
+			if containsWordOrPrefix(lower, w) {
+				matched++
+				if firstIdx < 0 {
+					firstIdx = strings.Index(lower, w)
+					firstWord = w
+				}
+			}
+		}
+		minRequired := (len(words) + 1) / 2 // ceil(len/2): ≥50%
+		if minRequired < 2 {
+			minRequired = 2
+		}
+		if matched < minRequired {
+			return nil
+		}
+		bidx := firstIdx
+		if bidx < 0 {
+			bidx = 0
+		}
+		candidates = append(candidates, scored{
+			hit: Hit{
+				Path:    relPath,
+				Snippet: snippetAround(content, bidx, len(firstWord)),
+				Offset:  strings.Count(content[:bidx], "\n"),
+			},
+			score: matched,
+		})
 		return nil
 	})
-	if err != nil {
-		return nil, err
+
+	// Sort: exact matches first, then by score (most words matched) descending.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].exact != candidates[j].exact {
+			return candidates[i].exact
+		}
+		return candidates[i].score > candidates[j].score
+	})
+
+	hits := make([]Hit, 0, len(candidates))
+	for _, c := range candidates {
+		hits = append(hits, c.hit)
+		if limit > 0 && len(hits) >= limit {
+			break
+		}
 	}
 	return hits, nil
 }
