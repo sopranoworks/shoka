@@ -144,6 +144,10 @@ func TestLibrarianGate_ProductionPath(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	maxSteps := gateMaxSteps()
 	lib := librarian.New(client, maxSteps).WithLogger(logger)
+	if suffix := os.Getenv("GATE_SYSTEM_SUFFIX"); suffix != "" {
+		lib.WithSystemSuffix(suffix)
+		t.Logf("GATE_SYSTEM_SUFFIX=%q", suffix)
+	}
 	t.Logf("GATE_MAX_STEPS=%d", maxSteps)
 
 	// --- Run ---

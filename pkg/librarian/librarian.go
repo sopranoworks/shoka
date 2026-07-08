@@ -70,11 +70,12 @@ type Result struct {
 // before the tool-call loop, so no lock ever spans an LLM round-trip and an
 // in-flight Ask completes on the client it started with.
 type Librarian struct {
-	mu         sync.RWMutex
-	client     llm.Client
-	maxSteps   int
-	classifier Classifier // nil when not configured
-	log        *slog.Logger
+	mu           sync.RWMutex
+	client       llm.Client
+	maxSteps     int
+	classifier   Classifier // nil when not configured
+	log          *slog.Logger
+	systemSuffix string
 }
 
 // New builds a Librarian over an LLM client. maxSteps caps the tool-call loop's
@@ -87,6 +88,12 @@ func New(client llm.Client, maxSteps int) *Librarian {
 // tool-call loop. A nil logger (default) discards output.
 func (l *Librarian) WithLogger(log *slog.Logger) *Librarian {
 	l.log = log
+	return l
+}
+
+// WithSystemSuffix appends text to the system prompt.
+func (l *Librarian) WithSystemSuffix(s string) *Librarian {
+	l.systemSuffix = s
 	return l
 }
 
@@ -163,6 +170,10 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 	tools := buildTools(guard, corpus)
 	// Snapshot the swappable references before the loop so a concurrent
 	// SetClient/SetMaxSteps never affects this in-flight call.
-	answer, calls, err := runLoop(ctx, l.currentClient(), systemPrompt, req.Question, tools, l.MaxSteps(), l.logger())
+	sp := systemPrompt
+	if l.systemSuffix != "" {
+		sp += " " + l.systemSuffix
+	}
+	answer, calls, err := runLoop(ctx, l.currentClient(), sp, req.Question, tools, l.MaxSteps(), l.logger())
 	return Result{Answer: answer, RawAnswer: answer, Calls: calls}, err
 }
