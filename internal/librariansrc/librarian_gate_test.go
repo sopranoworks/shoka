@@ -40,10 +40,10 @@ const (
 var gateControlTokenRe = regexp.MustCompile(`<\|[^|]*\|>`)
 
 // TestLibrarianGate_ProductionPath is the production-path gate test for the
-// librarian. Unlike the dirCorpus-based gate test in pkg/librarian/, this test
+// librarian. Unlike the fsCorpus-based gate test in pkg/librarian/, this test
 // exercises the actual production code path:
 //
-//   - librariansrc.Corpus backed by FSGitStorage (not dirCorpus)
+//   - librariansrc.Corpus backed by FSGitStorage (not fsCorpus)
 //   - Vector index via LM Studio embedding (when available)
 //   - Chunk-level similarity filtering via the embedder
 //   - Auto-read in search results
@@ -242,12 +242,209 @@ func gateWaitEmbeddings(t *testing.T, s *storage.FSGitStorage, target int, timeo
 	}
 }
 
+// --- Scale gate test ---
+
+var gateScaleRan atomic.Bool
+
+// gateScaleCategories is the full 41-category MMLU set (820 files at 20 per
+// category). Used by TestLibrarianGate_Scale to exercise the production corpus
+// at realistic haystack size.
+var gateScaleCategories = [...]string{
+	"abstract_algebra", "anatomy", "astronomy", "business_ethics",
+	"clinical_knowledge", "college_biology", "college_chemistry",
+	"college_computer_science", "college_mathematics", "college_medicine",
+	"college_physics", "computer_security", "conceptual_physics",
+	"econometrics", "electrical_engineering", "elementary_mathematics",
+	"formal_logic", "global_facts", "high_school_biology",
+	"high_school_chemistry", "high_school_computer_science",
+	"high_school_european_history", "high_school_geography",
+	"high_school_government_and_politics", "high_school_macroeconomics",
+	"high_school_mathematics", "high_school_microeconomics",
+	"high_school_physics", "high_school_psychology",
+	"high_school_statistics", "high_school_us_history",
+	"high_school_world_history", "human_aging", "human_sexuality",
+	"international_law", "jurisprudence", "logical_fallacies",
+	"machine_learning", "management", "marketing",
+	"medical_genetics",
+}
+
+// TestLibrarianGate_Scale is the 820-file production-path gate test.
+// Same as TestLibrarianGate_ProductionPath but at full MMLU scale (41 categories
+// × 20 questions). Uses librariansrc.Corpus backed by FSGitStorage with bigram
+// fulltext index + vector similarity search — the exact production code path.
+func TestLibrarianGate_Scale(t *testing.T) {
+	if !gateScaleRan.CompareAndSwap(false, true) {
+		t.Skip("scale gate already exercised once in this process")
+	}
+
+	baseURL := gateEnvOr("LIBRARIAN_LMSTUDIO_BASE_URL", gateBaseURL)
+	llmModel := gateEnvOr("LIBRARIAN_LMSTUDIO_MODEL", gateLLMModel)
+	embedModel := gateEnvOr("LIBRARIAN_EMBED_MODEL", gateEmbedModel)
+
+	host := strings.TrimPrefix(strings.TrimPrefix(baseURL, "http://"), "https://")
+	if i := strings.LastIndex(host, "/"); i > 0 {
+		host = host[:i]
+	}
+	conn, err := net.DialTimeout("tcp", host, 500*time.Millisecond)
+	if err != nil {
+		t.Skipf("LM Studio not reachable at %s: %v", baseURL, err)
+	}
+	_ = conn.Close()
+
+	// --- Storage + project ---
+	s := newStore(t)
+	project(t, s, "gate", "scale")
+
+	fileCount := writeGateCorpusScale(t, s)
+	if fileCount < 800 {
+		t.Fatalf("expected 800+ corpus files, got %d", fileCount)
+	}
+	write(t, s, "gate", "scale", gateTargetPath, gateTargetContent)
+	fileCount++
+	t.Logf("Wrote %d files to storage", fileCount)
+
+	if !s.WaitForWAL(120 * time.Second) {
+		t.Fatal("WAL drain timeout")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	// --- Vector index (best-effort) ---
+	vectorActive := false
+	var embedder llm.Embedder
+	t.Setenv("OPENAI_API_KEY", "lm-studio")
+
+	embedder, embedErr := llm.NewEmbedder(llm.LLMConfig{
+		Provider: llm.ProviderOpenAI,
+		BaseURL:  baseURL,
+		Model:    embedModel,
+	})
+	if embedErr == nil {
+		_, probeErr := embedder.Embed(ctx, "test")
+		if probeErr == nil {
+			s.SetVectorConfig(&storage.VectorIndexConfig{
+				Embedder: embedder,
+				Model:    embedModel,
+			})
+			s.StartVectorWorker(ctx, 0)
+			vectorActive = gateWaitEmbeddings(t, s, fileCount, 180*time.Second)
+			t.Logf("Vector index: active=%v", vectorActive)
+		} else {
+			t.Logf("Embedding probe failed (%v); proceeding without vector index", probeErr)
+			embedder = nil
+		}
+	} else {
+		t.Logf("Embedder creation failed (%v); proceeding without vector index", embedErr)
+	}
+
+	// --- Production corpus ---
+	corpus := NewCorpus(s, "gate", "scale").
+		WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if vectorActive {
+		corpus.WithVectorSearch(s)
+	}
+	if embedder != nil {
+		corpus.WithChunkFilter(gateEmbedAdapter{embedder}, gateQuestion)
+	}
+
+	// --- LLM client ---
+	client, clientErr := llm.NewClient(llm.LLMConfig{
+		Provider: llm.ProviderOpenAI,
+		BaseURL:  baseURL,
+		Model:    llmModel,
+	})
+	if clientErr != nil {
+		t.Fatalf("NewClient: %v", clientErr)
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	lib := librarian.New(client, 0).WithLogger(logger)
+
+	// --- Run ---
+	root, rootErr := s.ProjectPath("gate", "scale")
+	if rootErr != nil {
+		t.Fatalf("ProjectPath: %v", rootErr)
+	}
+
+	res, askErr := lib.Ask(ctx, librarian.Request{
+		Question:       gateQuestion,
+		Root:           root,
+		IgnorePatterns: []string{".shoka*"},
+		Corpus:         corpus,
+	})
+	if askErr != nil {
+		t.Logf("Debug log:\n%s", logBuf.String())
+		if strings.Contains(askErr.Error(), "connection refused") || strings.Contains(askErr.Error(), "connect:") {
+			t.Skipf("LM Studio went away: %v", askErr)
+		}
+		t.Fatalf("Ask failed: %v", askErr)
+	}
+
+	// --- Results ---
+	answerPreview := res.RawAnswer
+	if len(answerPreview) > 300 {
+		answerPreview = answerPreview[:300] + "…"
+	}
+	t.Logf("Answer (raw): %q", answerPreview)
+	t.Logf("Calls (%d):", len(res.Calls))
+	for i, c := range res.Calls {
+		t.Logf("  [%d] %s path=%q refused=%v", i, c.Tool, c.Path, c.Refused)
+	}
+
+	// --- Gate assertions ---
+	rawLeak := gateControlTokenRe.MatchString(res.RawAnswer)
+	t.Logf("GATE_RAW_LEAK=%v", rawLeak)
+
+	if strings.TrimSpace(res.RawAnswer) == "" {
+		t.Logf("Debug log:\n%s", logBuf.String())
+		t.Errorf("GATE FAIL: empty answer with %d tool calls", len(res.Calls))
+	}
+
+	if rawLeak {
+		t.Errorf("GATE FAIL: control tokens in raw answer: %q", answerPreview)
+	}
+
+	foundTarget := false
+	for _, c := range res.Calls {
+		if c.Tool == "read" && !c.Refused && strings.Contains(c.Path, "fuigo") {
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget {
+		t.Logf("Debug log:\n%s", logBuf.String())
+		t.Errorf("GATE FAIL: target file %q not in read sources", gateTargetPath)
+	}
+}
+
+func writeGateCorpusScale(t *testing.T, s *storage.FSGitStorage) int {
+	t.Helper()
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	count := 0
+
+	for _, cat := range gateScaleCategories {
+		rows, err := gateDownloadCategory(httpClient, cat)
+		if err != nil {
+			t.Skipf("MMLU download failed for %s: %v", cat, err)
+		}
+		for i, row := range rows {
+			path := fmt.Sprintf("benchmark/%s/q%03d.md", cat, i+1)
+			content := gateMMluDoc(cat, i+1, row)
+			write(t, s, "gate", "scale", path, content)
+			count++
+		}
+	}
+	return count
+}
+
 // --- MMLU corpus download ---
 //
 // Downloads actual MMLU benchmark questions (MIT license) from HuggingFace
-// at test time. 6 categories × 20 questions = 120 files — enough to exercise
-// the production search path without the embedding time of 800+ files.
-// The 820-file scale test remains in pkg/librarian/librarian_gate_test.go.
+// at test time. Used by both the 6-category production path test and the
+// 41-category scale test.
 
 var gateCategories = [...]string{
 	"abstract_algebra", "anatomy", "astronomy",

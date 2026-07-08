@@ -32,7 +32,7 @@ type testSpec struct {
 var tests = []testSpec{
 	{"TestLibrarianGate_ProductionPath", "./internal/librariansrc/"},
 	{"TestLibrarianE2E_MCP", "./tests/"},
-	{"TestAsk_GateBenchmark", "./pkg/librarian/"},
+	{"TestLibrarianGate_Scale", "./internal/librariansrc/"},
 }
 
 type lmsModel struct {

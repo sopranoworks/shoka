@@ -27,7 +27,7 @@ var librarianE2ERan atomic.Bool
 //
 // This test uses an in-process MCP server (httptest) with the production
 // AskTheLibrarianHandler wired in — the same handler the real Shoka server
-// uses. The librariansrc.Corpus adapter, NOT dirCorpus, backs every search
+// uses. The librariansrc.Corpus adapter, NOT fsCorpus, backs every search
 // and read. The only difference from a full server is config loading /
 // process lifecycle, which the existing live_http_* suite already covers.
 //

@@ -41,7 +41,7 @@ type Corpus interface {
 // SliceLines returns the [offset, offset+limit) slice of content's lines. A
 // negative offset is clamped to 0; limit <= 0 means "to the end". Exported so a
 // product's Corpus adapter (e.g. the Shoka adapter) ranges identically to the
-// built-in dirCorpus.
+// built-in fsCorpus.
 func SliceLines(content string, offset, limit int) string {
 	if offset <= 0 && limit <= 0 {
 		return content
@@ -82,21 +82,21 @@ func snippetAround(content string, bidx, matchByteLen int) string {
 	return strings.TrimSpace(string(runes[start:end]))
 }
 
-// dirCorpus is the built-in filesystem Corpus: a trivial substring grep + plain
+// fsCorpus is the built-in filesystem Corpus: a trivial substring grep + plain
 // file read/list under a root. It backs the fixture-based tests and the local
 // debug path; the Shoka data source (index fast-path, ranged storage read) is a
 // separate product-side adapter injected via Request.Corpus.
-type dirCorpus struct{ root string }
+type fsCorpus struct{ root string }
 
-// NewDirCorpus returns a filesystem Corpus rooted at root.
-func NewDirCorpus(root string) Corpus {
+// NewFSCorpus returns a filesystem Corpus rooted at root.
+func NewFSCorpus(root string) Corpus {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return &dirCorpus{root: root}
+	return &fsCorpus{root: root}
 }
 
-func (c *dirCorpus) Read(_ context.Context, path string, offset, limit int) ([]byte, error) {
+func (c *fsCorpus) Read(_ context.Context, path string, offset, limit int) ([]byte, error) {
 	data, err := os.ReadFile(filepath.Join(c.root, filepath.FromSlash(path)))
 	if err != nil {
 		return nil, err
@@ -104,7 +104,7 @@ func (c *dirCorpus) Read(_ context.Context, path string, offset, limit int) ([]b
 	return []byte(SliceLines(string(data), offset, limit)), nil
 }
 
-func (c *dirCorpus) List(_ context.Context, dir string) ([]Entry, error) {
+func (c *fsCorpus) List(_ context.Context, dir string) ([]Entry, error) {
 	entries, err := os.ReadDir(filepath.Join(c.root, filepath.FromSlash(dir)))
 	if err != nil {
 		return nil, err
@@ -116,7 +116,7 @@ func (c *dirCorpus) List(_ context.Context, dir string) ([]Entry, error) {
 	return out, nil
 }
 
-func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, error) {
+func (c *fsCorpus) Search(_ context.Context, query string, limit int) ([]Hit, error) {
 	q := strings.ToLower(query)
 	if q == "" {
 		return nil, nil

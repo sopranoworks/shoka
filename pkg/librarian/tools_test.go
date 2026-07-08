@@ -54,7 +54,7 @@ func readJSON(t *testing.T, args readArgs) json.RawMessage {
 func TestReadTool_Security(t *testing.T) {
 	root, ignore, secret := fixtureCorpus(t)
 	g := NewGuard(root, ignore)
-	read := readDispatch(g, NewDirCorpus(root))
+	read := readDispatch(g, NewFSCorpus(root))
 	ctx := context.Background()
 
 	// In-root read works.
@@ -89,7 +89,7 @@ func TestReadTool_Ranged(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "lines.txt"), "L0\nL1\nL2\nL3\nL4")
 	g := NewGuard(root, nil)
-	read := readDispatch(g, NewDirCorpus(root))
+	read := readDispatch(g, NewFSCorpus(root))
 	ctx := context.Background()
 
 	got := read(ctx, readJSON(t, readArgs{Path: "lines.txt", Offset: 1, Limit: 2}))
@@ -107,7 +107,7 @@ func TestReadTool_Ranged(t *testing.T) {
 func TestListTool_Security(t *testing.T) {
 	root, ignore, secret := fixtureCorpus(t)
 	g := NewGuard(root, ignore)
-	list := listDispatch(g, NewDirCorpus(root))
+	list := listDispatch(g, NewFSCorpus(root))
 	ctx := context.Background()
 
 	res := list(ctx, json.RawMessage(`{}`)) // root listing
@@ -144,7 +144,7 @@ func TestSearchTool_Security(t *testing.T) {
 	// Add an in-root hit that mentions a unique token, on a known line.
 	writeFile(t, filepath.Join(root, "guide", "topic.md"), "intro\nintro\nThe widget config lives here.\n")
 	g := NewGuard(root, ignore)
-	search := searchDispatch(g, NewDirCorpus(root))
+	search := searchDispatch(g, NewFSCorpus(root))
 	ctx := context.Background()
 
 	// A content search finds the in-root file and auto-reads its content.
@@ -186,7 +186,7 @@ func TestSearchTool_RangedReadFlow(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(root, "big.md"), b.String())
 	g := NewGuard(root, nil)
-	corpus := NewDirCorpus(root)
+	corpus := NewFSCorpus(root)
 	ctx := context.Background()
 
 	hits, err := corpus.Search(ctx, "THE-NEEDLE", 0)
@@ -215,7 +215,7 @@ func TestSearchTool_AutoRead(t *testing.T) {
 	writeFile(t, filepath.Join(root, "delta.md"), "# Delta\nThis document describes delta features.\n")
 
 	g := NewGuard(root, nil)
-	search := searchDispatch(g, NewDirCorpus(root))
+	search := searchDispatch(g, NewFSCorpus(root))
 	ctx := context.Background()
 
 	res := search(ctx, json.RawMessage(`{"query":"describes"}`))

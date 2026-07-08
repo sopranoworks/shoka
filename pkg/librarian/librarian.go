@@ -158,7 +158,7 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 	guard := NewGuard(req.Root, req.IgnorePatterns)
 	corpus := req.Corpus
 	if corpus == nil {
-		corpus = NewDirCorpus(req.Root)
+		corpus = NewFSCorpus(req.Root)
 	}
 	tools := buildTools(guard, corpus)
 	// Snapshot the swappable references before the loop so a concurrent
