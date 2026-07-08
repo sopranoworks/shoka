@@ -23,6 +23,15 @@ export function deriveViewContext(pathname: string): ViewContext {
     }
   }
 
+  const search = pathname.match(/^\/p\/([^/]+)\/([^/]+)\/search\/?$/)
+  if (search) {
+    return {
+      route: 'search',
+      namespace: decodeURIComponent(search[1]),
+      project: decodeURIComponent(search[2]),
+    }
+  }
+
   const project = pathname.match(/^\/p\/([^/]+)\/([^/]+)\/?$/)
   if (project) {
     return {

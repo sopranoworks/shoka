@@ -26,7 +26,7 @@ export interface NotifyEvent {
 }
 
 export interface ViewContext {
-  route: 'home' | 'project' | 'blob' | 'edit' | 'other'
+  route: 'home' | 'project' | 'blob' | 'edit' | 'search' | 'other'
   namespace?: string
   project?: string
   path?: string

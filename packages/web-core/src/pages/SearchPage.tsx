@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { useCallback, useEffect, useState } from 'react'
+import { useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router'
 import { useSearchQuery } from '../lib/search'
 import { useDebouncedValue } from '../lib/useDebouncedValue'
 import styles from './SearchPage.module.css'
@@ -11,6 +11,18 @@ export function SearchPage() {
   }
   const { q = '' } = useSearch({ strict: false }) as { q?: string }
   const navigate = useNavigate()
+  const router = useRouter()
+
+  const goBack = useCallback(() => {
+    if (window.history.length > 1) {
+      router.history.back()
+    } else {
+      void navigate({
+        to: '/p/$namespace/$project',
+        params: { namespace, project },
+      })
+    }
+  }, [router, navigate, namespace, project])
 
   const [term, setTerm] = useState(q)
   const debounced = useDebouncedValue(term, 250)
@@ -31,6 +43,17 @@ export function SearchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debounced])
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        goBack()
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [goBack])
+
   const { data: matches, isFetching, isError } = useSearchQuery(
     namespace,
     project,
@@ -42,6 +65,22 @@ export function SearchPage() {
   return (
     <div className={styles.page}>
       <div className={styles.toolbar}>
+        <button
+          className={styles.backBtn}
+          onClick={goBack}
+          title="Close search (Escape)"
+          aria-label="Close search"
+          data-testid="search-back-button"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M12 4L4 12M4 4l8 8"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
         <span className={styles.scope} title={`${namespace}/${project}`}>
           Search <strong>{project}</strong>
         </span>

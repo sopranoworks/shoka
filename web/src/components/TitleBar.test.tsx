@@ -40,12 +40,18 @@ function renderTitleBar(initialPath: string) {
     path: '/p/$namespace/$project/blob/$',
     component: () => null,
   })
+  const searchRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/p/$namespace/$project/search',
+    component: () => null,
+  })
   const router = createRouter({
     routeTree: rootRoute.addChildren([
       indexRoute,
       projectRoute,
       historyRoute,
       blobRoute,
+      searchRoute,
     ]),
     history: createMemoryHistory({ initialEntries: [initialPath] }),
   })
@@ -127,6 +133,16 @@ describe('TitleBar breadcrumb', () => {
     expect(within(nav).getByRole('link', { name: 'design' })).toBeInTheDocument()
     const file = within(nav).getByText('spec.md')
     expect(file).toHaveAttribute('aria-current', 'page')
+  })
+})
+
+describe('TitleBar breadcrumb — search route', () => {
+  it('keeps namespace/project crumbs on the search route (not collapsed to just Shoka)', async () => {
+    renderTitleBar('/p/shoka/design/search')
+    const nav = await screen.findByRole('navigation', { name: 'Breadcrumb' })
+    expect(within(nav).getByRole('link', { name: 'shoka' })).toBeInTheDocument()
+    const proj = within(nav).getByText('design')
+    expect(proj).toHaveAttribute('aria-current', 'page')
   })
 })
 

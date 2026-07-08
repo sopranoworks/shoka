@@ -15,6 +15,24 @@
   background: var(--c-bg-elev);
   border-bottom: 1px solid var(--c-border);
 }
+.backBtn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--c-text-dim);
+  cursor: pointer;
+}
+.backBtn:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
 .scope {
   flex: none;
   font-size: var(--fs-sm);

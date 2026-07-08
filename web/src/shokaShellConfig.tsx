@@ -86,7 +86,7 @@ function useCrumbs(): Crumb[] {
   const crumbs: Crumb[] = []
 
   const m = pathname.match(
-    /^\/p\/([^/]+)\/([^/]+)(?:\/(?:blob|edit|history)\/(.*))?$/,
+    /^\/p\/([^/]+)\/([^/]+)(?:\/(?:(?:blob|edit|history)\/(.*)|search))?$/,
   )
   if (!m) {
     if (typeof search.ns === 'string' && search.ns) {
