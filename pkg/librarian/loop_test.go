@@ -363,3 +363,69 @@ func TestLoop_AutoReadTrackedInTrace(t *testing.T) {
 		t.Errorf("search result fed to model = %q, want it to contain auto-read content", searchResult)
 	}
 }
+
+func TestAsk_StripControlTokens(t *testing.T) {
+	root, ignore, _ := fixtureCorpus(t)
+	raw := "The answer is Go 1.26.2.\nSource: docs/stack.md【commentary to=functions.search <|constrain|>json<|message|>{\"query\":\"backend\"}"
+	client := &scriptedClient{replies: []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: raw}}},
+	}}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	lib := New(client, 4).WithLogger(logger)
+
+	res, err := lib.Ask(context.Background(), Request{Question: "what language?", Root: root, IgnorePatterns: ignore})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	if res.RawAnswer != raw {
+		t.Errorf("RawAnswer should be unchanged\ngot:  %q\nwant: %q", res.RawAnswer, raw)
+	}
+
+	if strings.Contains(res.Answer, "<|constrain|>") || strings.Contains(res.Answer, "<|message|>") {
+		t.Errorf("Answer still contains control tokens: %q", res.Answer)
+	}
+	if !strings.Contains(res.Answer, "Go 1.26.2") {
+		t.Errorf("Answer lost real content: %q", res.Answer)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "control tokens stripped from answer") {
+		t.Errorf("WARNING log not emitted; log output:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "level=WARN") {
+		t.Errorf("log line is not at WARN level; log output:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "removed_count=") {
+		t.Errorf("log missing removed_count; log output:\n%s", logOutput)
+	}
+}
+
+func TestAsk_NoStripWhenClean(t *testing.T) {
+	root, ignore, _ := fixtureCorpus(t)
+	clean := "The answer is Go 1.26.2."
+	client := &scriptedClient{replies: []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.Block{{Type: llm.BlockText, Text: clean}}},
+	}}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	lib := New(client, 4).WithLogger(logger)
+
+	res, err := lib.Ask(context.Background(), Request{Question: "what language?", Root: root, IgnorePatterns: ignore})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	if res.Answer != clean {
+		t.Errorf("Answer changed on clean input: got %q, want %q", res.Answer, clean)
+	}
+	if res.RawAnswer != clean {
+		t.Errorf("RawAnswer changed: got %q, want %q", res.RawAnswer, clean)
+	}
+	if strings.Contains(logBuf.String(), "control tokens stripped") {
+		t.Errorf("WARNING emitted for clean answer; should not fire")
+	}
+}

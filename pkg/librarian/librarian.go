@@ -18,6 +18,7 @@ package librarian
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
@@ -175,5 +176,19 @@ func (l *Librarian) Ask(ctx context.Context, req Request) (Result, error) {
 		sp += " " + l.systemSuffix
 	}
 	answer, calls, err := runLoop(ctx, l.currentClient(), sp, req.Question, tools, l.MaxSteps(), l.logger())
-	return Result{Answer: answer, RawAnswer: answer, Calls: calls}, err
+	stripped := controlTokenRe.ReplaceAllString(answer, "")
+	stripped = strings.TrimSpace(stripped)
+	if stripped != strings.TrimSpace(answer) {
+		removed := controlTokenRe.FindAllString(answer, -1)
+		preview := strings.Join(removed, " ")
+		if len(preview) > 200 {
+			preview = preview[:200] + "…"
+		}
+		l.logger().Warn("control tokens stripped from answer",
+			slog.Int("removed_count", len(removed)),
+			slog.String("removed_preview", preview))
+		l.logger().Debug("control tokens stripped (full raw)",
+			slog.String("raw_answer", answer))
+	}
+	return Result{Answer: stripped, RawAnswer: answer, Calls: calls}, err
 }
