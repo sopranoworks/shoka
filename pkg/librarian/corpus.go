@@ -145,40 +145,19 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 		// Try exact substring match first.
 		bidx := strings.Index(lower, q)
 		if bidx < 0 {
-			// Fall back to keyword match: filter stop words, then
-			// require most content words to appear. Long words are
+			// Fall back to all-words match: every word in the query
+			// must appear somewhere in the file. Long words are
 			// prefix-matched (min 5 chars) to handle inflection
-			// (e.g. "documentation" matches "documented"). One miss
-			// is tolerated for 3+ content words so natural-language
-			// queries ("when was X added") work across models.
-			cw := filterStopWords(words)
-			if len(cw) < 2 {
+			// differences (e.g. "documentation" matches "documented").
+			if len(words) < 2 {
 				return nil
 			}
-			misses := 0
-			maxMisses := 0
-			if len(cw) >= 3 {
-				maxMisses = 1
-			}
-			firstMatch := -1
-			for _, w := range cw {
+			for _, w := range words {
 				if !containsWordOrPrefix(lower, w) {
-					misses++
-					if misses > maxMisses {
-						break
-					}
-				} else if firstMatch < 0 {
-					firstMatch = strings.Index(lower, w)
+					return nil
 				}
 			}
-			if misses > maxMisses {
-				return nil
-			}
-			if firstMatch >= 0 {
-				bidx = firstMatch
-			} else {
-				bidx = 0
-			}
+			bidx = strings.Index(lower, words[0])
 		}
 
 		rel, relErr := filepath.Rel(c.root, p)
@@ -199,30 +178,6 @@ func (c *dirCorpus) Search(_ context.Context, query string, limit int) ([]Hit, e
 		return nil, err
 	}
 	return hits, nil
-}
-
-var searchStopWords = map[string]bool{
-	"a": true, "an": true, "the": true,
-	"is": true, "are": true, "was": true, "were": true,
-	"be": true, "been": true, "being": true,
-	"do": true, "does": true, "did": true,
-	"have": true, "has": true, "had": true,
-	"to": true, "of": true, "in": true, "for": true, "on": true,
-	"by": true, "at": true, "from": true, "with": true,
-	"and": true, "or": true, "not": true,
-	"how": true, "when": true, "where": true, "what": true, "which": true,
-	"who": true, "why": true,
-	"it": true, "its": true, "this": true, "that": true,
-}
-
-func filterStopWords(words []string) []string {
-	out := make([]string, 0, len(words))
-	for _, w := range words {
-		if !searchStopWords[w] {
-			out = append(out, w)
-		}
-	}
-	return out
 }
 
 const wordPrefixMinLen = 5
