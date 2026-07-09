@@ -50,7 +50,7 @@ func TestReloader_GoodModel_Swaps(t *testing.T) {
 	swapper := &fakeSwapper{}
 	applier := &fakeApplier{}
 	newC := nopClient{}
-	reload := newLibrarianReloader("ignored.yaml", swapper, applier, reloadDeps{
+	reload := newLibrarianReloader("ignored.yaml", swapper, applier, nil, reloadDeps{
 		loadConfig:  func(string) (*config.Config, error) { return cfgWith("openai", "gpt-new"), nil },
 		checkHealth: func(context.Context, llm.LLMConfig) llm.HealthResult { return llm.HealthResult{Kind: llm.HealthReady} },
 		newClient:   func(llm.LLMConfig) (llm.Client, error) { return newC, nil },
@@ -73,7 +73,7 @@ func TestReloader_GoodModel_Swaps(t *testing.T) {
 func TestReloader_BadModel_KeepsOld(t *testing.T) {
 	swapper := &fakeSwapper{}
 	applier := &fakeApplier{}
-	reload := newLibrarianReloader("ignored.yaml", swapper, applier, reloadDeps{
+	reload := newLibrarianReloader("ignored.yaml", swapper, applier, nil, reloadDeps{
 		loadConfig: func(string) (*config.Config, error) { return cfgWith("openai", "gpt-typo"), nil },
 		checkHealth: func(context.Context, llm.LLMConfig) llm.HealthResult {
 			return llm.HealthResult{Kind: llm.HealthModelNotFound, Detail: `the model "gpt-typo" does not exist`}
@@ -101,7 +101,7 @@ func TestReloader_BadModel_KeepsOld(t *testing.T) {
 func TestReloader_LoadError_KeepsOld(t *testing.T) {
 	swapper := &fakeSwapper{}
 	applier := &fakeApplier{}
-	reload := newLibrarianReloader("ignored.yaml", swapper, applier, reloadDeps{
+	reload := newLibrarianReloader("ignored.yaml", swapper, applier, nil, reloadDeps{
 		loadConfig: func(string) (*config.Config, error) {
 			return nil, errors.New("invalid configuration: bad key at line 9")
 		},
@@ -125,7 +125,7 @@ func TestReloader_LoadError_KeepsOld(t *testing.T) {
 func TestReloader_NotConfigured_KeepsOld(t *testing.T) {
 	swapper := &fakeSwapper{}
 	applier := &fakeApplier{}
-	reload := newLibrarianReloader("ignored.yaml", swapper, applier, reloadDeps{
+	reload := newLibrarianReloader("ignored.yaml", swapper, applier, nil, reloadDeps{
 		loadConfig: func(string) (*config.Config, error) { return &config.Config{}, nil }, // empty llm block
 		checkHealth: func(context.Context, llm.LLMConfig) llm.HealthResult {
 			t.Fatal("checkHealth must not run when unconfigured")

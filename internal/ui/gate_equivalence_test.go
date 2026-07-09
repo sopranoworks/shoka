@@ -48,6 +48,7 @@ func TestGateTables_MatchPreExtraction(t *testing.T) {
 		MsgLibrarianStatus:        {Level: authz.LevelAdmin, Global: true},
 		MsgRefreshLibrarianStatus:  {Level: authz.LevelAdmin, Global: true},
 		MsgSetLibrarianMaxSteps:    {Level: authz.LevelAdmin, Global: true},
+		MsgSetLibrarianBaseURL:     {Level: authz.LevelAdmin, Global: true},
 
 		// --- server info (read, global — any authenticated user) ---
 		MsgServerNetworkInfo: {Level: authz.LevelRead, Global: true},

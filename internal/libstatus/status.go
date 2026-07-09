@@ -17,6 +17,7 @@ type Snapshot struct {
 	Configured bool   `json:"configured"`          // an llm block is present (provider+model)
 	Provider   string `json:"provider,omitempty"`  // the configured provider (not a secret)
 	Model      string `json:"model,omitempty"`     // the configured model (not a secret)
+	BaseURL    string `json:"baseUrl,omitempty"`   // custom endpoint (blank = provider default)
 	Kind       string `json:"kind"`                // "ready"/"model_not_found"/… or "unconfigured" / "unknown"
 	Detail     string `json:"detail,omitempty"`    // short, secret-free explanation
 	CheckedAt  string `json:"checkedAt,omitempty"` // RFC3339 UTC of the last check, "" if never run
@@ -63,6 +64,7 @@ func New(cfg llm.LLMConfig) *Checker {
 			Configured: configured,
 			Provider:   cfg.Provider,
 			Model:      cfg.Model,
+			BaseURL:    cfg.BaseURL,
 			Kind:       kind,
 			MaxSteps:   cfg.MaxSteps,
 		},
@@ -112,6 +114,7 @@ func SnapshotFor(cfg llm.LLMConfig, res llm.HealthResult) Snapshot {
 		Configured: cfg.IsConfigured(),
 		Provider:   cfg.Provider,
 		Model:      cfg.Model,
+		BaseURL:    cfg.BaseURL,
 		Kind:       string(res.Kind),
 		Detail:     res.Detail,
 		CheckedAt:  time.Now().UTC().Format(time.RFC3339),

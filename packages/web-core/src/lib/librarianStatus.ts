@@ -16,6 +16,7 @@ export interface LibrarianStatus {
   configured: boolean
   provider?: string
   model?: string
+  baseUrl?: string
   // kind: ready | model_not_found | auth_failed | unreachable | misconfigured
   //       | unconfigured | unknown
   kind: string
@@ -51,4 +52,11 @@ export function reloadLibrarianConfig(): Promise<LibrarianStatus> {
 // and returns the updated librarian status snapshot. Admin-only.
 export function setLibrarianMaxSteps(maxSteps: number): Promise<LibrarianStatus> {
   return wsClient().request('SET_LIBRARIAN_MAX_STEPS', { maxSteps })
+}
+
+// setLibrarianBaseURL changes the LLM endpoint on the running server (persisted
+// across restarts). The server recreates the LLM client and runs a health-check;
+// the returned snapshot reflects the new config. Admin-only.
+export function setLibrarianBaseURL(baseUrl: string): Promise<LibrarianStatus> {
+  return wsClient().request('SET_LIBRARIAN_BASE_URL', { baseUrl })
 }

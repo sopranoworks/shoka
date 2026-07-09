@@ -6,15 +6,16 @@ import type { ReactNode } from 'react'
 
 // Mock the imperative ops so the test asserts the rendered view + the refresh
 // wiring, not the /ws/ui path.
-const { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps } = vi.hoisted(() => ({
+const { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps, setLibrarianBaseURL } = vi.hoisted(() => ({
   librarianStatus: vi.fn(),
   refreshLibrarianStatus: vi.fn(),
   reloadLibrarianConfig: vi.fn(),
   setLibrarianMaxSteps: vi.fn(),
+  setLibrarianBaseURL: vi.fn(),
 }))
 vi.mock('../lib/librarianStatus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/librarianStatus')>()
-  return { ...actual, librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps }
+  return { ...actual, librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps, setLibrarianBaseURL }
 })
 
 import { LibrarianStatusPage } from './LibrarianStatusPage'
@@ -29,6 +30,7 @@ beforeEach(() => {
   refreshLibrarianStatus.mockReset()
   reloadLibrarianConfig.mockReset()
   setLibrarianMaxSteps.mockReset()
+  setLibrarianBaseURL.mockReset()
 })
 
 describe('LibrarianStatusPage', () => {
@@ -114,6 +116,49 @@ describe('LibrarianStatusPage', () => {
     await userEvent.click(screen.getByTestId('max-steps-save'))
 
     await waitFor(() => expect(setLibrarianMaxSteps).toHaveBeenCalledWith(12))
+  })
+
+  it('shows the base URL field and saves a new value', async () => {
+    librarianStatus.mockResolvedValue({
+      configured: true,
+      provider: 'openai',
+      model: 'gpt-4o',
+      kind: 'ready',
+      maxSteps: 8,
+      baseUrl: 'http://localhost:1234/v1',
+    })
+    setLibrarianBaseURL.mockResolvedValue({
+      configured: true,
+      provider: 'openai',
+      model: 'gpt-4o',
+      kind: 'ready',
+      maxSteps: 8,
+      baseUrl: 'http://localhost:5678/v1',
+    })
+    render(wrap(<LibrarianStatusPage />))
+
+    await waitFor(() => expect(screen.getByTestId('base-url-input')).toHaveValue('http://localhost:1234/v1'))
+
+    const input = screen.getByTestId('base-url-input')
+    await userEvent.clear(input)
+    await userEvent.type(input, 'http://localhost:5678/v1')
+    await userEvent.click(screen.getByTestId('base-url-save'))
+
+    await waitFor(() => expect(setLibrarianBaseURL).toHaveBeenCalledWith('http://localhost:5678/v1'))
+  })
+
+  it('shows an empty base URL as placeholder when not set', async () => {
+    librarianStatus.mockResolvedValue({
+      configured: true,
+      provider: 'anthropic',
+      model: 'claude-3-5-haiku-latest',
+      kind: 'ready',
+      maxSteps: 8,
+    })
+    render(wrap(<LibrarianStatusPage />))
+
+    await waitFor(() => expect(screen.getByTestId('base-url-input')).toHaveValue(''))
+    expect(screen.getByTestId('base-url-input')).toHaveAttribute('placeholder', 'Provider default')
   })
 
   it('never renders an API key', async () => {

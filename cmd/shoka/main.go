@@ -37,6 +37,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/storage/walworker"
 	"github.com/sopranoworks/shoka/internal/tools"
 	"github.com/sopranoworks/shoka/internal/ui"
+	"github.com/sopranoworks/shoka/internal/uisettings"
 	"github.com/sopranoworks/shoka/internal/version"
 	"github.com/sopranoworks/shoka/internal/webhooks"
 	"github.com/sopranoworks/shoka/pkg/auth"
@@ -263,6 +264,26 @@ func main() {
 	}
 
 	uim := ui.NewManager(s, dm, notifyCenter)
+
+	// Librarian UI-settings store: persists WebUI-set overrides (max_steps,
+	// base_url) so they survive restarts. Loaded before the health checker so
+	// the startup LLM config reflects any persisted override.
+	libSettingsPath := filepath.Join(cfg.Storage.BaseDir, ".librarian-settings.json")
+	libSettings, err := uisettings.New(libSettingsPath)
+	if err != nil {
+		log.Fatalf("failed to open librarian settings store: %v", err)
+	}
+	uim.SetUISettings(libSettings)
+
+	// Apply persisted overrides to the config before any LLM wiring.
+	if ps := libSettings.Get(); cfg.Librarian.IsConfigured() {
+		if ps.MaxSteps != nil {
+			cfg.Librarian.MaxSteps = *ps.MaxSteps
+		}
+		if ps.BaseURL != nil {
+			cfg.Librarian.BaseURL = *ps.BaseURL
+		}
+	}
 
 	// ask_the_librarian setup validation (B-73): a cached health checker shared by
 	// the startup check and the WebUI status (with manual refresh). When the LLM is
@@ -557,7 +578,7 @@ func main() {
 	// (the MCP tool cannot be added live). The closure lives here so internal/config
 	// never crosses into internal/ui; the manager only calls the callback.
 	if librarianInst != nil {
-		uim.SetLibrarianReloader(newLibrarianReloader(*configPath, librarianInst, libHealth, reloadDeps{
+		uim.SetLibrarianReloader(newLibrarianReloader(*configPath, librarianInst, libHealth, libSettings, reloadDeps{
 			loadConfig:  config.Load,
 			checkHealth: llm.CheckHealth,
 			newClient:   llm.NewClient,
@@ -591,6 +612,14 @@ func main() {
 
 	if librarianInst != nil {
 		uim.SetMaxStepsGetSet(librarianInst)
+		uim.SetLibrarianBaseURLSetter(newLibrarianBaseURLSetter(
+			*configPath, librarianInst, libHealth, libSettings,
+			reloadDeps{
+				loadConfig:  config.Load,
+				checkHealth: llm.CheckHealth,
+				newClient:   llm.NewClient,
+			},
+		))
 	}
 
 	// Classifier status for the Settings → Librarian UI. Reads config and counts

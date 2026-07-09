@@ -5,6 +5,7 @@ import (
 
 	"github.com/sopranoworks/shoka/internal/config"
 	"github.com/sopranoworks/shoka/internal/libstatus"
+	"github.com/sopranoworks/shoka/internal/uisettings"
 	"github.com/sopranoworks/shoka/pkg/librarian/llm"
 )
 
@@ -44,12 +45,10 @@ type reloadDeps struct {
 // error — the OLD client is kept and the typed cause is reported; nothing is
 // applied. Shoka NEVER writes config: persistence is the operator's own edit to
 // the authoritative YAML, which this re-reads.
-func newLibrarianReloader(configPath string, lib clientSwapper, checker statusApplier, deps reloadDeps) func(context.Context) libstatus.Snapshot {
+func newLibrarianReloader(configPath string, lib clientSwapper, checker statusApplier, store *uisettings.Store, deps reloadDeps) func(context.Context) libstatus.Snapshot {
 	return func(ctx context.Context) libstatus.Snapshot {
 		cfg, err := deps.loadConfig(configPath)
 		if err != nil {
-			// The whole file is re-validated on load; a foreign error anywhere fails
-			// the reload cleanly (nothing changes).
 			return libstatus.SnapshotFor(llm.LLMConfig{}, llm.HealthResult{
 				Kind:   llm.HealthMisconfigured,
 				Detail: "config reload failed: " + err.Error(),
@@ -62,9 +61,18 @@ func newLibrarianReloader(configPath string, lib clientSwapper, checker statusAp
 				Detail: "the reloaded config has no librarian (llm provider+model) block",
 			})
 		}
+		// WebUI-persisted overrides take precedence over config-file values.
+		if store != nil {
+			s := store.Get()
+			if s.MaxSteps != nil {
+				lc.MaxSteps = *s.MaxSteps
+			}
+			if s.BaseURL != nil {
+				lc.BaseURL = *s.BaseURL
+			}
+		}
 		res := deps.checkHealth(ctx, lc)
 		if res.Kind != llm.HealthReady {
-			// Keep the OLD client; report the attempted config + the typed cause.
 			return libstatus.SnapshotFor(lc, res)
 		}
 		newClient, err := deps.newClient(lc)

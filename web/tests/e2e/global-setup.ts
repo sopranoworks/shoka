@@ -172,6 +172,11 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       '  drift_scan:',
       '    on_startup: true',
       '    interval: 0',
+      'librarian:',
+      '  provider: "openai"',
+      '  model: "gpt-e2e-test"',
+      '  base_url: "http://localhost:1"',
+      '  max_steps: 8',
       '',
     ].join('\n'),
   )

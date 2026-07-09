@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps } from '../lib/librarianStatus'
+import { librarianStatus, refreshLibrarianStatus, reloadLibrarianConfig, setLibrarianMaxSteps, setLibrarianBaseURL } from '../lib/librarianStatus'
 import styles from './LibrarianStatusPage.module.css'
 
 // Human labels for the server's health kinds (B-73). Never shows the API key.
@@ -22,12 +22,18 @@ export function LibrarianStatusPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [savingSteps, setSavingSteps] = useState(false)
+  const [savingBaseURL, setSavingBaseURL] = useState(false)
   const [maxStepsInput, setMaxStepsInput] = useState('')
+  const [baseURLInput, setBaseURLInput] = useState('')
   const q = useQuery({ queryKey: ['librarian-status'], queryFn: librarianStatus })
 
   useEffect(() => {
     if (q.data?.maxSteps) setMaxStepsInput(String(q.data.maxSteps))
   }, [q.data?.maxSteps])
+
+  useEffect(() => {
+    setBaseURLInput(q.data?.baseUrl ?? '')
+  }, [q.data?.baseUrl])
 
   async function onRefresh() {
     setRefreshing(true)
@@ -148,6 +154,35 @@ export function LibrarianStatusPage() {
         <>
           <h2 className={styles.title} style={{ marginTop: '1.5rem' }}>Settings</h2>
           <div className={styles.card} data-testid="librarian-settings">
+            <div className={styles.row}>
+              <span className={styles.label}>Base URL</span>
+              <span className={styles.settingsControl}>
+                <input
+                  type="text"
+                  value={baseURLInput}
+                  onChange={(e) => setBaseURLInput(e.target.value)}
+                  placeholder="Provider default"
+                  className={styles.textInput}
+                  data-testid="base-url-input"
+                />
+                <button
+                  className={styles.refresh}
+                  disabled={savingBaseURL}
+                  data-testid="base-url-save"
+                  onClick={async () => {
+                    setSavingBaseURL(true)
+                    try {
+                      const fresh = await setLibrarianBaseURL(baseURLInput)
+                      qc.setQueryData(['librarian-status'], fresh)
+                    } finally {
+                      setSavingBaseURL(false)
+                    }
+                  }}
+                >
+                  {savingBaseURL ? 'Saving…' : 'Save'}
+                </button>
+              </span>
+            </div>
             <div className={styles.row}>
               <span className={styles.label}>Max steps</span>
               <span className={styles.settingsControl}>

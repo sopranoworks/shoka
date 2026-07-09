@@ -19,6 +19,7 @@ import (
 	"github.com/sopranoworks/shoka/internal/libstatus"
 	"github.com/sopranoworks/shoka/internal/notify"
 	"github.com/sopranoworks/shoka/internal/storage"
+	"github.com/sopranoworks/shoka/internal/uisettings"
 	"github.com/sopranoworks/shoka/pkg/authz"
 	"github.com/sopranoworks/shoka/pkg/uiws"
 )
@@ -104,6 +105,7 @@ const (
 	// the attempted config + the typed failure detail (old client kept) on failure.
 	MsgReloadLibrarianConfig    MessageType = "RELOAD_LIBRARIAN_CONFIG"
 	MsgSetLibrarianMaxSteps    MessageType = "SET_LIBRARIAN_MAX_STEPS"
+	MsgSetLibrarianBaseURL     MessageType = "SET_LIBRARIAN_BASE_URL"
 	// MsgServerNetworkInfo returns the server's network endpoints (listen addresses,
 	// external URLs, protocols, status). Read-level, global — any authenticated user
 	// may see how to connect.
@@ -272,8 +274,10 @@ type Manager struct {
 	// classifierStatusFn returns the current classifier status for the UI. nil when
 	// the classifier was never configured. Wired at cmd/shoka.
 	classifierStatusFn  func() *libstatus.ClassifierStatus
-	maxStepsGetSet      MaxStepsGetSet
-	networkInfoProvider func() []NetworkElement
+	maxStepsGetSet       MaxStepsGetSet
+	uiSettings           *uisettings.Store
+	librarianSetBaseURL  func(context.Context, string) libstatus.Snapshot
+	networkInfoProvider  func() []NetworkElement
 	originChecker    func(*http.Request) bool
 	upgrader        websocket.Upgrader
 	notifyDrops     atomic.Int64
@@ -398,6 +402,7 @@ var wsLevels = map[MessageType]uiws.Op{
 	MsgLibrarianStatus:        {Level: authz.LevelAdmin, Global: true},
 	MsgRefreshLibrarianStatus:  {Level: authz.LevelAdmin, Global: true},
 	MsgSetLibrarianMaxSteps:    {Level: authz.LevelAdmin, Global: true},
+	MsgSetLibrarianBaseURL:     {Level: authz.LevelAdmin, Global: true},
 
 	MsgServerNetworkInfo: {Level: authz.LevelRead, Global: true},
 }
@@ -539,6 +544,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.handleReloadLibrarianConfig(client)
 		case MsgSetLibrarianMaxSteps:
 			m.handleSetLibrarianMaxSteps(client, wsMsg.Payload)
+		case MsgSetLibrarianBaseURL:
+			m.handleSetLibrarianBaseURL(client, wsMsg.Payload)
 		case MsgServerNetworkInfo:
 			m.handleServerNetworkInfo(client)
 		default:
@@ -856,6 +863,15 @@ type MaxStepsGetSet interface {
 // SetMaxStepsGetSet wires the live max-steps getter/setter for the Settings UI.
 func (m *Manager) SetMaxStepsGetSet(gs MaxStepsGetSet) { m.maxStepsGetSet = gs }
 
+// SetUISettings wires the persistent settings store for WebUI-set overrides.
+func (m *Manager) SetUISettings(s *uisettings.Store) { m.uiSettings = s }
+
+// SetLibrarianBaseURLSetter wires the base-URL change action: persist + recreate
+// the LLM client + health-check. Wired from cmd/shoka.
+func (m *Manager) SetLibrarianBaseURLSetter(f func(context.Context, string) libstatus.Snapshot) {
+	m.librarianSetBaseURL = f
+}
+
 // SetClassifierStatus wires the classifier status provider for the Settings UI.
 func (m *Manager) SetClassifierStatus(f func() *libstatus.ClassifierStatus) {
 	m.classifierStatusFn = f
@@ -936,6 +952,9 @@ func (m *Manager) handleSetLibrarianMaxSteps(client *uiws.Client, payload json.R
 		return
 	}
 	m.maxStepsGetSet.SetMaxSteps(req.MaxSteps)
+	if m.uiSettings != nil {
+		_ = m.uiSettings.SetMaxSteps(req.MaxSteps)
+	}
 	if m.librarianStatus != nil {
 		snap := m.librarianStatus.Get()
 		snap.MaxSteps = req.MaxSteps
@@ -947,6 +966,28 @@ func (m *Manager) handleSetLibrarianMaxSteps(client *uiws.Client, payload json.R
 		Kind:     "unconfigured",
 		MaxSteps: req.MaxSteps,
 	})
+}
+
+func (m *Manager) handleSetLibrarianBaseURL(client *uiws.Client, payload json.RawMessage) {
+	if m.librarianSetBaseURL == nil {
+		client.SendError("librarian not configured")
+		return
+	}
+	var req struct {
+		BaseURL string `json:"baseUrl"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		client.SendError("invalid payload")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	snap := m.librarianSetBaseURL(ctx, req.BaseURL)
+	if m.maxStepsGetSet != nil {
+		snap.MaxSteps = m.maxStepsGetSet.MaxSteps()
+	}
+	snap.Classifier = m.classifierStatus()
+	client.SendResponse(MsgLibrarianStatus, snap)
 }
 
 func (m *Manager) classifierStatus() *libstatus.ClassifierStatus {
