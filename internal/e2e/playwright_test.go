@@ -31,17 +31,43 @@ func TestPlaywrightE2E(t *testing.T) {
 	image := "mcr.microsoft.com/playwright:v" + pwVersion + "-noble"
 
 	// Copy the source tree to a temp directory so Docker never writes
-	// root-owned files into the host's working tree. The temp copy is
-	// cleaned up by t.TempDir() after the test.
-	tmpRoot := filepath.Join(t.TempDir(), "shoka")
+	// root-owned files into the host's working tree.  We use
+	// os.MkdirTemp (not t.TempDir) because Docker may create files
+	// under a userns-remapped uid that the host Go process cannot
+	// remove.  Cleanup runs `rm -rf` inside a container that shares
+	// the same uid namespace as the test container, then removes the
+	// empty parent from the host.
+	tmpParent, err := os.MkdirTemp("", "TestPlaywrightE2E")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpRoot := filepath.Join(tmpParent, "shoka")
 	copyTree(t, root, tmpRoot)
+
+	resultParent, err := os.MkdirTemp("", "TestPlaywrightE2EResults")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultDir := resultParent
+
+	t.Cleanup(func() {
+		for _, dir := range []string{tmpRoot, resultDir} {
+			rm := exec.Command("docker", "run", "--rm",
+				"-v", dir+":"+dir,
+				"alpine", "rm", "-rf", dir)
+			if out, err := rm.CombinedOutput(); err != nil {
+				t.Logf("docker rm cleanup %s: %v\n%s", dir, err, out)
+			}
+		}
+		os.RemoveAll(tmpParent)
+		os.RemoveAll(resultParent)
+	})
 
 	goroot := runtime.GOROOT()
 	gopath := envOr("GOPATH", filepath.Join(home(), "go"))
 	goPkgDir := filepath.Dir(filepath.Dir(goroot))
 	goBuildCache := filepath.Join(home(), ".cache", "go-build")
 
-	resultDir := t.TempDir()
 	port := envOr("SHOKA_E2E_PORT", "8099")
 
 	args := []string{
@@ -69,16 +95,6 @@ func TestPlaywrightE2E(t *testing.T) {
 	output, dockerErr := cmd.CombinedOutput()
 	if len(output) > 0 {
 		t.Log(string(output))
-	}
-
-	// Fix root-owned files Docker created in the temp copy so t.TempDir()
-	// cleanup can remove them. A one-shot chown is cheaper than tracing
-	// every file Docker might touch.
-	chown := exec.Command("docker", "run", "--rm",
-		"-v", tmpRoot+":"+tmpRoot,
-		"alpine", "chown", "-R", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), tmpRoot)
-	if out, err := chown.CombinedOutput(); err != nil {
-		t.Logf("chown cleanup: %v\n%s", err, out)
 	}
 
 	reportPath := filepath.Join(resultDir, "report.json")
