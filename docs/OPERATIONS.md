@@ -329,6 +329,12 @@ section is optional and falls back to a built-in default.
 | `server.auth.allowed_origins` | list of strings | no | [] | When auth is on, permitted WebSocket `Origin` values for `/ws/ui` and `/drafts` (empty Origin rejected). |
 | `server.mcp.oauth.{access_token_ttl, refresh_token_ttl, authorization_code_ttl}` | block | no | off | Built-in OAuth 2.1 authorization server, active when `server.mcp.oauth.listen` is set. These are the global default token lifetimes; per-domain trust/consent/TTL are managed in the web UI (Settings → OAuth). See *Enabling OAuth* below. |
 | `server.mcp.oauth.{consent_credential, trusted_client_metadata_domains}` | — | **DEPRECATED** | — | Retired as config (B-71 Stage 2e): trusted domains and per-domain consent are managed in the web UI and held in the dynamic domain store. Still parse, but are consumed only ONCE to migrate a not-yet-seeded deployment, then ignored (a startup warning flags them). Remove them after the domains appear in the UI. See *Enabling OAuth*. |
+| `server.auth.users.allow_first_run_admin` | bool | no | `true` | With no users yet, the Web UI shows a zero-config setup wizard; the first person to complete it becomes the wildcard admin (`*:admin`). Set `false` on a public deployment to close the open-registration window. |
+| `server.auth.users.totp_encryption_key` | string | no | "" | Pin the key used to encrypt TOTP secrets at rest (any string, hashed to 32 bytes). Default: a random key is generated once and persisted at `<base_dir>/userstore.key`. |
+| `server.auth.users.session_ttl` | duration | no | `720h` | Login session lifetime (30 days). Sessions slide on activity. |
+| `server.auth.webauthn.rp_id` | string | no | "" | WebAuthn Relying Party ID (a registrable domain, e.g. `docs.example.com` or `localhost`). Empty disables passkeys; password+TOTP still works. |
+| `server.auth.webauthn.rp_display_name` | string | no | `"Shoka"` | Display name shown in the authenticator prompt. |
+| `server.auth.webauthn.rp_origins` | list of strings | no | [] | Permitted fully-qualified origins for WebAuthn ceremonies (e.g. `https://docs.example.com`). |
 
 † **At least one** of `server.mcp.plain.listen` / `server.mcp.oauth.listen` must be
 set (both is valid; neither is a startup error). There are **no `tls` fields** on
@@ -784,6 +790,51 @@ supported way to limit a client; a token minted before the scope field existed (
 with an empty scope) is read as all-access and ages out as it expires. (Source:
 `internal/auth/auth.go`, `internal/tools/authz.go`,
 `internal/storage/oauthstore/`.)
+
+## Web UI user authentication
+
+The Web UI has its own user-authentication system, **separate from MCP OAuth**.
+A login session is an opaque cookie, never an OAuth token. The user database lives at
+`<base_dir>/users.db` (a bbolt store, a sibling of `oauth.db`).
+
+**First run.** With no users in the database and `allow_first_run_admin: true`
+(the default), the Web UI shows a zero-config setup wizard. The first person to
+complete it becomes the wildcard admin (`*:admin`). On a public deployment, set
+`allow_first_run_admin: false` to close the open-registration window.
+
+**Authentication factors.** Two factors are available:
+
+1. **Passkeys (WebAuthn)** — the primary, passwordless factor. Requires a
+   secure context (HTTPS or `localhost`) and a registrable-domain RP ID
+   configured in `server.auth.webauthn`. Users enroll from their account
+   settings. A bare internal IP cannot be a WebAuthn RP ID — use
+   password+TOTP there.
+2. **Password + optional TOTP** — the universal floor that always works.
+   Users set a password at account creation. TOTP two-factor authentication
+   can be enrolled from **Account Settings** in the Web UI (scan the QR code
+   with any authenticator app, then verify with a code). TOTP can also be
+   disabled from the same page.
+
+**Operator recovery.** If a user is locked out of their 2FA, the operator can
+clear it from the command line (with the server stopped):
+
+```sh
+shoka --clear-2fa user@example.com --config shoka.yaml
+```
+
+This drops the user's TOTP enrollment and invalidates their sessions. A
+password reset is also available:
+
+```sh
+shoka --reset-password user@example.com --config shoka.yaml
+```
+
+Both are offline operations (the server must not be running) that open the
+`users.db` directly. (Source: `cmd/shoka/userreset.go`.)
+
+**Session lifetime.** Login sessions default to 30 days (`server.auth.users.session_ttl:
+720h`). Sessions slide on activity — active use extends the expiry. On session
+expiry, the AuthGate redirects to the login page (not a blank screen).
 
 ## Scraping `/metrics`
 

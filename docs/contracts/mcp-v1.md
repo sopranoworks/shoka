@@ -243,14 +243,14 @@ of being handed a static one.
 
 ## 4. Tool catalog
 
-v1 exposes **18 tools**, all always registered. (Source: `cmd/shoka/main.go`.)
+v1 exposes **19 tools**, all always registered. (Source: `cmd/shoka/main.go`.)
 The former conditional `translate_file` tool was **retired** (see §4.17).
 
 ```
 get_server_info  list_projects  create_project  list_files  read_file
 read_file_at_version  write_file  delete_file  append_to_file  patch_file
-move_file  get_history  read_summary  list_files_since  search_files
-recover_project  subscribe  unsubscribe
+move_file  copy_file  get_history  read_summary  list_files_since
+search_files  recover_project  subscribe  unsubscribe
 ```
 
 `subscribe` / `unsubscribe` register scoped file-change notifications delivered as
@@ -619,6 +619,30 @@ Apply to every tool unless noted:
   translate-to-read replacement was added (the browser's own translation
   suffices). The `internal/translation/` package code is retained on disk but
   un-wired (dormant), pending a possible future revisit.
+
+### 4.18 `copy_file`
+- **Purpose:** copy a file from one namespace/project to another (or within the
+  same project). Useful for templates or correcting misplaced writes. This is
+  copy, **not** move — the source file is left unchanged.
+- **Input:**
+  - `source_namespace` (**required**) — the source namespace.
+  - `source_project_name` (**required**) — the source project.
+  - `source_path` (**required**) — the source file path (project-relative).
+  - `namespace` (**required**) — the destination namespace.
+  - `project_name` (**required**) — the destination project.
+  - `path` (opt) — the destination file path; defaults to the source filename
+    at the destination project root. Can include directory path (e.g.
+    `reports/copied.md`).
+- **Output:** `message`, `etag` (the destination file's etag after the write).
+- **Behaviour:** reads the source file, then writes it to the destination. The
+  write uses an `ifMatch=etagAbsent` guard (the SHA-256 of nil bytes) inside
+  the per-file lock, so the copy **fails** if the destination path already
+  exists — no overwrite, no TOCTOU window between the check and the write. The
+  authorization middleware checks the caller's write access on the destination
+  (namespace/project_name); the handler additionally verifies read access on
+  the source.
+- **Side effects:** identical to `write_file` — WAL entry, git commit,
+  webhook. (Source: `internal/tools/copy.go`; `cmd/shoka/main.go`.)
 
 ---
 

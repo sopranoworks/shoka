@@ -39,6 +39,20 @@ Practical guidance. For exact schemas and semantics, see `docs/contracts/mcp-v1.
 8. **Rename or move a file:** `move_file(source_path=…, target_path=…)` is a pure,
    history-preserving rename. It does **not** rewrite links that point at the moved
    file (`links_rewritten` is always 0) — fix any inbound links yourself.
+9. **Copy a file across projects:** `copy_file(source_namespace=…,
+   source_project_name=…, source_path=…, namespace=…, project_name=…)` copies a
+   file to another namespace/project (or the same one at a different path). It
+   **does not overwrite** — the call fails if the destination path already exists.
+   The source is left unchanged (this is copy, not move). Useful for templates or
+   correcting a misplaced write.
+
+## ask_the_librarian — dual search
+
+When the optional classifier is enabled (operator configuration), `ask_the_librarian`
+runs **both** fulltext bigram search and **vector similarity search** in parallel,
+merging results. This means the librarian may return documents that are semantically
+related to your query even when they use completely different terminology. Without the
+classifier, only fulltext search is used.
 
 ## Pitfalls
 

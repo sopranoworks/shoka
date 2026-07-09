@@ -1,6 +1,6 @@
 # Shoka
 
-[![version](https://img.shields.io/badge/version-1.0.0--rc1-blue)](#)
+[![version](https://img.shields.io/badge/version-1.0.0--rc3-blue)](#)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Shoka is a backend server that stores project documentation (milestones, specs,
@@ -17,9 +17,9 @@ each its own Git repository. There is no database and there are no UUIDs.
 
 Beyond basic file CRUD, Shoka provides — see the linked docs for the detail:
 
-- **Rich editing tools** — partial edits (`append_to_file`, `patch_file`) and
-  `move_file` alongside read/write/delete. (Contract
-  [§ 4](docs/contracts/mcp-v1.md).)
+- **Rich editing tools** — partial edits (`append_to_file`, `patch_file`),
+  `move_file`, and cross-project `copy_file` alongside read/write/delete.
+  (Contract [§ 4](docs/contracts/mcp-v1.md).)
 - **Indexed search & link tracking** — full-text bigram search (`search_files`)
   over a project's documents, plus an internal reverse-link index that keeps
   inter-document Markdown links consistent. When the classifier is enabled,
@@ -200,9 +200,49 @@ Google Cloud Translation v3 (optional). See `docs/ARCHITECTURE.md` for why.
   `docs/OPERATIONS.md` (config). Quick-start config mirrors `shoka.example.yaml`
   and `internal/config/config.go:58-69` (required fields).
 
+## What's new in v1.0.0-rc3
+
+Since rc2:
+
+- **Classifier (semantic vector search)** — `ask_the_librarian` now runs vector
+  cosine-similarity search alongside fulltext when the optional
+  `librarian.classifier` sub-block is enabled. Documents are vectorized
+  asynchronously on write; queries find semantically related documents even when
+  the terminology differs. Per-project vector indices are stored as disposable
+  `.vector.db` siblings. Live-reload follows the librarian's config reload.
+  ([`docs/OPERATIONS.md`](docs/OPERATIONS.md), *Classifier*.)
+- **Classifier status in Settings → Librarian** — the web UI shows whether the
+  classifier is enabled, the embedding model in use, and per-project index status.
+- **`max_steps` WebUI control** — Settings → Librarian exposes the
+  tool-call loop budget; the value persists across restarts.
+- **Base URL WebUI field** — Settings → Librarian now exposes the
+  `librarian.base_url` field for proxy/ollama setups.
+- **`copy_file` MCP tool** — copy a file from one namespace/project to another
+  (or within the same project). Does not overwrite — fails if the destination
+  exists. Closes a TOCTOU race in the destination existence check via
+  `ifMatch=etagAbsent`. (Contract [§ 4.18](docs/contracts/mcp-v1.md).)
+- **Session expiry fixes** — AuthGate now redirects to login on session expiry
+  instead of showing a blank page; sliding session extension prevents premature
+  logout during active use.
+- **TOTP two-factor authentication** — users can enroll, verify, and disable
+  TOTP from their account settings in the web UI. The operator can clear a
+  user's 2FA with `shoka --clear-2fa <email>`.
+- **CSV/TXT upload with Markdown conversion** — the web UI upload dialog
+  accepts `.csv` and `.txt` files and converts them to Markdown (CSV → table,
+  TXT → fenced block) with a confirmation preview before saving.
+- **Search navigation fixes** — Escape, browser back button, and breadcrumb
+  navigation now work correctly on the search results screen.
+- **Filename copy button fix** — `execCommand('copy')` fallback for browsers
+  without Clipboard API support.
+- **`.deb` service hardening** — the systemd unit and package scripts now apply
+  tighter permissions and systemd security directives (ProtectSystem, etc.).
+- **Librarian prompt tuning** — `WithSystemSuffix` for prompt customisation;
+  auto-read of top search results in the tool-call loop; raised default
+  `max_steps` from 8 to 12.
+
 ## Version
 
-This is **1.0.0-rc2**. The running binary reports it via `shoka --version` (and
+This is **1.0.0-rc3**. The running binary reports it via `shoka --version` (and
 `shoka-cli --version`), and the MCP server advertises it in `get_server_info`.
 
 ## License
