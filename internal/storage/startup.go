@@ -27,8 +27,9 @@ type projectRef struct {
 // externally-created stray. It is never registered; the non-blocking
 // post-StartupInit relocation step (relocateLeftovers) quarantines it to lost+found
 // (D4 / B-38.1). treePath is the leftover directory; dbPaths are its present sibling DBs
-// (catalog <project>.db, index <project>.index.db, deleted-log <project>.deleted.db) so they
-// are relocated to lost+found WITH the dir rather than stranded as orphans.
+// (catalog <project>.project.db, index <project>.index.db, deleted-log <project>.deleted.db,
+// vector <project>.vector.db) so they are relocated to lost+found WITH the dir rather than
+// stranded as orphans.
 type leftover struct {
 	namespace string
 	name      string
@@ -40,7 +41,7 @@ type leftover struct {
 // git-backed project (the primary result) plus every repo-less leftover directory
 // (the second result). Hidden namespace directories (e.g. ".shoka"), hidden
 // project-level directories (e.g. the ".shoka-lostfound" area), and the per-project
-// "<project>.db" catalog files (which are not directories) are skipped — a
+// "<project>.project.db" catalog files (which are not directories) are skipped — a
 // dot-prefixed entry is Shoka-internal, never a project.
 //
 // A <project> directory with no .git is not a project; rather than being silently
@@ -73,7 +74,7 @@ func (s *FSGitStorage) discoverProjects() ([]projectRef, []leftover) {
 		}
 		for _, pr := range projEntries {
 			// classifyProjectEntry is the shared predicate ListProjects also routes
-			// through (B-31): entrySkip = a "<project>.db" file or a Shoka-internal dot
+			// through (B-31): entrySkip = a "<project>.<kind>.db" file or a Shoka-internal dot
 			// dir; entryLeftover = a repo-less remnant; entryProject = a real project.
 			switch classifyProjectEntry(nsPath, pr) {
 			case entryLeftover:
@@ -133,6 +134,13 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 	// per-project init so the managed set is established for the rest of startup.
 	s.reconcileManagedRegistry(projects)
 
+	// Migrate legacy <project>.db → <project>.project.db (the 2026-07-10 naming
+	// standardisation). Synchronous, before the concurrent init loop — safe because
+	// no catalog handle is open yet and the rename is atomic.
+	for _, p := range projects {
+		s.migrateLegacyCatalog(p.namespace, p.name)
+	}
+
 	var wg sync.WaitGroup
 	for _, p := range projects {
 		wg.Add(1)
@@ -189,7 +197,7 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 // relocateLeftovers quarantines each repo-less leftover surfaced by discoverProjects
 // to lost+found (D4 / B-38.1). It is spawned as a goroutine by StartupInit so the
 // blocking startup gate's latency is unchanged. For each leftover it moves the whole
-// <namespace>/<project> tree and its sibling <project>.db (when present) into one
+// <namespace>/<project> tree and its sibling <project>.<kind>.db files (when present) into one
 // lost+found <ts> directory via D2's depositTree, then emits a lostfound.quarantined
 // NOTIFY (the single operator-facing record — discovery itself stays silent). It is
 // idempotent-safe: a leftover whose tree is already gone (relocated on a prior boot,

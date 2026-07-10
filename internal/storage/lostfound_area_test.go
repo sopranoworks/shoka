@@ -180,7 +180,7 @@ func TestDepositTree_MovesTreeAndSiblingAtomic(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(srcTree, "sub", "note.md"), []byte("tree content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sibling := filepath.Join(nsRoot, "leftover.db")
+	sibling := filepath.Join(nsRoot, "leftover.project.db")
 	if err := os.WriteFile(sibling, []byte("catalog db"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestDepositTree_MovesTreeAndSiblingAtomic(t *testing.T) {
 		t.Fatalf("moved tree content: err=%v content=%q", err, c)
 	}
 	// Sibling landed alongside, under the same <ts> dir.
-	movedDB := filepath.Join(tsDir, "leftover.db")
+	movedDB := filepath.Join(tsDir, "leftover.project.db")
 	if c, err := os.ReadFile(movedDB); err != nil || string(c) != "catalog db" {
 		t.Fatalf("moved sibling content: err=%v content=%q", err, c)
 	}

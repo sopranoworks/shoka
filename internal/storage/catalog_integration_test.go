@@ -123,9 +123,9 @@ func TestCatalog_CreateProjectCreatesCatalog(t *testing.T) {
 	s, _ := newStore(t, Options{})
 	require.NoError(t, s.CreateProject("myns", "myproj"))
 
-	dbPath := filepath.Join(s.baseDir, "myns", "myproj.db")
+	dbPath := filepath.Join(s.baseDir, "myns", "myproj.project.db")
 	_, statErr := os.Stat(dbPath)
-	require.NoError(t, statErr, "<project>.db must exist after create_project")
+	require.NoError(t, statErr, "<project>.project.db must exist after create_project")
 
 	// catalogFor already registered the handle; close it via the store so the
 	// file is not held, then re-open to assert meta.

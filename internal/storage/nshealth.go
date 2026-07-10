@@ -37,8 +37,8 @@ type ForeignDir struct {
 	Adoptable bool   `json:"adoptable"`
 }
 
-// OrphanSibling is a stray catalog/index/deleted-log/vector .db (e.g. <proj>.db /
-// <proj>.index.db / <proj>.deleted.db / <proj>.vector.db) whose project dir is gone — a managed thing left
+// OrphanSibling is a stray sibling .db (e.g. <proj>.project.db / <proj>.index.db /
+// <proj>.deleted.db / <proj>.vector.db) whose project dir is gone — a managed thing left
 // broken/incomplete (UNHEALTHY). Name is the project base name the stray DBs belong to;
 // Files are the actual on-disk sibling filenames so the UI can show the FULL filename
 // (e.g. "shoka.db") rather than the bare base (which collided confusingly with a namespace
@@ -179,10 +179,10 @@ func (s *FSGitStorage) checkNamespaceHealth(ns string) NamespaceHealth {
 		}
 	}
 
-	// Orphaned siblings: a catalog/index/deleted-log/vector .db whose project dir is gone
-	// — UNHEALTHY. A LIVE project's siblings (its <p>.db, <p>.index.db, <p>.deleted.db,
-	// AND <p>.vector.db, all mapped to base <p> by dbBaseName) are NOT orphaned, because
-	// projDirs[<p>] is set. Files carries the real filenames so the UI shows the full name.
+	// Orphaned siblings: a <p>.<kind>.db whose project dir is gone — UNHEALTHY. A LIVE
+	// project's siblings are NOT orphaned because projDirs[<p>] is set (dbBaseName uses
+	// the known-kind vocabulary to extract <p> correctly even when <p> contains dots).
+	// Files carries the real filenames so the UI shows the full name.
 	for base, files := range dbBases {
 		if !projDirs[base] {
 			sort.Strings(files)
@@ -201,27 +201,36 @@ func sortProjects(ps []ProjectHealth) {
 	sort.Slice(ps, func(i, j int) bool { return ps[i].Name < ps[j].Name })
 }
 
+// siblingKinds is the fixed vocabulary of known sibling DB kinds. Every Shoka-managed
+// DB file follows the pattern <project>.<kind>.db where <kind> is one of these. Parsing
+// uses this vocabulary to unambiguously extract the project name: the LAST dot-delimited
+// segment before ".db" that matches a known kind IS the kind; everything before it is
+// the project name (which may itself contain dots, e.g. "vue.js").
+var siblingKinds = map[string]bool{
+	"project": true,
+	"index":   true,
+	"deleted": true,
+	"vector":  true,
+}
+
 // dbBaseName returns the project base name of a per-project sibling DB file and true;
-// ("", false) for any other file. Shoka keeps FOUR derivative siblings per project:
-// the catalog <proj>.db, the index <proj>.index.db, the deleted-log <proj>.deleted.db,
-// and the vector index <proj>.vector.db. The longer compound suffixes MUST be checked
-// before the bare ".db" — otherwise "<proj>.vector.db" would map to base "<proj>.vector"
-// (a phantom with no project dir) and a LIVE project's vector index would be falsely
-// flagged orphaned (and Clean would delete it). All four map to base <proj>.
+// ("", false) for any file that is not a Shoka-managed sibling DB. Parsing uses the
+// known-kind vocabulary (project, index, deleted, vector): a filename must end in
+// ".<kind>.db" where <kind> is known; the project name is everything before ".<kind>.db".
 func dbBaseName(fileName string) (string, bool) {
-	if strings.HasSuffix(fileName, ".index.db") {
-		return strings.TrimSuffix(fileName, ".index.db"), true
+	if !strings.HasSuffix(fileName, ".db") {
+		return "", false
 	}
-	if strings.HasSuffix(fileName, ".deleted.db") {
-		return strings.TrimSuffix(fileName, ".deleted.db"), true
+	stem := strings.TrimSuffix(fileName, ".db")
+	dot := strings.LastIndexByte(stem, '.')
+	if dot < 1 {
+		return "", false
 	}
-	if strings.HasSuffix(fileName, ".vector.db") {
-		return strings.TrimSuffix(fileName, ".vector.db"), true
+	kind := stem[dot+1:]
+	if !siblingKinds[kind] {
+		return "", false
 	}
-	if strings.HasSuffix(fileName, ".db") {
-		return strings.TrimSuffix(fileName, ".db"), true
-	}
-	return "", false
+	return stem[:dot], true
 }
 
 // namespaceHasProject reports whether a directory <base>/<ns> contains ≥1 .git project —
@@ -286,11 +295,11 @@ func (s *FSGitStorage) RecoverCorruptedProject(namespace, projectName string) (P
 	return s.ResyncToHead(namespace, projectName)
 }
 
-// CleanOrphanedSibling removes stray sibling .db files (<name>.db / <name>.index.db /
-// <name>.deleted.db / <name>.vector.db) that have no project directory — the ORPHANED case.
-// It refuses when a live .git project of that name exists (so a present project's catalog
-// is never deleted), and removes only the stray sibling DBs (the part-1 atomic-delete
-// discipline), evicting any in-memory handle first. Explicit operator action only.
+// CleanOrphanedSibling removes stray sibling .db files (<name>.<kind>.db for all known
+// kinds) that have no project directory — the ORPHANED case. It refuses when a live .git
+// project of that name exists (so a present project's catalog is never deleted), and
+// removes only the stray sibling DBs, evicting any in-memory handle first. Explicit
+// operator action only.
 func (s *FSGitStorage) CleanOrphanedSibling(namespace, name string) error {
 	if namespace == "" {
 		namespace = DefaultNamespace
@@ -299,12 +308,12 @@ func (s *FSGitStorage) CleanOrphanedSibling(namespace, name string) error {
 		return fmt.Errorf("%s/%s is a live project; refusing to clean its catalog/index as orphaned", namespace, name)
 	}
 	// DATA-LOSS GUARD: refuse to clean a LIVE project's derivative sibling. A name like
-	// "<p>.deleted" or "<p>.index" would, via siblingDBPaths, resolve to <p>.deleted.db /
-	// <p>.index.db — the live deleted-log / index of project <p> — and deleting it is silent
-	// data loss. The dbBaseName fix means the health check no longer surfaces such an item,
-	// but a stale UI or direct call could still pass it; refuse defensively. (A genuine
-	// stray whose base is NOT a live project still cleans normally.)
-	for _, suf := range []string{".deleted", ".index", ".vector"} {
+	// "<p>.deleted" or "<p>.project" would, via siblingDBPaths, resolve to <p>.deleted.db /
+	// <p>.project.db — the live deleted-log / catalog of project <p> — and deleting it is
+	// silent data loss. The dbBaseName fix means the health check no longer surfaces such
+	// an item, but a stale UI or direct call could still pass it; refuse defensively.
+	for kind := range siblingKinds {
+		suf := "." + kind
 		if base := strings.TrimSuffix(name, suf); base != name && hasGitRepo(filepath.Join(s.baseDir, namespace, base)) {
 			return fmt.Errorf("%s/%s is a live project's %q sibling; refusing to clean (would delete live data)", namespace, base, suf)
 		}

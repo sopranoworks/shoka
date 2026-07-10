@@ -21,7 +21,7 @@ import (
 
 // indexPath returns a project's index DB path:
 // <base_dir>/<namespace>/<project>.index.db (the sibling of the catalog's
-// <project>.db, mirroring catalogPath's default-namespace handling).
+// <project>.project.db, mirroring catalogPath's default-namespace handling).
 func (s *FSGitStorage) indexPath(namespace, projectName string) string {
 	if namespace == "" {
 		namespace = "default"

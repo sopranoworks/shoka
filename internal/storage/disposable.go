@@ -25,7 +25,7 @@ import (
 //   - Shoka-wide: <base>/shoka.disposable                  (every project)
 //   - namespace:  <base>/<namespace>/shoka.disposable      (every project in ns)
 //   - project:    <base>/<namespace>/<project>.shoka.disposable  (one project;
-//     a sibling file mirroring the <project>.db catalog convention)
+//     a sibling file mirroring the <project>.project.db catalog convention)
 //
 // The three levels merge additively into one matcher, in the order
 // wide → namespace → project. go-git's matcher is last-match-wins, so the most
@@ -47,7 +47,7 @@ func (s *FSGitStorage) disposableNamespacePath(namespace string) string {
 
 // disposableProjectPath is the project-level shoka.disposable file path: a
 // sibling file <project>.shoka.disposable alongside the project directory (and
-// the <project>.db catalog), never inside the project's git tree.
+// the <project>.project.db catalog), never inside the project's git tree.
 func (s *FSGitStorage) disposableProjectPath(namespace, projectName string) string {
 	if namespace == "" {
 		namespace = "default"

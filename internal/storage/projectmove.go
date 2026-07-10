@@ -15,8 +15,8 @@ import (
 // licence: it is serialized (moveMu), fences the source against in-flight writes (the
 // part-1 lease fence + the moving-set), and journals its intent so an interruption is
 // AUTOMATICALLY resumed or rolled back at startup — a manual move never also needs manual
-// health recovery. The catalog/index .db's are namespace-informational only (the
-// investigation: VerifyInvariant is path-relative), so the three artefacts RELOCATE AS-IS
+// health recovery. The sibling .db's are namespace-informational only (the
+// investigation: VerifyInvariant is path-relative), so the artefacts RELOCATE AS-IS
 // via os.Rename — no rebuild; git history travels with the self-contained project dir; both
 // namespaces are under base_dir (same fs ⇒ atomic rename).
 
@@ -178,7 +178,7 @@ func (s *FSGitStorage) completeMoveAfterRename(ctx context.Context, oldNs, proje
 	return nil
 }
 
-// relocateSiblingDB renames a catalog/index .db from old→new. The .db's are disposable
+// relocateSiblingDB renames a sibling .db from old→new. The .db's are disposable
 // derivatives, so on any rename failure the stale old file is removed and a fresh one is
 // rebuilt lazily at the new location (catalogFor/indexFor on next access, plus the repair
 // sweep) — never a hard failure. A missing source is a no-op.

@@ -1,6 +1,9 @@
 package utils
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsValidName(t *testing.T) {
 	cases := []struct {
@@ -12,7 +15,6 @@ func TestIsValidName(t *testing.T) {
 		{"alphanumeric", "abc123", true},
 		{"hyphen and underscore", "a-b_c", true},
 		{"space", "a b", false},
-		{"dot", "a.b", false},
 		{"forward slash", "a/b", false},
 		{"backslash", "a\\b", false},
 		{"unicode (Japanese)", "日本語", false},
@@ -25,6 +27,20 @@ func TestIsValidName(t *testing.T) {
 		// flag-injection risk, and rejecting it could break existing names.
 		{"leading hyphen", "-name", true},
 		{"only underscore", "_", true},
+
+		// Dots — GitHub-compatible naming.
+		{"dot in middle", "a.b", true},
+		{"vue.js", "vue.js", true},
+		{"node.js", "node.js", true},
+		{"socket.io", "socket.io", true},
+		{"babel.config", "babel.config", true},
+		{"multiple dots", "a.b.c.d", true},
+		{"leading dot", ".hidden", false},
+		{"ends with .git", "repo.git", false},
+		{"exactly .git", ".git", false},
+		{"dot-git in middle", "my.git.project", true},
+		{"100 chars", strings.Repeat("a", 100), true},
+		{"101 chars", strings.Repeat("a", 101), false},
 	}
 	for _, c := range cases {
 		if got := IsValidName(c.in); got != c.want {

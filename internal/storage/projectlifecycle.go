@@ -92,7 +92,7 @@ func (s *FSGitStorage) CreateNamespace(namespace string) error {
 const DefaultNamespace = "default"
 
 // DeleteProject permanently removes an entire project — its working tree + git repo AND
-// both sibling derivative DBs (the catalog <proj>.db and the index <proj>.index.db) — and
+// all sibling derivative DBs (<proj>.<kind>.db for project/index/deleted/vector) — and
 // evicts the in-memory handles, then cascade-cleans every authorization grant that
 // referenced it by name. It is the destructive admin op behind the management UI's
 // project delete (B-28 part 1), and the riskiest unit in this change.

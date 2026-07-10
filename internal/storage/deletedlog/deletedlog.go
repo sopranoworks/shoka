@@ -2,7 +2,7 @@
 // files (the 2026-06-18 deleted-log directive), backed by a single bbolt database
 // at the sibling path <base_dir>/<namespace>/<project>.deleted.db (one per
 // project, kept open for the server's lifetime, alongside the catalog's
-// <project>.db and the index's <project>.index.db).
+// <project>.project.db and the index's <project>.index.db).
 //
 // It is a SEPARATE store, deliberately NOT a bucket in the index: the index holds
 // only present paths (its invariant), whereas this holds the inverse — paths that

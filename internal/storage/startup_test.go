@@ -47,14 +47,14 @@ func TestStartup_AllDBsPresent(t *testing.T) {
 	assert.Equal(t, StateHealthy, s.State("ns", "p1"))
 	assert.Equal(t, StateHealthy, s.State("ns", "p2"))
 	for _, p := range []string{"p1", "p2"} {
-		_, err := os.Stat(filepath.Join(dir, "ns", p+".db"))
+		_, err := os.Stat(filepath.Join(dir, "ns", p+".project.db"))
 		assert.NoError(t, err, "catalog db must exist for %s", p)
 	}
 }
 
 func TestStartup_OneDBMissing(t *testing.T) {
 	dir := seedTwoProjects(t)
-	require.NoError(t, os.Remove(filepath.Join(dir, "ns", "p2.db")))
+	require.NoError(t, os.Remove(filepath.Join(dir, "ns", "p2.project.db")))
 
 	s := freshStore(t, dir)
 	s.StartupInit(context.Background())
@@ -71,7 +71,7 @@ func TestStartup_OneDBMissing(t *testing.T) {
 func TestStartup_OneDBCorrupted(t *testing.T) {
 	dir := seedTwoProjects(t)
 	// Replace p1's catalog with arbitrary garbage.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "ns", "p1.db"), make([]byte, 16384), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ns", "p1.project.db"), make([]byte, 16384), 0o600))
 
 	s := freshStore(t, dir)
 	s.StartupInit(context.Background())
@@ -95,7 +95,7 @@ func TestStartup_OneDBCorrupted(t *testing.T) {
 func TestStartup_GitlessDirectoryNotRegistered(t *testing.T) {
 	dir := seedTwoProjects(t)
 	// Make p2 a .git-less leftover (no repo, stray working tree + catalog removed).
-	require.NoError(t, os.Remove(filepath.Join(dir, "ns", "p2.db")))
+	require.NoError(t, os.Remove(filepath.Join(dir, "ns", "p2.project.db")))
 	require.NoError(t, os.RemoveAll(filepath.Join(dir, "ns", "p2", ".git")))
 
 	s := freshStore(t, dir)
@@ -126,5 +126,35 @@ func TestStartup_GateComputesEveryProjectState(t *testing.T) {
 	for _, key := range []string{"ns/p1", "ns/p2"} {
 		_, ok := states[key]
 		assert.True(t, ok, "missing state for %s", key)
+	}
+}
+
+// TestStartup_MigratesLegacyCatalogDB: a legacy <project>.db file (without .project
+// suffix) is automatically renamed to <project>.project.db at startup.
+func TestStartup_MigratesLegacyCatalogDB(t *testing.T) {
+	dir := seedTwoProjects(t)
+
+	// Simulate the pre-migration state: rename .project.db back to .db.
+	for _, p := range []string{"p1", "p2"} {
+		newPath := filepath.Join(dir, "ns", p+".project.db")
+		oldPath := filepath.Join(dir, "ns", p+".db")
+		require.NoError(t, os.Rename(newPath, oldPath))
+	}
+
+	s := freshStore(t, dir)
+	s.StartupInit(context.Background())
+
+	assert.Equal(t, StateHealthy, s.State("ns", "p1"))
+	assert.Equal(t, StateHealthy, s.State("ns", "p2"))
+
+	// The new .project.db files must exist.
+	for _, p := range []string{"p1", "p2"} {
+		_, err := os.Stat(filepath.Join(dir, "ns", p+".project.db"))
+		assert.NoError(t, err, "migrated catalog must exist for %s", p)
+	}
+	// The old .db files must be gone.
+	for _, p := range []string{"p1", "p2"} {
+		_, err := os.Stat(filepath.Join(dir, "ns", p+".db"))
+		assert.True(t, os.IsNotExist(err), "legacy catalog must be removed for %s", p)
 	}
 }

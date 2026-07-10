@@ -100,9 +100,10 @@ test.beforeAll(async () => {
 
   const base = join(dataDir, 'data')
   // (a) A genuine stray catalog with NO project dir, in the always-managed `default`
-  // namespace: default/shoka.db (named "shoka" — the field collision that confused the operator).
+  // namespace: default/shoka.project.db (named "shoka" — the field collision that confused
+  // the operator). Uses the <project>.<kind>.db pattern (kind=project).
   mkdirSync(join(base, 'default'), { recursive: true })
-  writeFileSync(join(base, 'default', 'shoka.db'), '')
+  writeFileSync(join(base, 'default', 'shoka.project.db'), '')
 
   // (b) Wait for the op:"delete" commit-land hook to have produced maintenance.deleted.db
   // (it lands after the async WAL commit, post DELETE_ACK).
@@ -156,11 +157,11 @@ test('orphaned rendering: genuine stray shows under default with full filename; 
   await expect(page.getByTestId('ns-default')).toBeVisible()
   await expect(page.getByTestId('ns-shoka')).toBeVisible()
 
-  // DEFAULT block: the genuine stray default/shoka.db is an orphaned row showing the FULL
-  // filename, and a Clean control IS offered (it is not a live project's sibling).
+  // DEFAULT block: the genuine stray default/shoka.project.db is an orphaned row showing the
+  // FULL filename, and a Clean control IS offered (it is not a live project's sibling).
   const defOrphan = page.getByTestId('orphan-default-shoka')
   await expect(defOrphan).toBeVisible()
-  await expect(defOrphan).toContainText('shoka.db')
+  await expect(defOrphan).toContainText('shoka.project.db')
   await expect(defOrphan.getByRole('button', { name: 'Clean' })).toBeVisible()
 
   // SHOKA block: the live maintenance project's maintenance.deleted.db is NOT flagged orphaned

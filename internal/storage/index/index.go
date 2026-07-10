@@ -1,7 +1,7 @@
 // Package index is the per-project derivative index store (the 2026-06-04 I1
 // directive), backed by a single bbolt database at the sibling path
 // <base_dir>/<namespace>/<project>.index.db (one per project, kept open for the
-// server's lifetime, alongside the catalog's <project>.db).
+// server's lifetime, alongside the catalog's <project>.project.db).
 //
 // I1 lays the substrate only: a forward map keyed by within-project path holding
 // the per-file derived record both later indexes build on, plus a per-project

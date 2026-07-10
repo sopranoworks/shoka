@@ -23,8 +23,8 @@ import (
 
 // deletedLogPath returns a project's deleted-log DB path:
 // <base_dir>/<namespace>/<project>.deleted.db (the sibling of the catalog's
-// <project>.db and the index's <project>.index.db, mirroring the default-namespace
-// handling).
+// <project>.project.db and the index's <project>.index.db, mirroring the
+// default-namespace handling).
 func (s *FSGitStorage) deletedLogPath(namespace, projectName string) string {
 	if namespace == "" {
 		namespace = "default"

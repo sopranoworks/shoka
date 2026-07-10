@@ -12,7 +12,7 @@ type projectEntryKind int
 
 const (
 	// entrySkip: not a project candidate at all — a non-directory (e.g. the
-	// "<project>.db" catalog sibling file) or a dot-prefixed name (a Shoka-internal
+	// "<project>.project.db" catalog sibling file) or a dot-prefixed name (a Shoka-internal
 	// area: .shoka-lostfound, .shoka, .drafts, .git). Enumeration skips it outright;
 	// it is never a project and never a relocatable leftover.
 	entrySkip projectEntryKind = iota

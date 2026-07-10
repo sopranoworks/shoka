@@ -105,7 +105,7 @@ func (s *FSGitStorage) depositBytes(namespace, projectName, originalPath string,
 // depositTree relocates a whole directory (sourceDir) and any sibling files into the
 // project's lost+found area, grouping them under one timestamp directory, and
 // returns that directory. It is the move-tree deposit mode (for D4: a catalog-init
-// leftover — a repo-less <project>/ tree plus its sibling <project>.db). Each move
+// leftover — a repo-less <project>/ tree plus its sibling <project>.<kind>.db files). Each move
 // is an os.Rename within the same namespace root (same filesystem), so it is atomic;
 // the source paths no longer exist afterwards. Each item lands at its basename under
 // the one <ts> dir; collisions are disambiguated so nothing is ever overwritten.

@@ -10,13 +10,40 @@ import (
 )
 
 // catalogPath returns the on-disk path of a project's catalog DB:
-// <base_dir>/<namespace>/<project>.db (alongside the project directory, not
-// inside it — see the catalog design log §5).
+// <base_dir>/<namespace>/<project>.project.db (alongside the project directory,
+// not inside it — see the catalog design log §5).
 func (s *FSGitStorage) catalogPath(namespace, projectName string) string {
 	if namespace == "" {
 		namespace = "default"
 	}
+	return filepath.Join(s.baseDir, namespace, projectName+".project.db")
+}
+
+// legacyCatalogPath returns the old-style catalog path (<project>.db) used before
+// the standardisation to <project>.project.db. Used only by the startup migration.
+func (s *FSGitStorage) legacyCatalogPath(namespace, projectName string) string {
+	if namespace == "" {
+		namespace = "default"
+	}
 	return filepath.Join(s.baseDir, namespace, projectName+".db")
+}
+
+// migrateLegacyCatalog renames the old-style <project>.db to <project>.project.db
+// if the legacy file exists and the new-style file does not. Called once per project
+// at startup, before any catalog handle is opened.
+func (s *FSGitStorage) migrateLegacyCatalog(namespace, projectName string) {
+	legacy := s.legacyCatalogPath(namespace, projectName)
+	target := s.catalogPath(namespace, projectName)
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+	if _, err := os.Stat(target); err == nil {
+		return
+	}
+	if err := os.Rename(legacy, target); err != nil {
+		s.log().Warn("failed to migrate legacy catalog",
+			"namespace", namespace, "project", projectName, "err", err)
+	}
 }
 
 // registerCatalog records an already-open catalog handle. Used by the startup
@@ -58,7 +85,7 @@ func (s *FSGitStorage) catalogFor(namespace, projectName string) (*catalog.Catal
 
 // catalogForRead returns the open catalog for a project without ever creating
 // one. Used by the read path's ENOENT invariant check so that a read never
-// writes a .db file. Returns nil if no catalog is registered and none can be
+// writes a .project.db file. Returns nil if no catalog is registered and none can be
 // opened.
 func (s *FSGitStorage) catalogForRead(namespace, projectName string) *catalog.Catalog {
 	key := projectKey(namespace, projectName)

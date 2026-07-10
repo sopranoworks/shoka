@@ -65,8 +65,8 @@ func TestBugfix_ClassifierRecognizesDeletedDB(t *testing.T) {
 	}
 	for _, o := range nh.Orphaned {
 		if o.Name == "stray" {
-			if len(o.Files) != 1 || o.Files[0] != "stray.db" {
-				t.Fatalf("orphan Files = %v, want [stray.db]", o.Files)
+			if len(o.Files) != 1 || o.Files[0] != "stray.project.db" {
+				t.Fatalf("orphan Files = %v, want [stray.project.db]", o.Files)
 			}
 		}
 	}
@@ -210,5 +210,120 @@ func TestBugfix_CleanRefusesLiveSiblingButCleansStray(t *testing.T) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Fatalf("genuine stray sibling %s not cleaned (err=%v)", filepath.Base(p), err)
 		}
+	}
+}
+
+// --- dbBaseName known-kind vocabulary tests ---
+
+func TestDbBaseName_KnownKindVocabulary(t *testing.T) {
+	cases := []struct {
+		file     string
+		wantBase string
+		wantOK   bool
+	}{
+		{"p.project.db", "p", true},
+		{"p.index.db", "p", true},
+		{"p.deleted.db", "p", true},
+		{"p.vector.db", "p", true},
+		{"p.db", "", false},
+		{"p.unknown.db", "", false},
+		{"notadb.txt", "", false},
+		{"", "", false},
+
+		// Dotted project names — the whole point of the known-kind vocabulary.
+		{"vue.js.project.db", "vue.js", true},
+		{"vue.js.index.db", "vue.js", true},
+		{"node.js.deleted.db", "node.js", true},
+		{"socket.io.vector.db", "socket.io", true},
+		{"babel.config.project.db", "babel.config", true},
+
+		// Pathological: project name that IS a known kind.
+		{"index.project.db", "index", true},
+		{"index.index.db", "index", true},
+		{"deleted.deleted.db", "deleted", true},
+		{"vector.vector.db", "vector", true},
+		{"project.project.db", "project", true},
+
+		// Pathological: project "A.index" vs project "A".
+		{"A.index.project.db", "A.index", true},
+		{"A.index.index.db", "A.index", true},
+		{"A.project.db", "A", true},
+		{"A.index.db", "A", true},
+		{"A.deleted.db", "A", true},
+		{"A.vector.db", "A", true},
+
+		// Multi-dot pathological.
+		{"a.b.c.index.db", "a.b.c", true},
+		{"a.index.b.project.db", "a.index.b", true},
+	}
+	for _, c := range cases {
+		base, ok := dbBaseName(c.file)
+		if ok != c.wantOK || base != c.wantBase {
+			t.Errorf("dbBaseName(%q) = (%q, %v), want (%q, %v)",
+				c.file, base, ok, c.wantBase, c.wantOK)
+		}
+	}
+}
+
+// TestDisambiguation_DottedProjectNames proves that projects with dotted names
+// (vue.js, A.index, etc.) produce distinct, non-colliding sibling filenames.
+func TestDisambiguation_DottedProjectNames(t *testing.T) {
+	s := newEmptyStorage(t)
+
+	// Create projects with dotted names alongside a plain project.
+	for _, name := range []string{"A", "A-index", "vue-js", "node-js", "socket-io"} {
+		if err := s.CreateProject("ns", name); err != nil {
+			t.Fatalf("CreateProject(%q): %v", name, err)
+		}
+	}
+
+	// All sibling paths are distinct.
+	seen := make(map[string]string)
+	for _, name := range []string{"A", "A-index", "vue-js", "node-js", "socket-io"} {
+		for _, p := range s.siblingDBPaths("ns", name) {
+			base := filepath.Base(p)
+			if prev, dup := seen[base]; dup {
+				t.Fatalf("COLLISION: %q produced by both project %q and %q", base, prev, name)
+			}
+			seen[base] = name
+		}
+	}
+
+	// Each project's siblings all resolve back to the correct project via dbBaseName.
+	for _, name := range []string{"A", "A-index", "vue-js", "node-js", "socket-io"} {
+		for _, p := range s.siblingDBPaths("ns", name) {
+			base, ok := dbBaseName(filepath.Base(p))
+			if !ok {
+				t.Fatalf("dbBaseName(%q) returned false for project %q", filepath.Base(p), name)
+			}
+			if base != name {
+				t.Fatalf("dbBaseName(%q) = %q, want %q (project %q)", filepath.Base(p), base, name, name)
+			}
+		}
+	}
+}
+
+// TestHealthCheck_DottedProjectNoFalseOrphan: a live project with a dotted name
+// and all four sibling DBs does NOT produce any orphaned entry.
+func TestHealthCheck_DottedProjectNoFalseOrphan(t *testing.T) {
+	s := newEmptyStorage(t)
+	for _, name := range []string{"A", "A-index"} {
+		if err := s.CreateProject("ns", name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Touch all sibling DBs for both projects.
+	for _, name := range []string{"A", "A-index"} {
+		bfTouch(t, s.indexPath("ns", name))
+		bfTouch(t, s.deletedLogPath("ns", name))
+		bfTouch(t, s.vectorPath("ns", name))
+	}
+
+	nh := s.CheckNamespaceHealth("ns")
+	if len(nh.Orphaned) > 0 {
+		t.Fatalf("no orphans expected with dotted project names, got %+v", nh.Orphaned)
+	}
+	if !nh.Healthy {
+		t.Fatal("namespace must be healthy when all projects and siblings are present")
 	}
 }
