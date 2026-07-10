@@ -1,19 +1,51 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getServerNetworkInfo } from '../lib/serverInfoOps'
 import type { NetworkElement } from '../lib/types'
 import styles from './ServerInfoPage.module.css'
 
+function selectFallback(text: string): boolean {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand('copy')
+  document.body.removeChild(ta)
+  return ok
+}
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const markCopied = () => {
+    setCopied(true)
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setCopied(false), 1500)
+  }
+
+  const handleCopy = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard
+        .writeText(text)
+        .then(() => markCopied())
+        .catch(() => {
+          if (selectFallback(text)) markCopied()
+        })
+    } else {
+      if (selectFallback(text)) markCopied()
+    }
+  }
+
+  useEffect(() => () => clearTimeout(timerRef.current), [])
+
   return (
     <button
       className={styles.copyBtn}
-      onClick={() => {
-        navigator.clipboard.writeText(text)
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
-      }}
+      onClick={handleCopy}
+      data-testid="copy-url-button"
     >
       {copied ? 'Copied' : 'Copy'}
     </button>

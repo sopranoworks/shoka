@@ -138,6 +138,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       'server:',
       '  http:',
       `    listen: ":${PORT}"`,
+      `    external_url: "http://localhost:${PORT}"`,
       // B-50 schema: the MCP endpoint has two transports selected by config
       // presence — `plain` (unauthenticated here) and `oauth`. The OAuth transport
       // is configured so the server opens the connection store and serves the admin
