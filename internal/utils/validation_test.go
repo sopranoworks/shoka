@@ -41,6 +41,10 @@ func TestIsValidName(t *testing.T) {
 		{"dot-git in middle", "my.git.project", true},
 		{"100 chars", strings.Repeat("a", 100), true},
 		{"101 chars", strings.Repeat("a", 101), false},
+
+		// @ is explicitly excluded (reserved for sibling DB prefix).
+		{"at sign", "@project", false},
+		{"at in middle", "my@project", false},
 	}
 	for _, c := range cases {
 		if got := IsValidName(c.in); got != c.want {

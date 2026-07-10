@@ -1,5 +1,5 @@
 // Package catalog is the per-project cache of the files Shoka manages, backed by
-// a single bbolt database at <base_dir>/<namespace>/<project>.project.db (one per
+// a single bbolt database at <base_dir>/<namespace>/@<project>.project.db (one per
 // project, kept open for the server's lifetime).
 //
 // The catalog records, for every Shoka-managed file, its etag, size, and

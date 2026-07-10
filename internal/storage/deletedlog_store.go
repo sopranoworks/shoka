@@ -22,14 +22,14 @@ import (
 // hook fires in commitEntry, after advanceHead, keyed off the commit's Op.
 
 // deletedLogPath returns a project's deleted-log DB path:
-// <base_dir>/<namespace>/<project>.deleted.db (the sibling of the catalog's
-// <project>.project.db and the index's <project>.index.db, mirroring the
+// <base_dir>/<namespace>/@<project>.deleted.db (the sibling of the catalog's
+// @<project>.project.db and the index's @<project>.index.db, mirroring the
 // default-namespace handling).
 func (s *FSGitStorage) deletedLogPath(namespace, projectName string) string {
 	if namespace == "" {
 		namespace = "default"
 	}
-	return filepath.Join(s.baseDir, namespace, projectName+".deleted.db")
+	return filepath.Join(s.baseDir, namespace, "@"+projectName+".deleted.db")
 }
 
 // registerDeletedLog records an already-open handle, closing any prior handle for
@@ -119,7 +119,9 @@ func (s *FSGitStorage) deletedLogExists(namespace, projectName string) bool {
 // removeDeletedLogFile deletes a project's on-disk store and drops any registered
 // handle. Used by the repair path to discard a corrupt store before recreating it.
 // Best-effort; a missing file is not an error.
-func (s *FSGitStorage) removeDeletedLogFile(namespace, projectName string) {
+// evictDeletedLogHandle closes and deregisters the cached handle for a project's
+// deleted log, if one exists. Does not touch the on-disk file.
+func (s *FSGitStorage) evictDeletedLogHandle(namespace, projectName string) {
 	key := projectKey(namespace, projectName)
 	s.dlMu.Lock()
 	if old, ok := s.deletedLogs[key]; ok && old != nil {
@@ -127,6 +129,10 @@ func (s *FSGitStorage) removeDeletedLogFile(namespace, projectName string) {
 		delete(s.deletedLogs, key)
 	}
 	s.dlMu.Unlock()
+}
+
+func (s *FSGitStorage) removeDeletedLogFile(namespace, projectName string) {
+	s.evictDeletedLogHandle(namespace, projectName)
 	if err := os.Remove(s.deletedLogPath(namespace, projectName)); err != nil && !os.IsNotExist(err) {
 		s.log().Warn("deleted-log file remove failed",
 			"namespace", namespace, "project", projectName, "err", err)

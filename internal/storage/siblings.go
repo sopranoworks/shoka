@@ -1,9 +1,10 @@
 package storage
 
 // Per-project derivative sibling DBs. A project directory <base>/<ns>/<proj> has up to
-// four derivative sibling files alongside it: the catalog <proj>.project.db, the index
-// <proj>.index.db, the deleted-log <proj>.deleted.db, and the vector index
-// <proj>.vector.db. All follow the uniform <proj>.<kind>.db pattern. They
+// four derivative sibling files alongside it: the catalog @<proj>.project.db, the index
+// @<proj>.index.db, the deleted-log @<proj>.deleted.db, and the vector index
+// @<proj>.vector.db. All follow the uniform @<proj>.<kind>.db pattern — the leading @
+// distinguishes sibling DB files from project directories. They
 // are disposable derivatives (rebuildable from git), but every lifecycle op that touches a
 // project — delete, move, rename, leftover relocation, orphan clean — MUST account for ALL
 // of them, or it strands a sibling (a stray DB with no project) that the health check then

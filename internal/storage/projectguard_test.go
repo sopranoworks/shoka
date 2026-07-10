@@ -50,7 +50,7 @@ func TestProjectGuard_WritePathRejectsRepolessProject(t *testing.T) {
 	// No side-effects may have escaped: a guard-less write half-creates all three.
 	_, statErr := os.Stat(filepath.Join(dir, ns, proj))
 	assert.Truef(t, os.IsNotExist(statErr), "no working-tree directory may be created (stat err=%v)", statErr)
-	_, dbErr := os.Stat(filepath.Join(dir, ns, proj+".project.db"))
+	_, dbErr := os.Stat(filepath.Join(dir, ns, "@"+proj+".project.db"))
 	assert.Truef(t, os.IsNotExist(dbErr), "no per-project catalog .db may be created (stat err=%v)", dbErr)
 	assert.Equal(t, 0, s.WALPending(), "no WAL entry may be appended for a repo-less project")
 }
@@ -79,7 +79,7 @@ func TestProjectGuard_CatalogInitSkipsGitlessLeftover(t *testing.T) {
 	leftover := filepath.Join(dir, "default", "maintenance", "directives")
 	require.NoError(t, os.MkdirAll(leftover, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(leftover, "x.md"), []byte("orphan"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "default", "maintenance.project.db"), make([]byte, 32768), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "default", "@maintenance.project.db"), make([]byte, 32768), 0o600))
 
 	s2 := freshStore(t, dir)
 	s2.StartupInit(context.Background())

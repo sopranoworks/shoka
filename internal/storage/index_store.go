@@ -20,13 +20,13 @@ import (
 // boundary is the internal/storage/index sub-package, not package storage.
 
 // indexPath returns a project's index DB path:
-// <base_dir>/<namespace>/<project>.index.db (the sibling of the catalog's
-// <project>.project.db, mirroring catalogPath's default-namespace handling).
+// <base_dir>/<namespace>/@<project>.index.db (the sibling of the catalog's
+// @<project>.project.db).
 func (s *FSGitStorage) indexPath(namespace, projectName string) string {
 	if namespace == "" {
 		namespace = "default"
 	}
-	return filepath.Join(s.baseDir, namespace, projectName+".index.db")
+	return filepath.Join(s.baseDir, namespace, "@"+projectName+".index.db")
 }
 
 // registerIndex records an already-open index handle, closing any prior handle

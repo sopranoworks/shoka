@@ -114,7 +114,7 @@ func TestRelocateLeftovers_MovesTreeAndDBToLostFound(t *testing.T) {
 	if string(body) != "leftover body" {
 		t.Fatalf("relocated content = %q, want %q", body, "leftover body")
 	}
-	if _, err := os.Stat(filepath.Join(tsDir, "stray.project.db")); err != nil {
+	if _, err := os.Stat(filepath.Join(tsDir, "@stray.project.db")); err != nil {
 		t.Fatalf("sibling .db not under the same <ts> dir: %v", err)
 	}
 

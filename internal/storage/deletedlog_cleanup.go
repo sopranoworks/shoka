@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sopranoworks/shoka/internal/storage/deletedlog"
 )
 
 // One-time cleanup of OLD JUNK deleted-logs (2026-06-18). After the lazy-create fix a
@@ -52,19 +54,31 @@ func (s *FSGitStorage) CleanupUnmarkedEmptyDeletedLogs() ([]string, error) {
 			if f.IsDir() || !strings.HasSuffix(f.Name(), ".deleted.db") {
 				continue
 			}
+			// Handle both legacy (<p>.deleted.db) and current (@<p>.deleted.db) naming.
 			proj := strings.TrimSuffix(f.Name(), ".deleted.db")
-			st := s.deletedLogForRead(ns.Name(), proj) // no-create; nil if absent/corrupt
-			if st == nil {
+			if strings.HasPrefix(proj, "@") {
+				proj = proj[1:]
+			}
+			// Open at the actual on-disk path (not via deletedLogPath, which always
+			// returns the @-prefixed path and would miss legacy files).
+			actualPath := filepath.Join(nsDir, f.Name())
+			st, oerr := deletedlog.Open(actualPath)
+			if oerr != nil {
 				continue // unreadable: cannot verify it is empty — leave it
 			}
 			if marked, merr := st.HasOriginMarker(); merr != nil || marked {
+				_ = st.Close()
 				continue // GATE 1: a marked log (legitimate) is NEVER removed
 			}
 			if empty, eerr := st.IsEmpty(); eerr != nil || !empty {
+				_ = st.Close()
 				continue // GATE 2: a log with ≥1 record is NEVER removed (no data loss)
 			}
-			// Old junk: unmarked AND empty. Handle-safe removal (close cached handle, unlink).
-			s.removeDeletedLogFile(ns.Name(), proj)
+			_ = st.Close()
+			// Old junk: unmarked AND empty. Close any cached handle, then unlink the
+			// actual file (which may be at the legacy or current path).
+			s.evictDeletedLogHandle(ns.Name(), proj)
+			_ = os.Remove(actualPath)
 			removed = append(removed, projectKey(ns.Name(), proj))
 		}
 	}

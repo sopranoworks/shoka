@@ -37,8 +37,8 @@ type ForeignDir struct {
 	Adoptable bool   `json:"adoptable"`
 }
 
-// OrphanSibling is a stray sibling .db (e.g. <proj>.project.db / <proj>.index.db /
-// <proj>.deleted.db / <proj>.vector.db) whose project dir is gone — a managed thing left
+// OrphanSibling is a stray sibling .db (e.g. @<proj>.project.db / @<proj>.index.db /
+// @<proj>.deleted.db / @<proj>.vector.db) whose project dir is gone — a managed thing left
 // broken/incomplete (UNHEALTHY). Name is the project base name the stray DBs belong to;
 // Files are the actual on-disk sibling filenames so the UI can show the FULL filename
 // (e.g. "shoka.db") rather than the bare base (which collided confusingly with a namespace
@@ -179,10 +179,10 @@ func (s *FSGitStorage) checkNamespaceHealth(ns string) NamespaceHealth {
 		}
 	}
 
-	// Orphaned siblings: a <p>.<kind>.db whose project dir is gone — UNHEALTHY. A LIVE
-	// project's siblings are NOT orphaned because projDirs[<p>] is set (dbBaseName uses
-	// the known-kind vocabulary to extract <p> correctly even when <p> contains dots).
-	// Files carries the real filenames so the UI shows the full name.
+	// Orphaned siblings: an @<p>.<kind>.db whose project dir is gone — UNHEALTHY. A LIVE
+	// project's siblings are NOT orphaned because projDirs[<p>] is set (dbBaseName strips
+	// the @ prefix and uses the known-kind vocabulary to extract <p> correctly even when
+	// <p> contains dots). Files carries the real filenames so the UI shows the full name.
 	for base, files := range dbBases {
 		if !projDirs[base] {
 			sort.Strings(files)
@@ -214,14 +214,15 @@ var siblingKinds = map[string]bool{
 }
 
 // dbBaseName returns the project base name of a per-project sibling DB file and true;
-// ("", false) for any file that is not a Shoka-managed sibling DB. Parsing uses the
-// known-kind vocabulary (project, index, deleted, vector): a filename must end in
-// ".<kind>.db" where <kind> is known; the project name is everything before ".<kind>.db".
+// ("", false) for any file that is not a Shoka-managed sibling DB. A sibling DB file
+// must start with "@" (distinguishing it from project directories) and end in
+// ".<kind>.db" where <kind> is one of the known kinds. The project name is everything
+// between the leading "@" and the ".<kind>.db" suffix.
 func dbBaseName(fileName string) (string, bool) {
-	if !strings.HasSuffix(fileName, ".db") {
+	if len(fileName) < 2 || fileName[0] != '@' || !strings.HasSuffix(fileName, ".db") {
 		return "", false
 	}
-	stem := strings.TrimSuffix(fileName, ".db")
+	stem := strings.TrimSuffix(fileName[1:], ".db") // strip @ and .db
 	dot := strings.LastIndexByte(stem, '.')
 	if dot < 1 {
 		return "", false
@@ -295,7 +296,7 @@ func (s *FSGitStorage) RecoverCorruptedProject(namespace, projectName string) (P
 	return s.ResyncToHead(namespace, projectName)
 }
 
-// CleanOrphanedSibling removes stray sibling .db files (<name>.<kind>.db for all known
+// CleanOrphanedSibling removes stray sibling .db files (@<name>.<kind>.db for all known
 // kinds) that have no project directory — the ORPHANED case. It refuses when a live .git
 // project of that name exists (so a present project's catalog is never deleted), and
 // removes only the stray sibling DBs, evicting any in-memory handle first. Explicit

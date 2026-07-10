@@ -100,17 +100,17 @@ test.beforeAll(async () => {
 
   const base = join(dataDir, 'data')
   // (a) A genuine stray catalog with NO project dir, in the always-managed `default`
-  // namespace: default/shoka.project.db (named "shoka" — the field collision that confused
-  // the operator). Uses the <project>.<kind>.db pattern (kind=project).
+  // namespace: default/@shoka.project.db (named "shoka" — the field collision that confused
+  // the operator). Uses the @<project>.<kind>.db pattern (kind=project).
   mkdirSync(join(base, 'default'), { recursive: true })
-  writeFileSync(join(base, 'default', 'shoka.project.db'), '')
+  writeFileSync(join(base, 'default', '@shoka.project.db'), '')
 
-  // (b) Wait for the op:"delete" commit-land hook to have produced maintenance.deleted.db
+  // (b) Wait for the op:"delete" commit-land hook to have produced @maintenance.deleted.db
   // (it lands after the async WAL commit, post DELETE_ACK).
-  const deletedDb = join(base, 'shoka', 'maintenance.deleted.db')
+  const deletedDb = join(base, 'shoka', '@maintenance.deleted.db')
   const deadline = Date.now() + 15000
   while (!existsSync(deletedDb)) {
-    if (Date.now() > deadline) throw new Error('maintenance.deleted.db was not created by the delete')
+    if (Date.now() > deadline) throw new Error('@maintenance.deleted.db was not created by the delete')
     await new Promise((r) => setTimeout(r, 150))
   }
 })
@@ -157,11 +157,11 @@ test('orphaned rendering: genuine stray shows under default with full filename; 
   await expect(page.getByTestId('ns-default')).toBeVisible()
   await expect(page.getByTestId('ns-shoka')).toBeVisible()
 
-  // DEFAULT block: the genuine stray default/shoka.project.db is an orphaned row showing the
+  // DEFAULT block: the genuine stray default/@shoka.project.db is an orphaned row showing the
   // FULL filename, and a Clean control IS offered (it is not a live project's sibling).
   const defOrphan = page.getByTestId('orphan-default-shoka')
   await expect(defOrphan).toBeVisible()
-  await expect(defOrphan).toContainText('shoka.project.db')
+  await expect(defOrphan).toContainText('@shoka.project.db')
   await expect(defOrphan.getByRole('button', { name: 'Clean' })).toBeVisible()
 
   // SHOKA block: the live maintenance project's maintenance.deleted.db is NOT flagged orphaned

@@ -41,7 +41,7 @@ type leftover struct {
 // git-backed project (the primary result) plus every repo-less leftover directory
 // (the second result). Hidden namespace directories (e.g. ".shoka"), hidden
 // project-level directories (e.g. the ".shoka-lostfound" area), and the per-project
-// "<project>.project.db" catalog files (which are not directories) are skipped — a
+// "@<project>.project.db" catalog files (which are not directories) are skipped — a
 // dot-prefixed entry is Shoka-internal, never a project.
 //
 // A <project> directory with no .git is not a project; rather than being silently
@@ -74,7 +74,7 @@ func (s *FSGitStorage) discoverProjects() ([]projectRef, []leftover) {
 		}
 		for _, pr := range projEntries {
 			// classifyProjectEntry is the shared predicate ListProjects also routes
-			// through (B-31): entrySkip = a "<project>.<kind>.db" file or a Shoka-internal dot
+			// through (B-31): entrySkip = an "@<project>.<kind>.db" file or a Shoka-internal dot
 			// dir; entryLeftover = a repo-less remnant; entryProject = a real project.
 			switch classifyProjectEntry(nsPath, pr) {
 			case entryLeftover:
@@ -134,11 +134,12 @@ func (s *FSGitStorage) StartupInit(ctx context.Context) {
 	// per-project init so the managed set is established for the rest of startup.
 	s.reconcileManagedRegistry(projects)
 
-	// Migrate legacy <project>.db → <project>.project.db (the 2026-07-10 naming
-	// standardisation). Synchronous, before the concurrent init loop — safe because
-	// no catalog handle is open yet and the rename is atomic.
+	// Migrate legacy sibling DBs to the @-prefixed pattern (the 2026-07-10 naming
+	// standardisation). Covers all four kinds and both legacy schemes (v0 <p>.db,
+	// v1 <p>.<kind>.db → @<p>.<kind>.db). Synchronous, before the concurrent init
+	// loop — safe because no handles are open yet and each rename is atomic.
 	for _, p := range projects {
-		s.migrateLegacyCatalog(p.namespace, p.name)
+		s.migrateLegacySiblings(p.namespace, p.name)
 	}
 
 	var wg sync.WaitGroup

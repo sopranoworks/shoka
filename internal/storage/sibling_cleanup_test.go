@@ -65,8 +65,8 @@ func TestBugfix_ClassifierRecognizesDeletedDB(t *testing.T) {
 	}
 	for _, o := range nh.Orphaned {
 		if o.Name == "stray" {
-			if len(o.Files) != 1 || o.Files[0] != "stray.project.db" {
-				t.Fatalf("orphan Files = %v, want [stray.project.db]", o.Files)
+			if len(o.Files) != 1 || o.Files[0] != "@stray.project.db" {
+				t.Fatalf("orphan Files = %v, want [@stray.project.db]", o.Files)
 			}
 		}
 	}
@@ -221,40 +221,49 @@ func TestDbBaseName_KnownKindVocabulary(t *testing.T) {
 		wantBase string
 		wantOK   bool
 	}{
-		{"p.project.db", "p", true},
-		{"p.index.db", "p", true},
-		{"p.deleted.db", "p", true},
-		{"p.vector.db", "p", true},
+		// @ prefix required.
+		{"@p.project.db", "p", true},
+		{"@p.index.db", "p", true},
+		{"@p.deleted.db", "p", true},
+		{"@p.vector.db", "p", true},
+
+		// Without @ prefix — NOT a sibling DB.
+		{"p.project.db", "", false},
+		{"p.index.db", "", false},
 		{"p.db", "", false},
 		{"p.unknown.db", "", false},
 		{"notadb.txt", "", false},
 		{"", "", false},
 
 		// Dotted project names — the whole point of the known-kind vocabulary.
-		{"vue.js.project.db", "vue.js", true},
-		{"vue.js.index.db", "vue.js", true},
-		{"node.js.deleted.db", "node.js", true},
-		{"socket.io.vector.db", "socket.io", true},
-		{"babel.config.project.db", "babel.config", true},
+		{"@vue.js.project.db", "vue.js", true},
+		{"@vue.js.index.db", "vue.js", true},
+		{"@node.js.deleted.db", "node.js", true},
+		{"@socket.io.vector.db", "socket.io", true},
+		{"@babel.config.project.db", "babel.config", true},
 
 		// Pathological: project name that IS a known kind.
-		{"index.project.db", "index", true},
-		{"index.index.db", "index", true},
-		{"deleted.deleted.db", "deleted", true},
-		{"vector.vector.db", "vector", true},
-		{"project.project.db", "project", true},
+		{"@index.project.db", "index", true},
+		{"@index.index.db", "index", true},
+		{"@deleted.deleted.db", "deleted", true},
+		{"@vector.vector.db", "vector", true},
+		{"@project.project.db", "project", true},
 
 		// Pathological: project "A.index" vs project "A".
-		{"A.index.project.db", "A.index", true},
-		{"A.index.index.db", "A.index", true},
-		{"A.project.db", "A", true},
-		{"A.index.db", "A", true},
-		{"A.deleted.db", "A", true},
-		{"A.vector.db", "A", true},
+		{"@A.index.project.db", "A.index", true},
+		{"@A.index.index.db", "A.index", true},
+		{"@A.project.db", "A", true},
+		{"@A.index.db", "A", true},
+		{"@A.deleted.db", "A", true},
+		{"@A.vector.db", "A", true},
+
+		// Pathological: project literally named "A.index.db".
+		{"@A.index.db.project.db", "A.index.db", true},
+		{"@A.index.db.index.db", "A.index.db", true},
 
 		// Multi-dot pathological.
-		{"a.b.c.index.db", "a.b.c", true},
-		{"a.index.b.project.db", "a.index.b", true},
+		{"@a.b.c.index.db", "a.b.c", true},
+		{"@a.index.b.project.db", "a.index.b", true},
 	}
 	for _, c := range cases {
 		base, ok := dbBaseName(c.file)
@@ -266,20 +275,21 @@ func TestDbBaseName_KnownKindVocabulary(t *testing.T) {
 }
 
 // TestDisambiguation_DottedProjectNames proves that projects with dotted names
-// (vue.js, A.index, etc.) produce distinct, non-colliding sibling filenames.
+// (vue.js, A.index, A.index.db, etc.) produce distinct, non-colliding sibling
+// filenames, and that no sibling filename can collide with any project directory.
 func TestDisambiguation_DottedProjectNames(t *testing.T) {
 	s := newEmptyStorage(t)
 
-	// Create projects with dotted names alongside a plain project.
-	for _, name := range []string{"A", "A-index", "vue-js", "node-js", "socket-io"} {
+	names := []string{"A", "A-index", "vue-js", "node-js", "socket-io"}
+	for _, name := range names {
 		if err := s.CreateProject("ns", name); err != nil {
 			t.Fatalf("CreateProject(%q): %v", name, err)
 		}
 	}
 
-	// All sibling paths are distinct.
+	// All sibling filenames are distinct across all projects.
 	seen := make(map[string]string)
-	for _, name := range []string{"A", "A-index", "vue-js", "node-js", "socket-io"} {
+	for _, name := range names {
 		for _, p := range s.siblingDBPaths("ns", name) {
 			base := filepath.Base(p)
 			if prev, dup := seen[base]; dup {
@@ -289,8 +299,20 @@ func TestDisambiguation_DottedProjectNames(t *testing.T) {
 		}
 	}
 
-	// Each project's siblings all resolve back to the correct project via dbBaseName.
-	for _, name := range []string{"A", "A-index", "vue-js", "node-js", "socket-io"} {
+	// No sibling filename can collide with a project directory name (@ prefix guarantee).
+	for _, name := range names {
+		for _, p := range s.siblingDBPaths("ns", name) {
+			base := filepath.Base(p)
+			for _, dir := range names {
+				if base == dir {
+					t.Fatalf("sibling filename %q collides with project directory %q", base, dir)
+				}
+			}
+		}
+	}
+
+	// Each project's siblings round-trip back to the correct project via dbBaseName.
+	for _, name := range names {
 		for _, p := range s.siblingDBPaths("ns", name) {
 			base, ok := dbBaseName(filepath.Base(p))
 			if !ok {

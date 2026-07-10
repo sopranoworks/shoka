@@ -9,6 +9,7 @@ import "strings"
 //   - not "." or ".." (filesystem reserved)
 //   - must not start with "." (dot-prefixed dirs are Shoka-internal)
 //   - must not end with ".git" (Git convention)
+//   - "@" is explicitly excluded (reserved for @-prefixed sibling DB filenames)
 func IsValidName(name string) bool {
 	if name == "" || len(name) > 100 {
 		return false

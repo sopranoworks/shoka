@@ -25,12 +25,12 @@ type VectorIndexConfig struct {
 }
 
 // vectorPath returns a project's vector index DB path:
-// <base_dir>/<namespace>/<project>.vector.db
+// <base_dir>/<namespace>/@<project>.vector.db
 func (s *FSGitStorage) vectorPath(namespace, projectName string) string {
 	if namespace == "" {
 		namespace = "default"
 	}
-	return filepath.Join(s.baseDir, namespace, projectName+".vector.db")
+	return filepath.Join(s.baseDir, namespace, "@"+projectName+".vector.db")
 }
 
 // SetVectorConfig injects or swaps the embedder configuration. This is called
