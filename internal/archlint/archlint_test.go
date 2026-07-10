@@ -30,7 +30,7 @@ const (
 // ignores it, so the deliberately-bad self-test fixture there is invisible to
 // builds and to this scan (the self-test scans it explicitly instead).
 var skipDirs = map[string]bool{
-	".git": true, "node_modules": true, "web": true,
+	".git": true, ".claude": true, "node_modules": true, "web": true,
 	"dist": true, "tmp": true, ".opencode": true, "testdata": true,
 }
 
