@@ -37,8 +37,8 @@ type ForeignDir struct {
 	Adoptable bool   `json:"adoptable"`
 }
 
-// OrphanSibling is a stray catalog/index/deleted-log .db (e.g. <proj>.db /
-// <proj>.index.db / <proj>.deleted.db) whose project dir is gone — a managed thing left
+// OrphanSibling is a stray catalog/index/deleted-log/vector .db (e.g. <proj>.db /
+// <proj>.index.db / <proj>.deleted.db / <proj>.vector.db) whose project dir is gone — a managed thing left
 // broken/incomplete (UNHEALTHY). Name is the project base name the stray DBs belong to;
 // Files are the actual on-disk sibling filenames so the UI can show the FULL filename
 // (e.g. "shoka.db") rather than the bare base (which collided confusingly with a namespace
@@ -179,10 +179,10 @@ func (s *FSGitStorage) checkNamespaceHealth(ns string) NamespaceHealth {
 		}
 	}
 
-	// Orphaned siblings: a catalog/index/deleted-log .db whose project dir is gone —
-	// UNHEALTHY. A LIVE project's siblings (its <p>.db, <p>.index.db, AND <p>.deleted.db,
-	// all now mapped to base <p> by dbBaseName) are NOT orphaned, because projDirs[<p>] is
-	// set. Files carries the real filenames so the UI shows the full name.
+	// Orphaned siblings: a catalog/index/deleted-log/vector .db whose project dir is gone
+	// — UNHEALTHY. A LIVE project's siblings (its <p>.db, <p>.index.db, <p>.deleted.db,
+	// AND <p>.vector.db, all mapped to base <p> by dbBaseName) are NOT orphaned, because
+	// projDirs[<p>] is set. Files carries the real filenames so the UI shows the full name.
 	for base, files := range dbBases {
 		if !projDirs[base] {
 			sort.Strings(files)
@@ -202,18 +202,21 @@ func sortProjects(ps []ProjectHealth) {
 }
 
 // dbBaseName returns the project base name of a per-project sibling DB file and true;
-// ("", false) for any other file. Shoka keeps THREE derivative siblings per project:
-// the catalog <proj>.db, the index <proj>.index.db, and the deleted-log <proj>.deleted.db
-// (the last added 2026-06-18). The longer compound suffixes (".index.db", ".deleted.db")
-// MUST be checked before the bare ".db" — otherwise "<proj>.deleted.db" would map to base
-// "<proj>.deleted" (a phantom with no project dir) and a LIVE project's deleted-log would
-// be falsely flagged orphaned (and Clean would delete it). All three map to base <proj>.
+// ("", false) for any other file. Shoka keeps FOUR derivative siblings per project:
+// the catalog <proj>.db, the index <proj>.index.db, the deleted-log <proj>.deleted.db,
+// and the vector index <proj>.vector.db. The longer compound suffixes MUST be checked
+// before the bare ".db" — otherwise "<proj>.vector.db" would map to base "<proj>.vector"
+// (a phantom with no project dir) and a LIVE project's vector index would be falsely
+// flagged orphaned (and Clean would delete it). All four map to base <proj>.
 func dbBaseName(fileName string) (string, bool) {
 	if strings.HasSuffix(fileName, ".index.db") {
 		return strings.TrimSuffix(fileName, ".index.db"), true
 	}
 	if strings.HasSuffix(fileName, ".deleted.db") {
 		return strings.TrimSuffix(fileName, ".deleted.db"), true
+	}
+	if strings.HasSuffix(fileName, ".vector.db") {
+		return strings.TrimSuffix(fileName, ".vector.db"), true
 	}
 	if strings.HasSuffix(fileName, ".db") {
 		return strings.TrimSuffix(fileName, ".db"), true
@@ -283,11 +286,11 @@ func (s *FSGitStorage) RecoverCorruptedProject(namespace, projectName string) (P
 	return s.ResyncToHead(namespace, projectName)
 }
 
-// CleanOrphanedSibling removes a stray catalog/index .db (<name>.db / <name>.index.db)
-// that has no project directory — the ORPHANED case. It refuses when a live .git project of
-// that name exists (so a present project's catalog is never deleted), and removes only the
-// stray sibling DBs (the part-1 atomic-delete discipline), evicting any in-memory handle
-// first. Explicit operator action only.
+// CleanOrphanedSibling removes stray sibling .db files (<name>.db / <name>.index.db /
+// <name>.deleted.db / <name>.vector.db) that have no project directory — the ORPHANED case.
+// It refuses when a live .git project of that name exists (so a present project's catalog
+// is never deleted), and removes only the stray sibling DBs (the part-1 atomic-delete
+// discipline), evicting any in-memory handle first. Explicit operator action only.
 func (s *FSGitStorage) CleanOrphanedSibling(namespace, name string) error {
 	if namespace == "" {
 		namespace = DefaultNamespace
@@ -301,7 +304,7 @@ func (s *FSGitStorage) CleanOrphanedSibling(namespace, name string) error {
 	// data loss. The dbBaseName fix means the health check no longer surfaces such an item,
 	// but a stale UI or direct call could still pass it; refuse defensively. (A genuine
 	// stray whose base is NOT a live project still cleans normally.)
-	for _, suf := range []string{".deleted", ".index"} {
+	for _, suf := range []string{".deleted", ".index", ".vector"} {
 		if base := strings.TrimSuffix(name, suf); base != name && hasGitRepo(filepath.Join(s.baseDir, namespace, base)) {
 			return fmt.Errorf("%s/%s is a live project's %q sibling; refusing to clean (would delete live data)", namespace, base, suf)
 		}
