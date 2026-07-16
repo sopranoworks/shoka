@@ -194,6 +194,7 @@ type FSGitStorage struct {
 	vecUpdateFailedDelete atomic.Int64
 	vecRebuilds          atomic.Int64
 	vecSweepRuns         atomic.Int64
+	vecSweepAborts       atomic.Int64
 
 	// notify is the in-process notification center (internal/notify). It may be
 	// nil; every call site uses the nil-safe receiver method, so storage never

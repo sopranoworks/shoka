@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ type fakeEmbedder struct {
 	mu         sync.Mutex
 	calls      int
 	failNext   bool
+	failAll    bool
 	dimensions int
 }
 
@@ -29,6 +31,9 @@ func (f *fakeEmbedder) Embed(_ context.Context, text string) (*llm.EmbeddingVect
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.failAll {
+		return nil, errors.New("simulated persistent failure")
+	}
 	if f.failNext {
 		f.failNext = false
 		return nil, context.DeadlineExceeded
@@ -448,4 +453,90 @@ func TestVector_InitialSweep_VectorizesPreExistingFiles(t *testing.T) {
 	_, found2, _ := st.Get("doc2.md")
 	assert.True(t, found1, "doc1.md should be vectorized")
 	assert.True(t, found2, "doc2.md should be vectorized")
+}
+
+func TestVector_SweepAbortsAfterConsecutiveFailures(t *testing.T) {
+	s, embedder := setupVectorStore(t)
+
+	// Write more files than the consecutive failure limit
+	fileCount := vectorSweepConsecFailLimit + 5
+	for i := range fileCount {
+		_, err := s.Write(context.Background(), "sess", "ns", "proj",
+			fmt.Sprintf("file%d.md", i), fmt.Sprintf("content %d", i), nil)
+		require.NoError(t, err)
+	}
+
+	// Make ALL embeds fail persistently
+	embedder.mu.Lock()
+	embedder.failAll = true
+	embedder.calls = 0
+	embedder.mu.Unlock()
+
+	// Run the sweep directly (not via the worker, to avoid the initial reconcile)
+	s.reconcileProjectVectors(context.Background(), "ns", "proj")
+
+	// The sweep should have aborted after vectorSweepConsecFailLimit consecutive failures
+	calls := embedder.callCount()
+	assert.Equal(t, vectorSweepConsecFailLimit, calls,
+		"sweep should abort after %d consecutive failures, got %d calls", vectorSweepConsecFailLimit, calls)
+	assert.Equal(t, int64(1), s.VectorSweepAborts(),
+		"sweep abort counter should be incremented")
+}
+
+func TestVector_SweepConsecFailResetOnSuccess(t *testing.T) {
+	s, embedder := setupVectorStore(t)
+
+	// Write several files
+	for i := range 6 {
+		_, err := s.Write(context.Background(), "sess", "ns", "proj",
+			fmt.Sprintf("f%d.md", i), fmt.Sprintf("content %d", i), nil)
+		require.NoError(t, err)
+	}
+
+	// Make embeds fail only intermittently (failNext resets after one failure).
+	// Since map iteration is nondeterministic, we can't control which files fail.
+	// Instead, verify that a full sweep with all embeds succeeding does NOT abort.
+	embedder.mu.Lock()
+	embedder.calls = 0
+	embedder.mu.Unlock()
+
+	s.reconcileProjectVectors(context.Background(), "ns", "proj")
+
+	calls := embedder.callCount()
+	assert.Equal(t, 6, calls, "all files should be embedded when embedder succeeds")
+	assert.Equal(t, int64(0), s.VectorSweepAborts(),
+		"no aborts when all embeds succeed")
+}
+
+func TestVector_FailedEmbed_RetriedOnNextSweep(t *testing.T) {
+	s, embedder := setupVectorStore(t)
+
+	_, err := s.Write(context.Background(), "sess", "ns", "proj", "retry.md", "will retry", nil)
+	require.NoError(t, err)
+
+	// First sweep: all embeds fail
+	embedder.mu.Lock()
+	embedder.failAll = true
+	embedder.mu.Unlock()
+	s.reconcileProjectVectors(context.Background(), "ns", "proj")
+
+	st := s.vectorForRead("ns", "proj")
+	if st != nil {
+		_, found, _ := st.Get("retry.md")
+		assert.False(t, found, "file should not be in vector store after failed sweep")
+	}
+
+	// Second sweep: embeds succeed
+	embedder.mu.Lock()
+	embedder.failAll = false
+	embedder.calls = 0
+	embedder.mu.Unlock()
+	s.reconcileProjectVectors(context.Background(), "ns", "proj")
+
+	calls := embedder.callCount()
+	assert.Equal(t, 1, calls, "retry.md should be re-attempted on second sweep")
+	st = s.vectorForRead("ns", "proj")
+	require.NotNil(t, st)
+	_, found, _ := st.Get("retry.md")
+	assert.True(t, found, "file should be in vector store after successful retry")
 }

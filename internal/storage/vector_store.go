@@ -212,6 +212,10 @@ func (s *FSGitStorage) VectorCounters() (enqueued, dropped, embedded, failedEmbe
 // VectorSweepRuns returns the number of vector reconcile passes.
 func (s *FSGitStorage) VectorSweepRuns() int64 { return s.vecSweepRuns.Load() }
 
+// VectorSweepAborts returns the number of project sweeps aborted early due to
+// consecutive embedding failures (circuit breaker).
+func (s *FSGitStorage) VectorSweepAborts() int64 { return s.vecSweepAborts.Load() }
+
 // VectorProjectCount returns the number of projects that currently have an open
 // or openable vector index (used by the UI status display).
 func (s *FSGitStorage) VectorProjectCount() int {

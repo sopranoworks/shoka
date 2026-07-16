@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	vectorQueueSize = 256
+	vectorQueueSize            = 256
+	vectorSweepConsecFailLimit = 3
 )
 
 // vectorWorkItem is a file queued for background vectorization.
@@ -155,6 +156,7 @@ func (s *FSGitStorage) reconcileProjectVectors(ctx context.Context, namespace, p
 		}
 	}
 
+	consecFail := 0
 	for rel, content := range files {
 		if ctx.Err() != nil {
 			return
@@ -169,9 +171,19 @@ func (s *FSGitStorage) reconcileProjectVectors(ctx context.Context, namespace, p
 				s.vecRebuilds.Add(1)
 				return
 			}
+			consecFail++
 			s.log().Warn("vector sweep embed failed",
 				"namespace", namespace, "project", projectName,
 				"path", rel, "err", err)
+			if consecFail >= vectorSweepConsecFailLimit {
+				s.vecSweepAborts.Add(1)
+				s.log().Warn("vector sweep: aborting project after consecutive failures",
+					"namespace", namespace, "project", projectName,
+					"consecutive", consecFail)
+				return
+			}
+		} else {
+			consecFail = 0
 		}
 	}
 
