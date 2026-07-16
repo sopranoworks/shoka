@@ -64,6 +64,7 @@ export function NewFilePage() {
         content: savedContent,
         etag,
       })
+      void queryClient.invalidateQueries({ queryKey: ['tree', namespace, project] })
       markSaved(savedContent, etag)
       bypassGuard.current = true
       void navigate({

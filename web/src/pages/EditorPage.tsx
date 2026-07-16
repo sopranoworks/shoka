@@ -122,17 +122,18 @@ export function EditorPage() {
         content: savedContent,
         etag: newEtag,
       })
+      if (targetPath !== path) {
+        void queryClient.invalidateQueries({ queryKey: ['tree', namespace, project] })
+      }
       markSaved(savedContent, newEtag)
       setConflict(null)
-      // Bypass the unsaved-changes guard for this intentional redirect (the
-      // buffer is clean now, but the bypass also covers the state-flush gap).
       bypassGuard.current = true
       void navigate({
         to: '/p/$namespace/$project/blob/$',
         params: { namespace, project, _splat: targetPath },
       })
     },
-    [queryClient, namespace, project, markSaved, navigate],
+    [queryClient, namespace, project, path, markSaved, navigate],
   )
 
   const withBusy = useCallback(async (fn: () => Promise<void>) => {

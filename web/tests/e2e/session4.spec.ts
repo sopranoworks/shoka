@@ -76,6 +76,24 @@ test('new-file workflow: empty editor → type → Save with path → blob view'
   await expect(page.getByRole('heading', { name: 'Brand New' })).toBeVisible()
 })
 
+test('new file appears in sidebar without reload', async ({ page }) => {
+  await page.goto('/p/demo/docs/new')
+  await expect(page.locator('.cm-editor')).toBeVisible()
+  await page.locator('.cm-content').click()
+  await page.keyboard.type('# Sidebar Check\n\nThis file should appear in the tree.\n')
+
+  await mainSave(page).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.locator('input').fill('_e2e/sidebar-check.md')
+  await dialog.getByRole('button', { name: 'Save' }).click()
+
+  await expect(page).toHaveURL(/\/p\/demo\/docs\/blob\/_e2e\/sidebar-check\.md$/)
+  await expect(page.getByRole('heading', { name: 'Sidebar Check' })).toBeVisible()
+
+  const sidebar = page.locator('#sidebar')
+  await expect(sidebar.getByText('sidebar-check.md', { exact: true })).toBeVisible()
+})
+
 test('new-file path validation blocks a path with ".." and keeps the dialog open', async ({
   page,
 }) => {
